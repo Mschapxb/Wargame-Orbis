@@ -213,6 +213,13 @@ def run_visual(battle, cell_size):
             if l.age >= l.duration:
                 battle.visual_effects['attack_lines'].remove(l)
         
+        # Effets de sorts
+        for key in ['aoe_explosions', 'heal_beams', 'armor_shimmers', 'wall_effects']:
+            for fx in battle.visual_effects.get(key, [])[:]:
+                fx.age += 1
+                if not fx.is_alive():
+                    battle.visual_effects[key].remove(fx)
+        
         screen.fill((25, 40, 30))
         screen.blit(grid_surface, (0, 0))
         
@@ -250,18 +257,86 @@ def run_visual(battle, cell_size):
         for proj in battle.visual_effects['projectiles']:
             draw_projectile(screen, proj)
         
+        # Explosions AoE (boule de feu)
+        for aoe in battle.visual_effects.get('aoe_explosions', []):
+            alpha = aoe.get_alpha()
+            r_px = aoe.get_current_radius()
+            if r_px > 0 and alpha > 10:
+                surf = pygame.Surface((r_px * 2, r_px * 2), pygame.SRCALPHA)
+                # Cercle extérieur orange
+                pygame.draw.circle(surf, (*aoe.color, min(alpha, 150)),
+                                   (r_px, r_px), r_px)
+                # Cercle intérieur jaune
+                inner_r = max(1, r_px // 2)
+                pygame.draw.circle(surf, (255, 220, 50, min(alpha, 200)),
+                                   (r_px, r_px), inner_r)
+                screen.blit(surf, (aoe.center_pos[0] - r_px, aoe.center_pos[1] - r_px))
+        
+        # Rayons de soin
+        for beam in battle.visual_effects.get('heal_beams', []):
+            alpha = beam.get_alpha()
+            if alpha > 10:
+                t = alpha / 255
+                # Ligne verte épaisse + scintillements
+                c = (int(50 * t), int(255 * t), int(100 * t))
+                pygame.draw.line(screen, c, beam.start_pos, beam.end_pos, max(2, int(4 * t)))
+                # Croix verte au point d'arrivée
+                ex, ey = beam.end_pos
+                s = max(3, int(8 * t))
+                pygame.draw.line(screen, c, (ex - s, ey), (ex + s, ey), 2)
+                pygame.draw.line(screen, c, (ex, ey - s), (ex, ey + s), 2)
+        
+        # Scintillements d'armure
+        for shim in battle.visual_effects.get('armor_shimmers', []):
+            alpha = shim.get_alpha()
+            if alpha > 10:
+                r_px = shim.radius_px + 4
+                surf = pygame.Surface((r_px * 2, r_px * 2), pygame.SRCALPHA)
+                # Anneau bleu qui pulse
+                pygame.draw.circle(surf, (80, 180, 255, min(alpha, 120)),
+                                   (r_px, r_px), r_px, max(2, r_px // 4))
+                screen.blit(surf, (shim.center_pos[0] - r_px, shim.center_pos[1] - r_px))
+        
+        # Effets de mur
+        for wall in battle.visual_effects.get('wall_effects', []):
+            alpha = wall.get_alpha()
+            if alpha > 10:
+                for wx, wy in wall.positions:
+                    px = wx * cell_size
+                    py = wy * cell_size
+                    surf = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+                    surf.fill((160, 80, 220, min(alpha, 180)))
+                    screen.blit(surf, (px, py))
+                    # Contour
+                    pygame.draw.rect(screen, (200, 120, 255),
+                                     (px, py, cell_size, cell_size), 2)
+        
         # Unités
-        ur = max(3, cell_size // 2 - 4)
+        ur_base = max(3, cell_size // 2 - 4)
         tick_time = pygame.time.get_ticks()
         pulse = (tick_time // 200) % 4
         army1_set = set(id(u) for u in battle.army1)
+        drawn_ids = set()  # Éviter de dessiner 2 fois les grosses unités
         
         for u in battle.army1 + battle.army2:
-            if u.position is None:
+            if u.position is None or id(u) in drawn_ids:
                 continue
+            drawn_ids.add(id(u))
+            
             x, y = u.position
-            cx = x * cell_size + cell_size // 2
-            cy = y * cell_size + cell_size // 2
+            # Dimensions en cases selon la taille
+            if u.size <= 1:
+                uw, uh = 1, 1
+            elif u.size == 2:
+                uw, uh = 2, 2
+            else:
+                uw, uh = 2, 4
+            
+            # Centre pixel de l'unité (milieu de son bloc de cases)
+            cx = x * cell_size + (uw * cell_size) // 2
+            cy = y * cell_size + (uh * cell_size) // 2
+            # Rayon adapté à la taille
+            ur = max(3, min(uw, uh) * cell_size // 2 - 4)
             
             # Aura de peur
             if u.fear_aura > 0 and u.is_alive:
@@ -272,6 +347,7 @@ def run_visual(battle, cell_size):
                     py = cy + int((ur + 8) * math.sin(rad))
                     fc = (220, 40, 40) if u.fear_aura == 1 else (240, 140, 0) if u.fear_aura == 2 else (255, 50, 150)
                     pygame.draw.circle(screen, fc, (px, py), max(1, 3 * cell_size // 32))
+            
             
             # Symbole d'attaque au-dessus de l'unité
             # ⚔ CaC pur = X rouge | Lance/portée = | jaune | Tir = → bleu | Sort = ✦ violet
@@ -308,36 +384,33 @@ def run_visual(battle, cell_size):
                     pygame.draw.line(screen, c, (cx + s, sy - s), (cx - s, sy + s), 2)
             
             # Corps: cercle d'équipe (bleu=A1, rouge=A2) + token ou cercle intérieur
-            token_size = ur * 2
+            token_size = min(uw, uh) * cell_size - 4
             is_army1 = id(u) in army1_set
             team_color = (60, 120, 220) if is_army1 else (220, 60, 60)
             
             if u.is_alive:
-                # Cercle d'équipe (contour)
-                ring_r = ur + 2
-                pygame.draw.circle(screen, team_color, (cx, cy), ring_r)
-                
                 if u.fleeing:
-                    # Fuite = cercle orange
                     pygame.draw.circle(screen, (255, 140, 0), (cx, cy), ur)
                 else:
                     token_img = load_token(u.token_name, token_size) if u.token_name else None
                     if token_img:
-                        # Token image par-dessus le cercle d'équipe
                         screen.blit(token_img, (cx - token_size // 2, cy - token_size // 2))
                     else:
-                        # Fallback: cercle couleur de l'unité + point de rôle
                         pygame.draw.circle(screen, u.color, (cx, cy), ur)
                         dot_r = max(1, 3 * cell_size // 32)
                         rc = (255, 255, 255) if u.role == "front" else (128, 128, 128) if u.role == "mid" else (0, 0, 0)
                         pygame.draw.circle(screen, rc, (cx, cy), dot_r)
+                # Contour d'équipe PAR-DESSUS (outline épaisse)
+                ring_r = ur + 2
+                ring_w = max(2, cell_size // 8)
+                pygame.draw.circle(screen, team_color, (cx, cy), ring_r, ring_w)
             else:
-                # Mort: cercle gris avec contour équipe
-                pygame.draw.circle(screen, team_color, (cx, cy), ur + 2, 2)
                 pygame.draw.circle(screen, (60, 60, 60), (cx, cy), max(1, ur - 2), 2)
+                ring_w = max(2, cell_size // 8)
+                pygame.draw.circle(screen, team_color, (cx, cy), ur + 2, ring_w)
             
-            # Barre HP
-            bw = max(4, cell_size - 8)
+            # Barre HP (largeur adaptée à la taille)
+            bw = max(4, uw * cell_size - 8)
             hp_r = max(0, u.hp / u.max_hp) if u.max_hp > 0 else 0
             by = cy - ur - 5
             pygame.draw.rect(screen, (140, 30, 30), (cx - bw // 2, by, bw, 3))

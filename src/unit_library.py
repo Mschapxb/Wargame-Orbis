@@ -1,259 +1,567 @@
-"""Bibliothèque d'unités parsée depuis le fichier Excel Orbis Naturae.
+"""Bibliothèque d'unités — définie directement en Python.
 
-Dépendance unique: openpyxl (pip install openpyxl)
-Les traits spéciaux sont ignorés pour l'instant.
+Pour ajouter une unité, copier un bloc existant dans UNIT_DATABASE et modifier les valeurs.
+Aucune dépendance externe.
+
+Format d'une arme:
+    ("Nom arme", portée, nb_attaques, toucher, blesser, perforation, "dégâts")
+
+Champs d'une unité:
+    nom             : str       — nom complet (aussi le nom du token PNG)
+    deplacement     : int       — vitesse en cases par round
+    blessure        : int       — points de vie
+    bravoure        : int       — moral (1-6, test sur 1d6 ≤ bravoure)
+    sauvegarde      : int       — sauvegarde (1-6, réussie si 1d6 ≥ sauv, 7 = aucune)
+    role            : str       — "front", "mid", "back" (position de départ)
+    size            : int       — taille en cases (1=1x1, 2=2x2, 3=3x3)
+    unit_type       : str       — "Infanterie", "Large", "Cavalerie", "Artillerie", "Monstre", "Héros"
+    armes           : list      — liste de tuples (nom, portée, attaques, toucher, blesser, perf, dégâts)
+    traits          : list      — liste de strings: "Encouragement", "Planqué", "Anti-Large", etc.
 """
 
-import os
-from openpyxl import load_workbook
-from models import Arme
+from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
 from unit import Unit
 
 
-def _parse_int(val, default=0):
-    if val is None:
-        return default
-    s = str(val).strip()
-    if s in ('', 'nan', '—', '-', '—*', '_x007f_—', 'Intouchable', 'Fuir ? Naaaa'):
-        return default
-    s = s.replace('M', '').replace('m', '').replace('*', '').replace('²', '')
-    if '/' in s:
-        s = s.split('/')[0]
-    try:
-        return int(float(s))
-    except (ValueError, TypeError):
-        return default
+# ═══════════════════════════════════════════════════════════════
+#                     BASE DE DONNÉES
+# ═══════════════════════════════════════════════════════════════
+
+UNIT_DATABASE = {
+
+    # ──────────────── ARMÉE SKALDIENNE ────────────────
+
+    "Armée Skaldienne": {
+        "color": (80, 140, 200),
+        "units": [
+            {
+                "nom": "Infanterie régulière",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée",          1, 2, 3, 3,  0, "1"),
+                    ("Lance",         3, 1, 3, 3,  0, "1"),
+                    ("Hache courte",  1, 1, 3, 3, -1, "1d2"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Eclaireur",
+                "deplacement": 5,
+                "blessure": 1,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Coutelas", 1, 2, 4, 4, 1, "1"),
+                ],
+                "traits": ["Planqué", "Eclaireur", "Rapide"],
+            },
+            {
+                "nom": "Arbaletrier régulier",
+                "deplacement": 4,
+                "blessure": 1,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Arbalète", 9, 1, 3, 3, -1, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Hallbardier",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Hallbarde", 3, 1, 3, 3, -1, "1"),
+                ],
+                "traits": ["Anti-Large"],
+            },
+            {
+                "nom": "Officier",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 5,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Hallebarde", 3, 1, 3, 3, -1, "1d2"),
+                    ("Epée",       1, 2, 3, 3,  1, "1"),
+                ],
+                "traits": ["Encouragement"],
+            },
+            {
+                "nom": "Mage de guerre",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 5,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée", 1, 2, 3, 3, 0, "1"),
+                ],
+                "traits": ["Sort de bataille (1)"],
+                "sorts": ["Boule de feu", "Soin", "Armure magique", "Projectile magique", "Mur de force"],
+            },
+            {
+                "nom": "Scorpion",
+                "deplacement": 0,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Carreaux de Scorpion", 13, 1, 3, 2, -1, "1d2"),
+                ],
+                "traits": ["Artillerie legere"],
+            },
+            {
+                "nom": "Baliste",
+                "deplacement": 0,
+                "blessure": 4,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 2,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Carreaux de baliste", 18, 1, 4, 2, -2, "1d4"),
+                ],
+                "traits": ["Artillerie"],
+            },
+            {
+                "nom": "Artilleur",
+                "deplacement": 3,
+                "blessure": 1,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Coutelas", 1, 1, 4, 5, 1, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Housecarl",
+                "deplacement": 3,
+                "blessure": 4,
+                "bravoure": 3,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Hache à deux mains", 2, 1, 2, 2, -1, "1d2"),
+                ],
+                "traits": [],
+            },
+        ],
+    },
+
+    # ──────────────── ARMÉE ORLANDAR ────────────────
+
+    "Armée Orlandar": {
+        "color": (60, 160, 60),
+        "units": [
+            {
+                "nom": "Fantassin covaliir",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée",         1, 2, 3, 3,  0, "1"),
+                    ("Lance",        3, 1, 3, 3,  0, "1"),
+                    ("Hache lourde", 2, 1, 3, 3, -1, "1d2"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Archer covaliir",
+                "deplacement": 4,
+                "blessure": 1,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Arc long", 13, 1, 3, 3, 0, "1"),
+                    ("Glaive",    1, 1, 4, 4, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Cavalier covaliir",
+                "deplacement": 8,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "mid",
+                "size": 2,
+                "unit_type": "Cavalerie",
+                "armes": [
+                    ("Lance", 2, 1, 3, 3, 0, "1"),
+                    ("Arc",   9, 1, 3, 3, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Officier covaliir",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée à deux mains", 2, 1, 2, 3, 0, "1d2"),
+                    ("Epée",              1, 2, 3, 3, 1, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Equipée de piquier",
+                "deplacement": 2,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Pique", 3, 1, 3, 3, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Catapulte covaliir",
+                "deplacement": 0,
+                "blessure": 6,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 2,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Roche", 24, 1, 5, 5, -3, "2+1d4"),
+                ],
+                "traits": ["Artillerie"],
+            },
+            {
+                "nom": "Porte-étendard",
+                "deplacement": 3,
+                "blessure": 1,
+                "bravoure": 1,
+                "sauvegarde": 7,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Pique drappée", 2, 1, 4, 4, 0, "1"),
+                ],
+                "traits": ["Encouragement"],
+            },
+        ],
+    },
+
+    # ──────────────── DRACONIE ────────────────
+
+    "Draconie": {
+        "color": (200, 60, 60),
+        "units": [
+            {
+                "nom": "Suppléant de Draconie",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 1,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée", 1, 2, 3, 3, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Cheval de Draconie",
+                "deplacement": 8,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 2,
+                "unit_type": "Cavalerie",
+                "armes": [
+                    ("Sabots", 1, 2, 3, 3, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Pourfendeur de Draconie",
+                "deplacement": 8,
+                "blessure": 6,
+                "bravoure": 3,
+                "sauvegarde": 5,
+                "role": "front",
+                "size": 2,
+                "unit_type": "Large",
+                "armes": [
+                    ("Képesh géant",    2, 2, 3, 3,  0, "1d2"),
+                    ("Lance d'arçon",   2, 1, 3, 2, -2, "1d3"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Chevalier-dragon",
+                "deplacement": 4,
+                "blessure": 6,
+                "bravoure": 2,
+                "sauvegarde": 5,
+                "role": "front",
+                "size": 2,
+                "unit_type": "Large",
+                "armes": [
+                    ("Epée à deux mains", 2, 2, 4, 4, 0, "1d2"),
+                    ("Hallebarde",        3, 1, 3, 3, -1, "1d2"),
+                ],
+                "traits": [],
+            },
+        ],
+    },
+
+    # ──────────────── LÉGION SACRÉE ────────────────
+
+    "Légion sacrée": {
+        "color": (220, 200, 60),
+        "units": [
+            {
+                "nom": "Légionnaire sacré",
+                "deplacement": 2,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 3,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Epée", 1, 2, 3, 2, 0, "1"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Archer sacré",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 5,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Arc sacré", 13, 1, 3, 2, -2, "1d2"),
+                ],
+                "traits": [],
+            },
+            {
+                "nom": "Capitaine sacré",
+                "deplacement": 2,
+                "blessure": 4,
+                "bravoure": 3,
+                "sauvegarde": 4,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Masse à deux mains", 2, 1, 2, 2, -1, "1d2"),
+                ],
+                "traits": ["Encouragement"],
+            },
+        ],
+    },
+
+    # ──────────────── HÉROS ────────────────
+
+    "Héros": {
+        "color": (255, 215, 0),
+        "units": [
+            {
+                "nom": "Général Kaiden",
+                "deplacement": 6,
+                "blessure": 6,
+                "bravoure": 3,
+                "sauvegarde": 4,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Héros",
+                "armes": [
+                    ("Epée", 1, 3, 3, 2, 0, "1d2"),
+                ],
+                "traits": ["Encouragement"],
+            },
+            {
+                "nom": "Edolion",
+                "deplacement": 6,
+                "blessure": 12,
+                "bravoure": 3,
+                "sauvegarde": 3,
+                "role": "front",
+                "size": 3,
+                "unit_type": "Monstre",
+                "armes": [
+                    ("Griffe",          3, 2, 4, 2, -2, "1+1d3"),
+                    ("Charge Volante", 2, 1, 3, 2, -3, "2+1d4"),
+                ],
+                "traits": [],
+            },
+        ],
+    },
+}
 
 
-def _parse_speed(val):
-    if val is None:
-        return 2
-    s = str(val).strip()
-    if s in ('**', '—*', '', 'nan', 'Trop rapide'):
-        return 2
-    s = s.replace('M', '').replace('m', '').replace('*', '').replace('/', '')
-    try:
-        return int(float(s))
-    except (ValueError, TypeError):
-        return 2
+# ═══════════════════════════════════════════════════════════════
+#                     FONCTIONS DE CRÉATION
+# ═══════════════════════════════════════════════════════════════
+
+def _build_arme(arme_tuple):
+    """Crée un objet Arme depuis un tuple (nom, portée, attaques, toucher, blesser, perf, dégâts)."""
+    nom, portee, nb_att, toucher, blesser, perf, degats = arme_tuple
+    return Arme(nom, nb_attaque=nb_att, toucher=toucher, blesser=blesser,
+                perforation=perf, degats=degats, porte=portee)
 
 
-def _parse_degats(val):
-    if val is None:
-        return "1"
-    s = str(val).strip().upper()
-    if s in ('', 'nan', '0', 'AÏE', '0²'):
-        return "1"
-    s = s.replace('*', '').replace('²', '')
-    if '/' in s:
-        s = s.split('/')[0]
-    s = s.lower().strip()
-    return s if s else "1"
-
-
-def _parse_portee(val):
-    if val is None:
-        return 1
-    s = str(val).strip()
-    if s in ('', 'nan', '—²', 'Infini', 'None'):
-        return 1
-    s = s.replace('*', '').replace('²', '')
-    if '-' in s:
-        parts = s.split('-')
-        try:
-            return max(int(p) for p in parts)
-        except ValueError:
-            return 1
-    try:
-        raw = int(float(s))
-        if raw > 10:
-            return max(2, raw // 4)
-        return max(1, raw)
-    except (ValueError, TypeError):
-        return 1
-
-
-def _parse_attaque(val):
-    if val is None:
-        return 1
-    s = str(val).strip()
-    if s in ('', 'nan', '**', '—*', 'None'):
-        return 1
-    s = s.replace('*', '').replace('²', '')
-    if '/' in s:
-        s = s.split('/')[0]
-    try:
-        return max(1, int(float(s)))
-    except (ValueError, TypeError):
-        return 1
-
-
-def _cell(row, col):
-    """Récupère la valeur d'une cellule d'une ligne openpyxl."""
-    if col < len(row):
-        v = row[col]
-        return v if v is not None else None
-    return None
-
-
-def _build_arme(arme_name, portee, attaque, toucher, blesser, perforation, degats):
-    name = str(arme_name).strip() if arme_name else ''
-    if not name or name == 'None':
-        return None
-    return Arme(name,
-                nb_attaque=_parse_attaque(attaque),
-                toucher=_parse_int(toucher, 3),
-                blesser=_parse_int(blesser, 3),
-                perforation=_parse_int(perforation, 0),
-                degats=_parse_degats(degats),
-                porte=_parse_portee(portee))
-
-
-def _determine_role(unit_data):
-    portee_main = _parse_portee(unit_data['portee'])
-    if portee_main >= 5:
-        return "back"
-    elif portee_main >= 3:
-        return "mid"
-    return "front"
-
-
-def _army_color(army_name):
-    colors = {
-        'Armée Skaldienne': (80, 140, 200),
-        'Collège de magie': (120, 80, 200),
-        'Ordre de Chevalerie': (200, 180, 60),
-        'Ordre Eternel': (100, 100, 100),
-        'Invocation Eternel': (80, 80, 80),
-        'Légion sacrée': (220, 200, 60),
-        'Héros': (255, 215, 0),
-        'Armée Orlandar': (60, 160, 60),
-        'Draconie': (200, 60, 60),
-        'Arkkar': (180, 120, 60),
-        'Al-Athar': (160, 80, 160),
-        'Armée Aïdatienne': (60, 180, 180),
-        'Armée Marcheurs Jaunes': (200, 200, 40),
-        'Kretash le Bouffon': (180, 80, 80),
-        'Armée Muhr': (140, 100, 60),
-        'Armée Huǒ shé': (220, 80, 40),
-        'Clan Marsik': (100, 140, 100),
-        'Clan Firast': (200, 100, 40),
-        'Invocations du Tao': (100, 180, 100),
-        'Unité commune': (150, 150, 150),
-    }
-    return colors.get(army_name, (150, 150, 150))
-
-
-def load_units_from_excel(filepath):
-    """Parse le fichier Excel et retourne {army_name: [unit_data_dict, ...]}"""
-    wb = load_workbook(filepath, read_only=True, data_only=True)
-    ws = wb.active
-
-    all_units = {}
-    current_army = None
-    current_unit_data = None
-
-    for raw_row in ws.iter_rows(values_only=True):
-        # Padder la ligne pour éviter les IndexError
-        row = list(raw_row) + [None] * 16
-        val0 = str(row[0]).strip() if row[0] is not None else ''
-        val1 = str(row[1]).strip() if row[1] is not None else ''
-
-        if not val0 or val0 == 'None':
-            # Ligne d'arme supplémentaire ?
-            arme_name = str(row[5]).strip() if row[5] is not None else ''
-            if arme_name and arme_name != 'None' and current_unit_data is not None:
-                current_unit_data['extra_weapons'].append({
-                    'arme': arme_name,
-                    'portee': _cell(row, 6), 'attaque': _cell(row, 7),
-                    'toucher': _cell(row, 8), 'blesser': _cell(row, 9),
-                    'perforation': _cell(row, 10), 'degats': _cell(row, 11)
-                })
-            continue
-
-        if val0 == 'Nom':
-            continue
-
-        # En-tête d'armée (pas de stats)
-        if (not val1 or val1 == 'None') and row[2] is None:
-            current_army = val0
-            if current_army not in all_units:
-                all_units[current_army] = []
-            continue
-
-        # Ligne d'unité
-        if val1 and val1 != 'None' and current_army is not None:
-            current_unit_data = {
-                'army': current_army,
-                'name': val0,
-                'deplacement': val1,
-                'blessure': _cell(row, 2),
-                'bravoure': _cell(row, 3),
-                'sauvegarde': _cell(row, 4),
-                'arme': str(row[5]) if row[5] else '',
-                'portee': _cell(row, 6),
-                'attaque': _cell(row, 7),
-                'toucher': _cell(row, 8),
-                'blesser': _cell(row, 9),
-                'perforation': _cell(row, 10),
-                'degats': _cell(row, 11),
-                'extra_weapons': []
-            }
-            all_units[current_army].append(current_unit_data)
-
-    wb.close()
-    return all_units
-
-
-def create_unit_from_data(data):
-    """Convertit un dict de données brutes en objet Unit."""
-    armes = []
-    main_arme = _build_arme(data['arme'], data['portee'], data['attaque'],
-                            data['toucher'], data['blesser'],
-                            data['perforation'], data['degats'])
-    if main_arme:
-        armes.append(main_arme)
-
-    for w in data.get('extra_weapons', []):
-        extra = _build_arme(w['arme'], w['portee'], w['attaque'],
-                            w['toucher'], w['blesser'],
-                            w['perforation'], w['degats'])
-        if extra:
-            armes.append(extra)
-
+def create_unit(unit_def, army_color):
+    """Crée un objet Unit depuis un dict de définition."""
+    armes = [_build_arme(a) for a in unit_def["armes"]]
+    
     unit = Unit(
-        name=data['name'][:10],
-        pv=_parse_int(data['blessure'], 1),
-        vitesse=_parse_speed(data['deplacement']),
-        morale=_parse_int(data['bravoure'], 1),
-        sauvegarde=_parse_int(data['sauvegarde'], 7),
-        color=_army_color(data.get('army', '')),
+        name=unit_def["nom"][:10],
+        pv=unit_def["blessure"],
+        vitesse=unit_def["deplacement"],
+        morale=unit_def["bravoure"],
+        sauvegarde=unit_def["sauvegarde"],
+        color=army_color,
         armes=armes,
-        role=_determine_role(data)
+        role=unit_def.get("role", "front"),
+        size=unit_def.get("size", 1),
+        unit_type=unit_def.get("unit_type", "Infanterie"),
     )
-    # Nom complet nettoyé pour le fichier token: "tokens/Infanterie régulière.png"
-    unit.token_name = data['name'].strip()
+    unit.token_name = unit_def["nom"]
+    
+    # Traits
+    for t in unit_def.get("traits", []):
+        tl = t.lower()
+        if "encouragement" in tl:
+            unit.encouragement_range = 4
+        # "Sort de bataille (N)" → N sorts par round
+        if "sort de bataille" in tl:
+            import re
+            m = re.search(r'\((\d+)\)', t)
+            if m:
+                unit.spells_per_round = int(m.group(1))
+    
+    # Sorts
+    SPELL_CATALOG = {
+        "Boule de feu":        lambda: SpellFireball(porte=9, toucher=3, blesser=1, perforation=-2, degats="1d4", aoe_size=3, cooldown=2),
+        "Soin":                lambda: SpellHeal(porte=6, cooldown=3),
+        "Armure magique":      lambda: SpellMagicArmor(porte=4, bonus=2, duration=3, cooldown=4),
+        "Projectile magique":  lambda: SpellMagicProjectile(porte=15, toucher=3, blesser=1, degats="3d2", cooldown=1),
+        "Mur de force":        lambda: SpellWall(porte=8, nb_obstacles=3, wall_duration=5, cooldown=5),
+    }
+    
+    for spell_name in unit_def.get("sorts", []):
+        factory = SPELL_CATALOG.get(spell_name)
+        if factory:
+            unit.spells.append(factory())
+        else:
+            print(f"  ATTENTION: sort '{spell_name}' inconnu")
+    
     return unit
 
 
-_DEFAULT_EXCEL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              'Livre_des_armées_d_Orbis_Naturae.xlsx')
+def get_library():
+    """Retourne la base de données brute."""
+    return UNIT_DATABASE
 
 
-def get_library(filepath=None):
-    return load_units_from_excel(filepath or _DEFAULT_EXCEL)
+def list_armies():
+    """Liste les noms d'armées disponibles."""
+    return sorted(UNIT_DATABASE.keys())
 
 
-def list_armies(filepath=None):
-    return sorted(get_library(filepath).keys())
+def list_units(army_name):
+    """Liste les noms d'unités d'une armée."""
+    army = UNIT_DATABASE.get(army_name)
+    if not army:
+        return []
+    return [u["nom"] for u in army["units"]]
 
 
-def list_units(army_name, filepath=None):
-    return [u['name'] for u in get_library(filepath).get(army_name, [])]
-
-
-def make_unit(army_name, unit_name, filepath=None):
-    for u_data in get_library(filepath).get(army_name, []):
-        if u_data['name'] == unit_name:
-            return create_unit_from_data(u_data)
+def make_unit(army_name, unit_name):
+    """Crée un objet Unit depuis la bibliothèque."""
+    army = UNIT_DATABASE.get(army_name)
+    if not army:
+        return None
+    for u_def in army["units"]:
+        if u_def["nom"] == unit_name:
+            return create_unit(u_def, army["color"])
     return None
+
+
+def build_army(army_name, composition):
+    """Construit une liste de Units.
+    
+    composition: liste de tuples (nom_unité, quantité)
+    Exemple: build_army("Armée Skaldienne", [("Infanterie régulière", 10), ("Officier", 2)])
+    """
+    army_data = UNIT_DATABASE.get(army_name)
+    if not army_data:
+        print(f"ERREUR: armée '{army_name}' introuvable.")
+        print(f"Armées disponibles: {', '.join(sorted(UNIT_DATABASE.keys()))}")
+        return []
+    
+    color = army_data["color"]
+    unit_by_name = {u["nom"]: u for u in army_data["units"]}
+    
+    result = []
+    for unit_name, count in composition:
+        u_def = unit_by_name.get(unit_name)
+        if u_def is None:
+            print(f"  ATTENTION: '{unit_name}' introuvable dans '{army_name}'")
+            print(f"  Disponibles: {', '.join(unit_by_name.keys())}")
+            continue
+        for i in range(count):
+            u = create_unit(u_def, color)
+            short = unit_name[:6]
+            u.name = f"{short}{i + 1}" if count > 1 else short
+            result.append(u)
+    
+    return result

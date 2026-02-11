@@ -58,3 +58,77 @@ class AttackLine:
     
     def get_alpha(self):
         return int(255 * (1 - self.age / self.duration))
+
+
+class AoeExplosion:
+    """Explosion de zone (boule de feu) — cercle qui s'étend puis se dissipe."""
+    __slots__ = ['center_pos', 'radius_px', 'color', 'duration', 'age']
+    
+    def __init__(self, center_pos, radius_px, color=(255, 100, 0), duration=30):
+        self.center_pos = center_pos
+        self.radius_px = radius_px
+        self.color = color
+        self.duration = duration
+        self.age = 0
+    
+    def is_alive(self):
+        return self.age < self.duration
+    
+    def get_alpha(self):
+        return int(200 * (1 - self.age / self.duration))
+    
+    def get_current_radius(self):
+        progress = min(1.0, self.age / (self.duration * 0.4))
+        return int(self.radius_px * progress)
+
+
+class HealBeam:
+    """Rayon de soin — ligne verte du lanceur à la cible."""
+    __slots__ = ['start_pos', 'end_pos', 'color', 'duration', 'age']
+    
+    def __init__(self, start_pos, end_pos, duration=30):
+        self.start_pos = start_pos
+        self.end_pos = end_pos
+        self.color = (50, 255, 100)
+        self.duration = duration
+        self.age = 0
+    
+    def is_alive(self):
+        return self.age < self.duration
+    
+    def get_alpha(self):
+        return int(255 * (1 - self.age / self.duration))
+
+
+class ArmorShimmer:
+    """Effet d'armure magique — scintillement bleu autour d'une position."""
+    __slots__ = ['center_pos', 'radius_px', 'duration', 'age']
+    
+    def __init__(self, center_pos, radius_px, duration=40):
+        self.center_pos = center_pos
+        self.radius_px = radius_px
+        self.duration = duration
+        self.age = 0
+    
+    def is_alive(self):
+        return self.age < self.duration
+    
+    def get_alpha(self):
+        return int(180 * (1 - self.age / self.duration))
+
+
+class WallEffect:
+    """Effet visuel de création de mur — flash violet sur les cases."""
+    __slots__ = ['positions', 'cell_size', 'duration', 'age']
+    
+    def __init__(self, positions, cell_size, duration=25):
+        self.positions = positions  # Liste de (x, y) en cases grille
+        self.cell_size = cell_size
+        self.duration = duration
+        self.age = 0
+    
+    def is_alive(self):
+        return self.age < self.duration
+    
+    def get_alpha(self):
+        return int(200 * (1 - self.age / self.duration))

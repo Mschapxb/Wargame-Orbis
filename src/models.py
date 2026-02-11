@@ -13,13 +13,10 @@ class Arme:
         self.range = porte
         self.special = special or {}
         
-        # Pré-calculer les infos de dégâts pour éviter parsing répété
-        # Supporte: "1", "1d6", "1+1d4", "2+1d3"
         self._bonus = 0
         degats_str = str(degats).lower().strip()
         
         if '+' in degats_str and 'd' in degats_str:
-            # Format "X+YdZ"
             parts = degats_str.split('+')
             try:
                 self._bonus = int(parts[0])
@@ -50,52 +47,122 @@ class Arme:
         return self._fixed_damage
 
 
+# ═══════════════════════════════════════════════════════════════
+#                          SORTS
+# ═══════════════════════════════════════════════════════════════
+
 class Spell:
-    def __init__(self, name, damage, aoe_radius=0, perforation=0, auto_hit=False):
+    """Classe de base pour les sorts.
+    
+    Attributs communs:
+        name        : str   — nom du sort
+        spell_type  : str   — "fireball", "heal", "armor", "projectile", "wall"
+        porte       : int   — portée en cases
+        cooldown    : int   — rounds de recharge (0 = chaque round)
+        _cd_timer   : int   — compteur interne de cooldown
+    """
+    def __init__(self, name, spell_type, porte=9, cooldown=0):
         self.name = name
-        self.damage = damage
-        self.aoe_radius = aoe_radius
+        self.spell_type = spell_type
+        self.porte = porte
+        self.cooldown = cooldown
+        self._cd_timer = 0
+    
+    def is_ready(self):
+        return self._cd_timer <= 0
+    
+    def use(self):
+        self._cd_timer = self.cooldown
+    
+    def tick_cooldown(self):
+        if self._cd_timer > 0:
+            self._cd_timer -= 1
+
+
+class SpellFireball(Spell):
+    """Boule de feu — AoE 3×3, dégâts + toucher/blesser/perforation."""
+    def __init__(self, porte=9, toucher=3, blesser=1, perforation=-2,
+                 degats="1d4", aoe_size=3, cooldown=2):
+        super().__init__("Boule de feu", "fireball", porte, cooldown)
+        self.toucher = toucher
+        self.blesser = blesser
         self.perforation = perforation
-        self.auto_hit = auto_hit
-        self.is_fire = "feu" in name.lower()
+        self.degats = degats
+        self.aoe_size = aoe_size  # 3 = zone 3×3
         
-        # Pré-calculer les infos de dégâts
+        # Parser dégâts
+        self._parse_degats(degats)
+    
+    def _parse_degats(self, degats):
+        s = str(degats).lower().strip()
         self._bonus = 0
-        if isinstance(damage, str):
-            damage_str = damage.lower().strip()
-            if '+' in damage_str and 'd' in damage_str:
-                parts = damage_str.split('+')
-                try:
-                    self._bonus = int(parts[0])
-                except ValueError:
-                    self._bonus = 0
-                dp = parts[1].split('d')
-                self._nb_des = int(dp[0])
-                self._faces = int(dp[1])
-                self._is_dice = True
-                self._is_tuple = False
-            elif 'd' in damage_str:
-                dp = damage_str.split('d')
-                self._nb_des = int(dp[0])
-                self._faces = int(dp[1])
-                self._is_dice = True
-                self._is_tuple = False
-            else:
-                self._is_dice = False
-                self._is_tuple = False
-                self._fixed = int(float(damage_str))
-        elif isinstance(damage, tuple):
-            self._is_dice = False
-            self._is_tuple = True
-            self._min, self._max = damage
+        if '+' in s and 'd' in s:
+            parts = s.split('+')
+            self._bonus = int(parts[0])
+            dp = parts[1].split('d')
+            self._nb_des, self._faces = int(dp[0]), int(dp[1])
+            self._is_dice = True
+        elif 'd' in s:
+            dp = s.split('d')
+            self._nb_des, self._faces = int(dp[0]), int(dp[1])
+            self._is_dice = True
         else:
             self._is_dice = False
-            self._is_tuple = False
-            self._fixed = int(damage)
+            self._fixed = int(float(s))
     
     def lancer_degats(self):
         if self._is_dice:
             return self._bonus + sum(random.randint(1, self._faces) for _ in range(self._nb_des))
-        elif self._is_tuple:
-            return random.randint(self._min, self._max)
         return self._fixed
+
+
+class SpellHeal(Spell):
+    """Sort de soin — soigne totalement une unité alliée."""
+    def __init__(self, porte=6, cooldown=3):
+        super().__init__("Soin", "heal", porte, cooldown)
+
+
+class SpellMagicArmor(Spell):
+    """Armure magique — +2 de sauvegarde à une unité (temporaire, dure X rounds)."""
+    def __init__(self, porte=4, bonus=2, duration=3, cooldown=4):
+        super().__init__("Armure magique", "armor", porte, cooldown)
+        self.bonus = bonus        # Bonus de sauvegarde
+        self.duration = duration  # Durée en rounds
+
+
+class SpellMagicProjectile(Spell):
+    """Projectile magique — cible unique, longue portée, 3d2 dégâts."""
+    def __init__(self, porte=15, toucher=3, blesser=1, degats="3d2", cooldown=1):
+        super().__init__("Projectile magique", "projectile", porte, cooldown)
+        self.toucher = toucher
+        self.blesser = blesser
+        self.degats = degats
+        
+        s = str(degats).lower().strip()
+        self._bonus = 0
+        if '+' in s and 'd' in s:
+            parts = s.split('+')
+            self._bonus = int(parts[0])
+            dp = parts[1].split('d')
+            self._nb_des, self._faces = int(dp[0]), int(dp[1])
+            self._is_dice = True
+        elif 'd' in s:
+            dp = s.split('d')
+            self._nb_des, self._faces = int(dp[0]), int(dp[1])
+            self._is_dice = True
+        else:
+            self._is_dice = False
+            self._fixed = int(float(s))
+    
+    def lancer_degats(self):
+        if self._is_dice:
+            return self._bonus + sum(random.randint(1, self._faces) for _ in range(self._nb_des))
+        return self._fixed
+
+
+class SpellWall(Spell):
+    """Mur de force — crée 3 obstacles devant les ennemis les plus proches."""
+    def __init__(self, porte=8, nb_obstacles=3, wall_duration=5, cooldown=5):
+        super().__init__("Mur de force", "wall", porte, cooldown)
+        self.nb_obstacles = nb_obstacles
+        self.wall_duration = wall_duration

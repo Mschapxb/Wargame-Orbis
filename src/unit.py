@@ -1,14 +1,16 @@
 import random
 from collections import deque
 
-from effects import FloatingText, Projectile, AttackLine
+from effects import (FloatingText, Projectile, AttackLine,
+                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect)
 
 
 class Unit:
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
-                 armes=None, spells=None, special=None, role="front"):
+                 armes=None, spells=None, special=None, role="front",
+                 size=1, unit_type="Infanterie"):
         self.name = name
-        self.token_name = ""  # Nom complet pour le fichier token (set par unit_library)
+        self.token_name = ""
         self.pv = pv
         self.max_pv = pv
         self.hp = pv
@@ -34,6 +36,15 @@ class Unit:
         self.fear_aura = 0
         self.current_target = None
         self.morale_malus = 0
+        self.morale_bonus = 0
+        self.encouragement_range = 0
+        
+        # Taille en cases (1=1x1, 2=2x2, 3=3x3, etc.)
+        self.size = size
+        # Type: "Infanterie", "Large", "Artillerie", "Cavalerie", "Monstre", "Héros"
+        self.unit_type = unit_type
+        # Nombre de sorts lancables par round
+        self.spells_per_round = 1
         
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
@@ -110,7 +121,7 @@ class Unit:
             self.floating_texts.append(FloatingText(f"+{heal}", (40, 220, 40)))
 
     def get_effective_morale(self):
-        return max(0, self.base_morale - self.morale_malus)
+        return max(0, self.base_morale + self.morale_bonus - self.morale_malus)
 
     def morale_check(self):
         effective_morale = self.get_effective_morale()
@@ -119,7 +130,8 @@ class Unit:
         return random.randint(1, 6) <= effective_morale
 
     def apply_fear_effect(self, aura_level, distance):
-        if self.immune_mind or aura_level == 0 or distance > aura_level:
+        """Applique l'effet de peur. La portée est déjà vérifiée par battle.py (4 cases)."""
+        if self.immune_mind or aura_level == 0:
             return None
         
         if not hasattr(self, '_fear_malus_applied') or not self._fear_malus_applied:
@@ -203,41 +215,244 @@ class Unit:
                 target.take_damage(arme.lancer_degats(), False, self)
 
     def cast_random_spell(self, battle, visual_effects, cell_size):
-        if not self.spells or random.random() > 0.4 or self.fleeing:
+        """Lance un sort disponible (pas en cooldown). Gère 5 types de sorts."""
+        if not self.spells or self.fleeing:
             return
         
-        spell = random.choice(self.spells)
+        # Tick cooldowns
+        for s in self.spells:
+            s.tick_cooldown()
+        
+        # Sorts prêts
+        ready = [s for s in self.spells if s.is_ready()]
+        if not ready:
+            return
+        
+        # Nombre de sorts lançables ce round (trait "Sort de bataille[N]")
+        max_casts = getattr(self, 'spells_per_round', 1)
+        casts_done = 0
+        
+        random.shuffle(ready)
+        
+        for spell in ready:
+            if casts_done >= max_casts:
+                break
+            
+            cast_ok = False
+            
+            if spell.spell_type == "fireball":
+                cast_ok = self._cast_fireball(spell, battle, visual_effects, cell_size)
+            elif spell.spell_type == "heal":
+                cast_ok = self._cast_heal(spell, battle, visual_effects, cell_size)
+            elif spell.spell_type == "armor":
+                cast_ok = self._cast_armor(spell, battle, visual_effects, cell_size)
+            elif spell.spell_type == "projectile":
+                cast_ok = self._cast_projectile(spell, battle, visual_effects, cell_size)
+            elif spell.spell_type == "wall":
+                cast_ok = self._cast_wall(spell, battle, visual_effects, cell_size)
+            
+            if cast_ok:
+                spell.use()
+                casts_done += 1
+    
+    def _pos_to_px(self, pos, cell_size):
+        return (pos[0] * cell_size + cell_size // 2, pos[1] * cell_size + cell_size // 2)
+    
+    def _cast_fireball(self, spell, battle, visual_effects, cell_size):
+        """Boule de feu — AoE sur zone 3×3 autour de l'ennemi le plus proche."""
         target = battle.get_closest_enemy(self)
         if not target:
-            return
+            return False
+        dist = battle.battlefield.manhattan_distance(self.position, target.position)
+        if dist > spell.porte:
+            return False
         
-        target_pos = target.position
+        start_px = self._pos_to_px(self.position, cell_size)
+        end_px = self._pos_to_px(target.position, cell_size)
         
-        # Effet visuel
-        start_px = (self.position[0] * cell_size + cell_size // 2,
-                    self.position[1] * cell_size + cell_size // 2)
-        end_px = (target_pos[0] * cell_size + cell_size // 2,
-                  target_pos[1] * cell_size + cell_size // 2)
-        
-        ptype = "fireball" if spell.is_fire else "magic"
-        color = (255, 100, 0) if spell.is_fire else (150, 100, 255)
+        # Projectile boule de feu
         visual_effects['projectiles'].append(
-            Projectile(start_px, end_px, color, 35, ptype, cell_size)
+            Projectile(start_px, end_px, (255, 100, 0), 35, "fireball", cell_size)
         )
         
-        # Trouver unités affectées
-        if spell.aoe_radius > 0:
-            affected_units = battle.get_units_in_radius(target_pos, spell.aoe_radius, battle.get_enemies(self))
-        else:
-            affected_units = [target]
+        # Explosion AoE
+        aoe_radius_px = (spell.aoe_size // 2) * cell_size + cell_size // 2
+        visual_effects.setdefault('aoe_explosions', []).append(
+            AoeExplosion(end_px, aoe_radius_px, (255, 120, 0), 35)
+        )
         
-        # Appliquer dégâts
-        for affected_unit in affected_units:
-            if spell.auto_hit:
-                save_modifie = min(7, affected_unit.sauvegarde + spell.perforation)
-                if random.randint(1, 6) >= save_modifie:
-                    affected_unit.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
+        self.floating_texts.append(FloatingText("Boule de feu!", (255, 120, 0), 70))
+        
+        # Dégâts sur zone
+        half = spell.aoe_size // 2
+        tx, ty = target.position
+        for enemy in battle.get_enemies(self):
+            if not enemy.is_alive:
+                continue
+            ex, ey = enemy.position
+            if abs(ex - tx) <= half and abs(ey - ty) <= half:
+                # Toucher
+                if random.randint(1, 6) < spell.toucher:
+                    enemy.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
                     continue
-                affected_unit.take_damage(spell.lancer_degats(), False, self)
-            else:
-                affected_unit.take_damage(spell.lancer_degats(), True)
+                # Blesser (1 = blesse d'office)
+                if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
+                    enemy.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
+                    continue
+                # Sauvegarde
+                save_mod = min(7, enemy.sauvegarde + spell.perforation)
+                if random.randint(1, 6) >= save_mod:
+                    enemy.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
+                    continue
+                enemy.take_damage(spell.lancer_degats(), False, self)
+        
+        return True
+    
+    def _cast_heal(self, spell, battle, visual_effects, cell_size):
+        """Soin — soigne totalement l'allié le plus blessé à portée."""
+        allies = battle.get_allies(self)
+        wounded = []
+        for ally in allies:
+            if ally.is_alive and ally != self and ally.hp < ally.max_hp:
+                d = battle.battlefield.manhattan_distance(self.position, ally.position)
+                if d <= spell.porte:
+                    wounded.append((ally.hp / ally.max_hp, ally))
+        
+        if not wounded:
+            return False
+        
+        wounded.sort(key=lambda x: x[0])
+        target = wounded[0][1]
+        
+        start_px = self._pos_to_px(self.position, cell_size)
+        end_px = self._pos_to_px(target.position, cell_size)
+        
+        visual_effects.setdefault('heal_beams', []).append(
+            HealBeam(start_px, end_px, 30)
+        )
+        
+        healed = target.max_hp - target.hp
+        target.hp = target.max_hp
+        target.pv = target.max_pv
+        target.floating_texts.append(FloatingText(f"+{healed} SOIN!", (50, 255, 100), 80))
+        self.floating_texts.append(FloatingText("Soin!", (50, 255, 100), 60))
+        
+        return True
+    
+    def _cast_armor(self, spell, battle, visual_effects, cell_size):
+        """Armure magique — +2 de sauvegarde à soi-même ou un allié."""
+        # Chercher un allié sans buff à portée (ou soi-même)
+        candidates = [self]
+        for ally in battle.get_allies(self):
+            if ally.is_alive and ally != self:
+                d = battle.battlefield.manhattan_distance(self.position, ally.position)
+                if d <= spell.porte:
+                    candidates.append(ally)
+        
+        # Préférer ceux qui n'ont pas déjà le buff
+        unbuffed = [c for c in candidates if not getattr(c, '_armor_buff', False)]
+        target = random.choice(unbuffed) if unbuffed else None
+        
+        if not target:
+            return False
+        
+        # Appliquer le buff
+        target._armor_buff = True
+        target._armor_buff_rounds = spell.duration
+        target._armor_buff_amount = spell.bonus
+        target.sauvegarde = max(1, target.sauvegarde - spell.bonus)
+        
+        px = self._pos_to_px(target.position, cell_size)
+        ur = max(3, cell_size // 2 - 4) * max(1, target.size)
+        visual_effects.setdefault('armor_shimmers', []).append(
+            ArmorShimmer(px, ur, 40)
+        )
+        
+        target.floating_texts.append(FloatingText(f"+{spell.bonus} Armure!", (80, 180, 255), 70))
+        self.floating_texts.append(FloatingText("Armure!", (80, 180, 255), 60))
+        
+        return True
+    
+    def _cast_projectile(self, spell, battle, visual_effects, cell_size):
+        """Projectile magique — cible unique, longue portée."""
+        target = battle.get_closest_enemy(self)
+        if not target:
+            return False
+        dist = battle.battlefield.manhattan_distance(self.position, target.position)
+        if dist > spell.porte:
+            return False
+        
+        start_px = self._pos_to_px(self.position, cell_size)
+        end_px = self._pos_to_px(target.position, cell_size)
+        
+        # 3 petits projectiles violets
+        for i in range(3):
+            offset = (random.randint(-8, 8), random.randint(-8, 8))
+            ep = (end_px[0] + offset[0], end_px[1] + offset[1])
+            visual_effects['projectiles'].append(
+                Projectile(start_px, ep, (180, 80, 255), 25 + i * 5, "magic", cell_size)
+            )
+        
+        self.floating_texts.append(FloatingText("Projectile!", (180, 80, 255), 60))
+        
+        # Toucher
+        if random.randint(1, 6) < spell.toucher:
+            target.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
+            return True
+        # Blesser (1 = d'office)
+        if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
+            target.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
+            return True
+        
+        target.take_damage(spell.lancer_degats(), False, self)
+        return True
+    
+    def _cast_wall(self, spell, battle, visual_effects, cell_size):
+        """Mur de force — crée des obstacles devant les ennemis les plus proches."""
+        enemies = [(battle.battlefield.manhattan_distance(self.position, e.position), e)
+                   for e in battle.get_enemies(self) if e.is_alive]
+        if not enemies:
+            return False
+        
+        enemies.sort(key=lambda x: x[0])
+        bf = battle.battlefield
+        
+        wall_positions = []
+        for _, enemy in enemies:
+            if len(wall_positions) >= spell.nb_obstacles:
+                break
+            ex, ey = enemy.position
+            # Placer l'obstacle entre l'ennemi et nous
+            dx = 1 if self.position[0] > ex else -1 if self.position[0] < ex else 0
+            dy = 1 if self.position[1] > ey else -1 if self.position[1] < ey else 0
+            
+            wx, wy = ex + dx, ey + dy
+            if bf.is_valid(wx, wy) and not bf.is_occupied(wx, wy):
+                wall_positions.append((wx, wy))
+        
+        if not wall_positions:
+            return False
+        
+        # Créer les obstacles temporaires
+        for wx, wy in wall_positions:
+            bf.grid[wx][wy] = 1  # Obstacle
+            # Stocker pour retrait futur
+            if not hasattr(bf, '_temp_walls'):
+                bf._temp_walls = []
+            bf._temp_walls.append((wx, wy, spell.wall_duration))
+        
+        visual_effects.setdefault('wall_effects', []).append(
+            WallEffect(wall_positions, cell_size, 25)
+        )
+        
+        self.floating_texts.append(FloatingText("Mur de force!", (160, 80, 220), 70))
+        return True
+    
+    def tick_armor_buff(self):
+        """Appelé chaque round pour décrémenter les buffs d'armure."""
+        if getattr(self, '_armor_buff', False):
+            self._armor_buff_rounds -= 1
+            if self._armor_buff_rounds <= 0:
+                self.sauvegarde += self._armor_buff_amount
+                self._armor_buff = False
+                self.floating_texts.append(FloatingText("Armure dissipée", (150, 150, 200), 50))

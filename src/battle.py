@@ -13,37 +13,34 @@ class Battle:
         self.round = 1
         self.visual_effects = {'projectiles': [], 'attack_lines': [], 'target_indicators': []}
         
+        # Taille initiale des armées (ne change jamais, sert pour le seuil de pertes)
+        self.army1_initial_size = len(self.army1)
+        self.army2_initial_size = len(self.army2)
+        
         self._alive_cache = {'army1': [], 'army2': [], 'dirty': True}
         
         center_y = self.battlefield.height // 2
         self._place_armies(center_y)
 
     def _place_armies(self, center_y):
-        """Place les armées. Espacement 1 (collé, pas de case vide entre).
-        Si trop d'unités pour une colonne, débordement sur la colonne derrière.
-        """
         bf = self.battlefield
         usable_height = bf.height - 2
-        max_per_col = max(1, usable_height)  # Espacement 1 = 1 unité par case
+        max_per_col = max(1, usable_height)
         
         def place_role_units(units, base_x, center_y, step_x):
-            """step_x: -1 armée gauche (déborde à gauche), +1 armée droite."""
             if not units:
                 return
-            
             columns = []
             remaining = list(units)
             while remaining:
                 chunk = remaining[:max_per_col]
                 remaining = remaining[max_per_col:]
                 columns.append(chunk)
-            
             for col_idx, col_units in enumerate(columns):
                 x_col = base_x + col_idx * step_x
                 x_col = max(0, min(bf.width - 1, x_col))
                 self._place_column(col_units, x_col, center_y, bf)
         
-        # Trier par rôle
         army1_roles = {'front': [], 'mid': [], 'back': []}
         army2_roles = {'front': [], 'mid': [], 'back': []}
         
@@ -52,46 +49,44 @@ class Battle:
         for u in self.army2:
             army2_roles[u.role].append(u)
         
-        # Armée 1 (gauche) : front=8, mid=5, back=2. Déborde vers la gauche.
         place_role_units(army1_roles['front'], 8, center_y, -1)
         place_role_units(army1_roles['mid'],   5, center_y, -1)
         place_role_units(army1_roles['back'],  2, center_y, -1)
         
-        # Armée 2 (droite) : front=W-9, mid=W-6, back=W-3. Déborde vers la droite.
         place_role_units(army2_roles['front'], bf.width - 9, center_y, +1)
         place_role_units(army2_roles['mid'],   bf.width - 6, center_y, +1)
         place_role_units(army2_roles['back'],  bf.width - 3, center_y, +1)
     
     def _place_column(self, units, x_col, center_y, bf):
-        """Place les unités sur une colonne, centrées, espacement 1 (collé)."""
         if not units:
             return
+        # Trier: grosses unités d'abord pour leur trouver de la place
+        units_sorted = sorted(units, key=lambda u: -u.size)
+        # Calculer l'espace vertical total nécessaire
+        total_h = sum(bf.get_unit_dims(u)[1] for u in units_sorted)
+        start_y = center_y - total_h // 2
         
-        n = len(units)
-        start_y = center_y - n // 2
-        
-        for i, u in enumerate(units):
-            target_y = start_y + i
-            target_y = max(1, min(bf.height - 2, target_y))
-            
+        cur_y = start_y
+        for u in units_sorted:
+            w, h = bf.get_unit_dims(u)
+            target_y = max(1, min(bf.height - 1 - h, cur_y))
             pos = (x_col, target_y)
-            
-            if not bf.is_valid(*pos) or bf.is_occupied(*pos):
-                pos = self._find_free_near(x_col, target_y, bf)
-            
+            if not bf.can_place_unit(*pos, u):
+                pos = self._find_free_near_unit(x_col, target_y, u, bf)
             if pos is not None:
                 u.position = pos
-                bf.units[pos] = u
+                bf.place_unit(u)
+            cur_y += h
 
-    def _find_free_near(self, x, y, bf):
-        """Trouve la position libre la plus proche en spirale."""
+    def _find_free_near_unit(self, x, y, unit, bf):
+        """Cherche une position libre pour une unité (multi-cases supporté)."""
         for radius in range(0, max(bf.width, bf.height)):
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
                     if abs(dx) != radius and abs(dy) != radius:
                         continue
                     nx, ny = x + dx, y + dy
-                    if bf.is_valid(nx, ny) and not bf.is_occupied(nx, ny):
+                    if bf.can_place_unit(nx, ny, unit):
                         return (nx, ny)
         return None
 
@@ -123,39 +118,132 @@ class Battle:
                 result.append(unit)
         return result
 
-    def fear_phase(self):
-        for army in [self.army1, self.army2]:
+    def _get_initial_size(self, unit):
+        """Retourne la taille initiale de l'armée de cette unité."""
+        if unit in self.army1:
+            return self.army1_initial_size
+        return self.army2_initial_size
+
+    def morale_phase(self):
+        """Phase de moral complète.
+        
+        1) Pertes lourdes: si une armée a perdu >= 50% de son effectif INITIAL,
+           toutes les unités vivantes font un test de moral.
+           Échec = -1 moral. Si moral tombe à 0 = fuite.
+           
+        2) Test de moral individuel quand un allié adjacent meurt
+           (géré au moment de la mort dans take_damage, pas ici)
+        
+        3) Auras de peur (des unités avec fear_aura > 0)
+        """
+        # --- 0) Encouragement: officiers vivants donnent +1 moral à toute l'armée ---
+        for unit in self.get_all_alive():
+            unit.morale_bonus = 0  # Reset chaque round
+        
+        for unit in self.get_all_alive():
+            if unit.encouragement_range > 0 and unit.is_alive and not unit.fleeing:
+                allies = self.get_allies(unit)
+                for ally in allies:
+                    if ally == unit or not ally.is_alive:
+                        continue
+                    ally.morale_bonus = max(ally.morale_bonus, 1)  # +1, non cumulable
+        
+        # --- 1) Pertes lourdes (seuil 50% de l'effectif initial) ---
+        for army, initial_size in [(self.army1, self.army1_initial_size),
+                                    (self.army2, self.army2_initial_size)]:
             alive_count = sum(1 for u in army if u.is_alive)
-            total_count = len(army)
             
-            if total_count > 0 and alive_count <= total_count // 2:
+            if initial_size > 0 and alive_count <= initial_size // 2:
                 for unit in army:
-                    if unit.is_alive and not hasattr(unit, '_half_army_malus_applied'):
+                    if not unit.is_alive or unit.fleeing:
+                        continue
+                    if hasattr(unit, '_half_army_malus_applied') and unit._half_army_malus_applied:
+                        continue
+                    
+                    # Test de moral : lancer 1d6, réussir si <= bravoure effective
+                    unit._half_army_malus_applied = True
+                    if not unit.morale_check():
                         unit.morale_malus += 1
-                        unit._half_army_malus_applied = True
-                        unit.floating_texts.append(FloatingText("-1 Moral (Pertes)", (255, 100, 60), 80))
+                        unit.floating_texts.append(
+                            FloatingText("-1 Moral (Pertes!)", (255, 100, 60), 90))
                         
-                        if unit.get_effective_morale() == 0 and not unit.fleeing:
+                        if unit.get_effective_morale() <= 0:
                             unit.fleeing = True
                             unit.status_text = "FUITE!"
+                            unit.floating_texts.append(
+                                FloatingText("FUITE!", (255, 50, 50), 100))
+                        else:
+                            unit.afraid = True
+                            unit.status_text = "PEUR"
+            
+            # Pertes critiques (75%): deuxième malus
+            if initial_size > 0 and alive_count <= initial_size // 4:
+                for unit in army:
+                    if not unit.is_alive or unit.fleeing:
+                        continue
+                    if hasattr(unit, '_critical_malus_applied') and unit._critical_malus_applied:
+                        continue
+                    
+                    unit._critical_malus_applied = True
+                    if not unit.morale_check():
+                        unit.morale_malus += 1
+                        unit.floating_texts.append(
+                            FloatingText("-1 Moral (Déroute!)", (255, 50, 50), 90))
+                        
+                        if unit.get_effective_morale() <= 0:
+                            unit.fleeing = True
+                            unit.status_text = "FUITE!"
+                            unit.floating_texts.append(
+                                FloatingText("DÉROUTE!", (255, 30, 30), 100))
+                        else:
+                            unit.afraid = True
         
+        # --- 2) Auras de peur (portée 4 cases, ennemis uniquement) ---
+        FEAR_RANGE = 4
         for unit in self.get_all_alive():
             if unit.fleeing:
                 continue
-            unit.afraid = False
             if unit.status_text in ["DOWN", "REVIVED"]:
                 continue
             
-            max_aura, min_dist = 0, 99
+            under_fear = False
+            max_aura = 0
+            min_dist = 99
             for enemy in self.get_enemies(unit):
                 if not enemy.is_alive or enemy.fear_aura == 0:
                     continue
                 dist = self.battlefield.manhattan_distance(unit.position, enemy.position)
-                if dist <= enemy.fear_aura and (dist < min_dist or enemy.fear_aura > max_aura):
-                    max_aura, min_dist = enemy.fear_aura, dist
+                if dist <= FEAR_RANGE:
+                    if enemy.fear_aura > max_aura or (enemy.fear_aura == max_aura and dist < min_dist):
+                        max_aura = enemy.fear_aura
+                        min_dist = dist
+                    under_fear = True
             
-            if max_aura > 0:
+            if under_fear:
                 unit.apply_fear_effect(max_aura, min_dist)
+            else:
+                if unit.afraid and not unit.fleeing:
+                    unit.afraid = False
+                    unit.status_text = ""
+        
+        # --- 3) Test de moral au combat (chaque round en mêlée) ---
+        for unit in self.get_all_alive():
+            if unit.fleeing or unit.afraid or not unit.is_alive:
+                continue
+            
+            # Si au contact d'un ennemi et que l'unité a déjà subi des dégâts
+            if unit.hp < unit.max_hp:
+                closest = self.get_closest_enemy(unit)
+                if closest:
+                    dist = self.battlefield.manhattan_distance(unit.position, closest.position)
+                    if dist <= 1:  # Au corps à corps
+                        # Test seulement si PV < 50% 
+                        if unit.hp <= unit.max_hp // 2:
+                            if not unit.morale_check():
+                                unit.afraid = True
+                                unit.status_text = "PEUR"
+                                unit.floating_texts.append(
+                                    FloatingText("Peur!", (255, 180, 60), 60))
 
     def simulate_round(self, cell_size):
         self._alive_cache['dirty'] = True
@@ -172,39 +260,50 @@ class Battle:
             unit.current_target = target
             if target:
                 self.visual_effects['target_indicators'].append((unit, target))
-            if new_pos and self.battlefield.is_free(*new_pos, unit) and new_pos not in reserved:
+            if new_pos and self.battlefield._can_move_to(unit, new_pos, reserved):
                 moves[unit] = new_pos
-                reserved.add(new_pos)
+                # Réserver toutes les cases de destination
+                reserved.update(self.battlefield._get_reserved_cells(unit, new_pos))
         
         for unit, new_pos in moves.items():
-            old = unit.position
-            if old in self.battlefield.units:
-                del self.battlefield.units[old]
-            unit.position = new_pos
-            self.battlefield.units[new_pos] = unit
+            self.battlefield.move_unit(unit, new_pos)
         
-        self.fear_phase()
+        # Phase de moral (pertes lourdes + auras + stress au combat)
+        self.morale_phase()
         
+        # Sorts
         for unit in alive:
             if unit.spells and unit.is_alive:
                 unit.cast_random_spell(self, self.visual_effects, cell_size)
         
+        # Attaques
         for unit in alive:
             if unit.is_alive:
                 target = self.get_closest_enemy(unit)
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
         
+        # Régénération + tick buffs
         for unit in self.army1 + self.army2:
             unit.regenerate()
+            unit.tick_armor_buff()
         
-        # Nettoyer les unités mortes de la grille (libérer leurs cases)
-        dead_positions = []
+        # Murs temporaires: décrémenter et retirer
+        if hasattr(self.battlefield, '_temp_walls'):
+            remaining = []
+            for wx, wy, dur in self.battlefield._temp_walls:
+                if dur <= 1:
+                    self.battlefield.grid[wx][wy] = 0  # Retirer l'obstacle
+                else:
+                    remaining.append((wx, wy, dur - 1))
+            self.battlefield._temp_walls = remaining
+        
+        # Nettoyer les unités mortes de la grille
+        dead_units_seen = set()
         for pos, unit in list(self.battlefield.units.items()):
-            if not unit.is_alive and unit.down_timer <= 0:
-                dead_positions.append(pos)
-        for pos in dead_positions:
-            del self.battlefield.units[pos]
+            if not unit.is_alive and unit.down_timer <= 0 and id(unit) not in dead_units_seen:
+                dead_units_seen.add(id(unit))
+                self.battlefield.remove_unit(unit)
         
         self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
         self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]

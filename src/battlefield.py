@@ -47,6 +47,52 @@ class Battlefield:
         occupant = self.units.get((x, y))
         return occupant is None or (ignore_unit and occupant == ignore_unit)
 
+    def get_unit_dims(self, unit):
+        """Retourne (largeur, hauteur) en cases selon la taille.
+        size 1 = 1×1 (1 case), size 2 = 2×2 (4 cases), size 3 = 2×4 (8 cases)."""
+        if unit.size <= 1:
+            return (1, 1)
+        elif unit.size == 2:
+            return (2, 2)
+        else:  # size 3+
+            return (2, 4)
+
+    def get_unit_cells(self, unit):
+        """Retourne toutes les cases occupées par une unité. Ancré en haut-gauche."""
+        x, y = unit.position
+        w, h = self.get_unit_dims(unit)
+        cells = []
+        for dx in range(w):
+            for dy in range(h):
+                cells.append((x + dx, y + dy))
+        return cells
+
+    def can_place_unit(self, x, y, unit, ignore_unit=None):
+        """Vérifie si une unité peut être placée en (x, y) selon sa taille."""
+        w, h = self.get_unit_dims(unit)
+        for dx in range(w):
+            for dy in range(h):
+                if not self.is_free(x + dx, y + dy, ignore_unit):
+                    return False
+        return True
+
+    def place_unit(self, unit):
+        """Place une unité sur la grille (toutes ses cases)."""
+        for cell in self.get_unit_cells(unit):
+            self.units[cell] = unit
+
+    def remove_unit(self, unit):
+        """Retire une unité de la grille."""
+        to_del = [cell for cell, u in self.units.items() if u is unit]
+        for cell in to_del:
+            del self.units[cell]
+
+    def move_unit(self, unit, new_pos):
+        """Déplace une unité vers une nouvelle position."""
+        self.remove_unit(unit)
+        unit.position = new_pos
+        self.place_unit(unit)
+
     def manhattan_distance(self, a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
@@ -159,7 +205,7 @@ class Battlefield:
             if path:
                 steps = min(unit.vitesse, len(path))
                 new_pos = path[steps - 1]
-                if self.is_free(*new_pos, unit) and new_pos not in reserved_positions:
+                if self._can_move_to(unit, new_pos, reserved_positions):
                     return new_pos, None
             return None, None
         
@@ -179,15 +225,35 @@ class Battlefield:
         
         path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
         if path:
-            # Avancer le long du chemin en s'arrêtant sur une case réellement libre
             steps = min(unit.vitesse, len(path))
             for i in range(steps, 0, -1):
                 candidate = path[i - 1]
-                if self.is_free(*candidate, unit) and candidate not in reserved_positions:
+                if self._can_move_to(unit, candidate, reserved_positions):
                     return candidate, target
         
-        # Fallback: mouvement direct vers la cible
         return self.fallback_move(unit, target, reserved_positions), target
+
+    def _can_move_to(self, unit, pos, reserved_positions):
+        """Vérifie si une unité peut se déplacer vers pos (multi-cases)."""
+        if unit.size <= 1:
+            return self.is_free(*pos, unit) and pos not in reserved_positions
+        # Multi-case : vérifier toutes les cases de destination
+        w, h = self.get_unit_dims(unit)
+        for dx in range(w):
+            for dy in range(h):
+                cell = (pos[0] + dx, pos[1] + dy)
+                if cell in reserved_positions:
+                    return False
+                if not self.is_free(*cell, unit):
+                    return False
+        return True
+
+    def _get_reserved_cells(self, unit, pos):
+        """Retourne toutes les cases qu'une unité occuperait à pos."""
+        if unit.size <= 1:
+            return {pos}
+        w, h = self.get_unit_dims(unit)
+        return {(pos[0] + dx, pos[1] + dy) for dx in range(w) for dy in range(h)}
 
     def fallback_move(self, unit, target, reserved_positions):
         """Mouvement simple: 8 directions triées par proximité avec la cible."""
@@ -200,7 +266,7 @@ class Battlefield:
                 if ddx == 0 and ddy == 0:
                     continue
                 nx, ny = ux + ddx, uy + ddy
-                if self.is_free(nx, ny, unit) and (nx, ny) not in reserved_positions:
+                if self._can_move_to(unit, (nx, ny), reserved_positions):
                     dist = self.manhattan_distance((nx, ny), (tx, ty))
                     neighbors.append((dist, (nx, ny)))
         
