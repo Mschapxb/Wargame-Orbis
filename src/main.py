@@ -24,7 +24,7 @@ def main():
         ("Officier", 10),
         ("Scorpion", 10),
         ("Baliste", 5),
-        ("Housecarl", 5),
+        ("Housecarl", 10),
     ])
     
     army2 = build_army("Armée Skaldienne", [
@@ -32,7 +32,7 @@ def main():
         ("Hallbardier", 20),
         ("Arbaletrier régulier", 20),
         ("Officier", 10),
-        ("Mage de guerre", 5),
+        ("Mage de guerre", 3),
     ])
     
     # ────────────────────────────────────────────────────────
