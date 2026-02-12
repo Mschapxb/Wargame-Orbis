@@ -30,6 +30,7 @@ class Unit:
         self.color = color
         self.afraid = False
         self.fleeing = False
+        self.fled = False  # A quitté la map en fuyant (ni vivant ni mort)
         self.status_text = ""
         self.floating_texts = deque(maxlen=10)
         self.down_timer = 0

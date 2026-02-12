@@ -13,9 +13,16 @@ class Battle:
         self.round = 1
         self.visual_effects = {'projectiles': [], 'attack_lines': [], 'target_indicators': []}
         
-        # Taille initiale des armées (ne change jamais, sert pour le seuil de pertes)
         self.army1_initial_size = len(self.army1)
         self.army2_initial_size = len(self.army2)
+        
+        # Rosters complets (ne changent jamais, pour le rapport de fin)
+        self.army1_roster = list(self.army1)
+        self.army2_roster = list(self.army2)
+        
+        # Unités ayant fui la map
+        self.army1_fled = []
+        self.army2_fled = []
         
         self._alive_cache = {'army1': [], 'army2': [], 'dirty': True}
         
@@ -305,7 +312,79 @@ class Battle:
                 dead_units_seen.add(id(unit))
                 self.battlefield.remove_unit(unit)
         
+        # Fuyards qui atteignent le bord → quittent la map
+        bf = self.battlefield
+        for unit in self.army1[:]:
+            if unit.fleeing and unit.is_alive:
+                x, y = unit.position
+                if x <= 0:
+                    unit.fled = True
+                    unit.is_alive = False
+                    bf.remove_unit(unit)
+                    self.army1_fled.append(unit)
+                    self.army1.remove(unit)
+        
+        for unit in self.army2[:]:
+            if unit.fleeing and unit.is_alive:
+                x, y = unit.position
+                if x >= bf.width - 1:
+                    unit.fled = True
+                    unit.is_alive = False
+                    bf.remove_unit(unit)
+                    self.army2_fled.append(unit)
+                    self.army2.remove(unit)
+        
         self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
         self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
         self.round += 1
         self._alive_cache['dirty'] = True
+
+    def is_battle_over(self):
+        """La bataille est finie si une armée n'a plus personne en combat (vivant et pas en fuite)."""
+        a1_fighting = sum(1 for u in self.army1 if u.is_alive and not u.fleeing)
+        a2_fighting = sum(1 for u in self.army2 if u.is_alive and not u.fleeing)
+        a1_alive = sum(1 for u in self.army1 if u.is_alive)
+        a2_alive = sum(1 for u in self.army2 if u.is_alive)
+        
+        if a1_alive == 0 and a2_alive == 0:
+            return "Égalité"
+        if a1_alive == 0:
+            return "Armée 2"
+        if a2_alive == 0:
+            return "Armée 1"
+        # Tous fuient
+        if a1_fighting == 0:
+            return "Armée 2"
+        if a2_fighting == 0:
+            return "Armée 1"
+        return None
+
+    def get_battle_report(self):
+        """Génère le rapport de fin de bataille."""
+        def army_report(roster, fled_list, name):
+            alive = [u for u in roster if u.is_alive and not u.fled]
+            dead = [u for u in roster if not u.is_alive and not u.fled]
+            fled = fled_list[:]
+            # Ajouter les fuyards encore sur la map
+            for u in roster:
+                if u.fleeing and u.is_alive and not u.fled:
+                    fled.append(u)
+            return {
+                'name': name,
+                'total': len(roster),
+                'alive': alive,
+                'dead': dead,
+                'fled': fled,
+            }
+        
+        r1 = army_report(self.army1_roster, self.army1_fled, "Armée 1")
+        r2 = army_report(self.army2_roster, self.army2_fled, "Armée 2")
+        
+        winner = self.is_battle_over()
+        
+        return {
+            'winner': winner or "En cours",
+            'rounds': self.round - 1,
+            'army1': r1,
+            'army2': r2,
+        }

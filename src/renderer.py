@@ -121,6 +121,128 @@ def draw_projectile(screen, proj):
         pygame.draw.circle(screen, (200, 150, 255), (int(pos[0]), int(pos[1])), r)
 
 
+def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
+    """Dessine le rapport de bataille en overlay semi-transparent."""
+    panel_w = min(500, screen_w - 40)
+    panel_h = min(400, battlefield_h - 20)
+    px = (screen_w - panel_w) // 2
+    py = (battlefield_h - panel_h) // 2
+    
+    # Fond semi-transparent
+    overlay = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+    overlay.fill((15, 20, 25, 220))
+    screen.blit(overlay, (px, py))
+    pygame.draw.rect(screen, (200, 180, 80), (px, py, panel_w, panel_h), 2)
+    
+    y = py + 10
+    
+    # Titre
+    title_color = (255, 215, 0)
+    title = small_font.render(f"RAPPORT DE BATAILLE — {report['winner']} gagne!", True, title_color)
+    screen.blit(title, (px + (panel_w - title.get_width()) // 2, y))
+    y += 22
+    
+    rounds_txt = tiny_font.render(f"Durée: {report['rounds']} rounds", True, (180, 180, 180))
+    screen.blit(rounds_txt, (px + (panel_w - rounds_txt.get_width()) // 2, y))
+    y += 20
+    
+    # Séparateur
+    pygame.draw.line(screen, (100, 100, 100), (px + 10, y), (px + panel_w - 10, y), 1)
+    y += 8
+    
+    # Colonnes pour les deux armées
+    col_w = (panel_w - 30) // 2
+    
+    for i, army_key in enumerate(['army1', 'army2']):
+        army = report[army_key]
+        col_x = px + 10 + i * (col_w + 10)
+        cy = y
+        
+        # Couleur d'équipe
+        team_color = (80, 160, 255) if i == 0 else (255, 80, 80)
+        
+        # Nom d'armée
+        header = small_font.render(army['name'], True, team_color)
+        screen.blit(header, (col_x, cy))
+        cy += 18
+        
+        total = army['total']
+        n_alive = len(army['alive'])
+        n_dead = len(army['dead'])
+        n_fled = len(army['fled'])
+        
+        # Barres de stats
+        bar_w = col_w - 5
+        bar_h = 10
+        
+        # Barre totale
+        if total > 0:
+            alive_pct = n_alive / total
+            dead_pct = n_dead / total
+            fled_pct = n_fled / total
+            
+            # Fond
+            pygame.draw.rect(screen, (40, 40, 40), (col_x, cy, bar_w, bar_h))
+            # Vivants (vert)
+            if alive_pct > 0:
+                pygame.draw.rect(screen, (50, 180, 50), (col_x, cy, int(bar_w * alive_pct), bar_h))
+            # Fuyants (orange)
+            if fled_pct > 0:
+                fx = col_x + int(bar_w * alive_pct)
+                pygame.draw.rect(screen, (220, 150, 30), (fx, cy, int(bar_w * fled_pct), bar_h))
+            # Morts (rouge)
+            if dead_pct > 0:
+                dx = col_x + int(bar_w * (alive_pct + fled_pct))
+                pygame.draw.rect(screen, (180, 40, 40), (dx, cy, int(bar_w * dead_pct), bar_h))
+        cy += bar_h + 5
+        
+        # Textes
+        txt_alive = tiny_font.render(f"Vivants: {n_alive}/{total}", True, (80, 220, 80))
+        screen.blit(txt_alive, (col_x, cy))
+        cy += 14
+        
+        txt_dead = tiny_font.render(f"Morts: {n_dead}/{total}", True, (220, 80, 80))
+        screen.blit(txt_dead, (col_x, cy))
+        cy += 14
+        
+        txt_fled = tiny_font.render(f"Fuyants: {n_fled}/{total}", True, (220, 170, 50))
+        screen.blit(txt_fled, (col_x, cy))
+        cy += 18
+        
+        # Liste détaillée des survivants
+        pygame.draw.line(screen, (60, 60, 60), (col_x, cy), (col_x + col_w - 5, cy), 1)
+        cy += 4
+        
+        # Vivants
+        if army['alive']:
+            label = tiny_font.render("Survivants:", True, (80, 220, 80))
+            screen.blit(label, (col_x, cy))
+            cy += 12
+            for u in army['alive'][:8]:
+                hp_txt = f"  {u.token_name[:18]} ({u.hp}/{u.max_hp})"
+                t = tiny_font.render(hp_txt, True, (160, 220, 160))
+                screen.blit(t, (col_x, cy))
+                cy += 11
+            if len(army['alive']) > 8:
+                more = tiny_font.render(f"  ...+{len(army['alive']) - 8} autres", True, (120, 120, 120))
+                screen.blit(more, (col_x, cy))
+                cy += 11
+        
+        # Fuyants
+        if army['fled']:
+            label = tiny_font.render("Fuyants:", True, (220, 170, 50))
+            screen.blit(label, (col_x, cy))
+            cy += 12
+            for u in army['fled'][:4]:
+                t = tiny_font.render(f"  {u.token_name[:18]}", True, (200, 170, 80))
+                screen.blit(t, (col_x, cy))
+                cy += 11
+            if len(army['fled']) > 4:
+                more = tiny_font.render(f"  ...+{len(army['fled']) - 4} autres", True, (120, 120, 120))
+                screen.blit(more, (col_x, cy))
+                cy += 11
+
+
 def run_visual(battle, cell_size):
     global pause, simulation_speed
     
@@ -143,6 +265,7 @@ def run_visual(battle, cell_size):
     running = True
     last_round = pygame.time.get_ticks()
     winner = None
+    battle_report = None
     show_lines = True
     
     _original_army1 = battle.army1
@@ -187,6 +310,7 @@ def run_visual(battle, cell_size):
                     battle = Battle(_original_army1, _original_army2, bf_w, bf_h, _obstacle_count)
                     grid_surface = build_grid_surface(battle, cell_size)
                     winner = None
+                    battle_report = None
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
         
@@ -195,12 +319,10 @@ def run_visual(battle, cell_size):
             if now - last_round >= delay:
                 battle.simulate_round(cell_size)
                 last_round = now
-                a1 = sum(1 for u in battle.army1 if u.is_alive)
-                a2 = sum(1 for u in battle.army2 if u.is_alive)
-                if a1 == 0:
-                    winner = "Armée 2"
-                elif a2 == 0:
-                    winner = "Armée 1"
+                result = battle.is_battle_over()
+                if result:
+                    winner = result
+                    battle_report = battle.get_battle_report()
         
         # Vieillir effets visuels
         for p in battle.visual_effects['projectiles'][:]:
@@ -448,12 +570,19 @@ def run_visual(battle, cell_size):
         
         # HUD
         hy = bf_h * cell_size + 5
-        status = "VICTOIRE: " + winner if winner else ("PAUSE" if pause else ("RAPIDE" if simulation_speed == "fast" else "NORMAL"))
-        color = (255, 215, 0) if winner else ((255, 100, 100) if pause else ((255, 220, 80) if simulation_speed == "fast" else (100, 220, 100)))
         a1c = sum(1 for u in battle.army1 if u.is_alive)
         a2c = sum(1 for u in battle.army2 if u.is_alive)
-        hud = small_font.render(f"Round {battle.round - 1} | {status} | Verts: {a1c} | Rouges: {a2c}", True, color)
+        a1f = len(battle.army1_fled) + sum(1 for u in battle.army1 if u.fleeing and u.is_alive)
+        a2f = len(battle.army2_fled) + sum(1 for u in battle.army2 if u.fleeing and u.is_alive)
+        
+        status = "VICTOIRE: " + winner if winner else ("PAUSE" if pause else ("RAPIDE" if simulation_speed == "fast" else "NORMAL"))
+        color = (255, 215, 0) if winner else ((255, 100, 100) if pause else ((255, 220, 80) if simulation_speed == "fast" else (100, 220, 100)))
+        hud = small_font.render(f"Round {battle.round - 1} | {status} | A1: {a1c} vivants {a1f} fuyants | A2: {a2c} vivants {a2f} fuyants", True, color)
         screen.blit(hud, (10, hy))
+        
+        # Rapport de bataille (overlay)
+        if battle_report:
+            draw_battle_report(screen, battle_report, W, bf_h * cell_size, small_font, tiny_font)
         
         # Légende
         ly = hy + 18
