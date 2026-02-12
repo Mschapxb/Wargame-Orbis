@@ -123,124 +123,136 @@ def draw_projectile(screen, proj):
 
 def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
     """Dessine le rapport de bataille en overlay semi-transparent."""
-    panel_w = min(500, screen_w - 40)
-    panel_h = min(400, battlefield_h - 20)
+    title_font = pygame.font.SysFont("arial", 22, bold=True)
+    header_font = pygame.font.SysFont("arial", 17, bold=True)
+    body_font = pygame.font.SysFont("arial", 14)
+    detail_font = pygame.font.SysFont("arial", 13)
+    
+    panel_w = min(750, screen_w - 20)
+    panel_h = min(550, battlefield_h - 10)
     px = (screen_w - panel_w) // 2
     py = (battlefield_h - panel_h) // 2
     
-    # Fond semi-transparent
     overlay = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-    overlay.fill((15, 20, 25, 220))
+    overlay.fill((15, 20, 25, 230))
     screen.blit(overlay, (px, py))
     pygame.draw.rect(screen, (200, 180, 80), (px, py, panel_w, panel_h), 2)
     
-    y = py + 10
+    y = py + 14
     
-    # Titre
-    title_color = (255, 215, 0)
-    title = small_font.render(f"RAPPORT DE BATAILLE — {report['winner']} gagne!", True, title_color)
+    title = title_font.render("RAPPORT DE BATAILLE", True, (255, 215, 0))
     screen.blit(title, (px + (panel_w - title.get_width()) // 2, y))
-    y += 22
+    y += 28
     
-    rounds_txt = tiny_font.render(f"Durée: {report['rounds']} rounds", True, (180, 180, 180))
-    screen.blit(rounds_txt, (px + (panel_w - rounds_txt.get_width()) // 2, y))
-    y += 20
+    winner_txt = header_font.render(f"Victoire: {report['winner']}  —  {report['rounds']} rounds", True, (220, 200, 120))
+    screen.blit(winner_txt, (px + (panel_w - winner_txt.get_width()) // 2, y))
+    y += 26
     
-    # Séparateur
-    pygame.draw.line(screen, (100, 100, 100), (px + 10, y), (px + panel_w - 10, y), 1)
-    y += 8
+    pygame.draw.line(screen, (120, 120, 80), (px + 15, y), (px + panel_w - 15, y), 1)
+    y += 10
     
-    # Colonnes pour les deux armées
-    col_w = (panel_w - 30) // 2
+    col_w = (panel_w - 40) // 2
     
     for i, army_key in enumerate(['army1', 'army2']):
         army = report[army_key]
-        col_x = px + 10 + i * (col_w + 10)
+        col_x = px + 15 + i * (col_w + 10)
         cy = y
         
-        # Couleur d'équipe
         team_color = (80, 160, 255) if i == 0 else (255, 80, 80)
         
-        # Nom d'armée
-        header = small_font.render(army['name'], True, team_color)
+        header = header_font.render(army['name'], True, team_color)
         screen.blit(header, (col_x, cy))
-        cy += 18
+        cy += 24
         
         total = army['total']
-        n_alive = len(army['alive'])
-        n_dead = len(army['dead'])
-        n_fled = len(army['fled'])
+        n_alive = army['alive_count']
+        n_dead = army['dead_count']
+        n_fled = army['fled_count']
         
-        # Barres de stats
         bar_w = col_w - 5
-        bar_h = 10
+        bar_h = 16
         
-        # Barre totale
         if total > 0:
             alive_pct = n_alive / total
             dead_pct = n_dead / total
             fled_pct = n_fled / total
             
-            # Fond
             pygame.draw.rect(screen, (40, 40, 40), (col_x, cy, bar_w, bar_h))
-            # Vivants (vert)
             if alive_pct > 0:
                 pygame.draw.rect(screen, (50, 180, 50), (col_x, cy, int(bar_w * alive_pct), bar_h))
-            # Fuyants (orange)
             if fled_pct > 0:
                 fx = col_x + int(bar_w * alive_pct)
                 pygame.draw.rect(screen, (220, 150, 30), (fx, cy, int(bar_w * fled_pct), bar_h))
-            # Morts (rouge)
             if dead_pct > 0:
                 dx = col_x + int(bar_w * (alive_pct + fled_pct))
                 pygame.draw.rect(screen, (180, 40, 40), (dx, cy, int(bar_w * dead_pct), bar_h))
-        cy += bar_h + 5
+            pygame.draw.rect(screen, (100, 100, 100), (col_x, cy, bar_w, bar_h), 1)
+        cy += bar_h + 8
         
-        # Textes
-        txt_alive = tiny_font.render(f"Vivants: {n_alive}/{total}", True, (80, 220, 80))
+        txt_alive = body_font.render(f"Vivants: {n_alive}/{total}", True, (80, 220, 80))
         screen.blit(txt_alive, (col_x, cy))
-        cy += 14
+        cy += 20
         
-        txt_dead = tiny_font.render(f"Morts: {n_dead}/{total}", True, (220, 80, 80))
+        txt_dead = body_font.render(f"Morts: {n_dead}/{total}", True, (220, 80, 80))
         screen.blit(txt_dead, (col_x, cy))
-        cy += 14
+        cy += 20
         
-        txt_fled = tiny_font.render(f"Fuyants: {n_fled}/{total}", True, (220, 170, 50))
+        txt_fled = body_font.render(f"Fuyants: {n_fled}/{total}", True, (220, 170, 50))
         screen.blit(txt_fled, (col_x, cy))
-        cy += 18
+        cy += 24
         
-        # Liste détaillée des survivants
         pygame.draw.line(screen, (60, 60, 60), (col_x, cy), (col_x + col_w - 5, cy), 1)
-        cy += 4
+        cy += 6
         
-        # Vivants
+        # Survivants (groupés: nom x quantité)
         if army['alive']:
-            label = tiny_font.render("Survivants:", True, (80, 220, 80))
+            label = body_font.render("Survivants:", True, (80, 220, 80))
             screen.blit(label, (col_x, cy))
-            cy += 12
-            for u in army['alive'][:8]:
-                hp_txt = f"  {u.token_name[:18]} ({u.hp}/{u.max_hp})"
-                t = tiny_font.render(hp_txt, True, (160, 220, 160))
+            cy += 18
+            for name, count in army['alive'][:8]:
+                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
+                t = detail_font.render(txt, True, (160, 220, 160))
                 screen.blit(t, (col_x, cy))
-                cy += 11
+                cy += 16
             if len(army['alive']) > 8:
-                more = tiny_font.render(f"  ...+{len(army['alive']) - 8} autres", True, (120, 120, 120))
+                rest = sum(c for _, c in army['alive'][8:])
+                more = detail_font.render(f"  ...et {rest} autres", True, (120, 160, 120))
                 screen.blit(more, (col_x, cy))
-                cy += 11
+                cy += 16
         
-        # Fuyants
+        # Fuyants (groupés: nom x quantité)
         if army['fled']:
-            label = tiny_font.render("Fuyants:", True, (220, 170, 50))
+            cy += 4
+            label = body_font.render("Fuyants:", True, (220, 170, 50))
             screen.blit(label, (col_x, cy))
-            cy += 12
-            for u in army['fled'][:4]:
-                t = tiny_font.render(f"  {u.token_name[:18]}", True, (200, 170, 80))
+            cy += 18
+            for name, count in army['fled'][:8]:
+                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
+                t = detail_font.render(txt, True, (200, 170, 80))
                 screen.blit(t, (col_x, cy))
-                cy += 11
-            if len(army['fled']) > 4:
-                more = tiny_font.render(f"  ...+{len(army['fled']) - 4} autres", True, (120, 120, 120))
+                cy += 16
+            if len(army['fled']) > 8:
+                rest = sum(c for _, c in army['fled'][8:])
+                more = detail_font.render(f"  ...et {rest} autres", True, (150, 130, 60))
                 screen.blit(more, (col_x, cy))
-                cy += 11
+                cy += 16
+        
+        # Morts (groupés: nom x quantité)
+        if army['dead']:
+            cy += 4
+            label = body_font.render("Morts:", True, (220, 80, 80))
+            screen.blit(label, (col_x, cy))
+            cy += 18
+            for name, count in army['dead'][:8]:
+                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
+                t = detail_font.render(txt, True, (180, 100, 100))
+                screen.blit(t, (col_x, cy))
+                cy += 16
+            if len(army['dead']) > 8:
+                rest = sum(c for _, c in army['dead'][8:])
+                more = detail_font.render(f"  ...et {rest} autres", True, (120, 80, 80))
+                screen.blit(more, (col_x, cy))
+                cy += 16
 
 
 def run_visual(battle, cell_size):

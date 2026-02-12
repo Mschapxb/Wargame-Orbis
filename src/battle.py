@@ -255,6 +255,17 @@ class Battle:
     def simulate_round(self, cell_size):
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
+        
+        # Déroute: si une armée n'a plus de combattants, tous les restants fuient
+        for army in [self.army1, self.army2]:
+            fighters = sum(1 for u in army if u.is_alive and not u.fleeing)
+            if fighters == 0:
+                for u in army:
+                    if u.is_alive and not u.fleeing:
+                        u.fleeing = True
+                        u.status_text = "DÉROUTE"
+                        u.floating_texts.append(FloatingText("Déroute!", (255, 100, 50), 80))
+        
         alive = self.get_all_alive()
         
         alive.sort(key=lambda u: (u.vitesse, random.random()), reverse=True)
@@ -340,47 +351,65 @@ class Battle:
         self._alive_cache['dirty'] = True
 
     def is_battle_over(self):
-        """La bataille est finie si une armée n'a plus personne en combat (vivant et pas en fuite)."""
-        a1_fighting = sum(1 for u in self.army1 if u.is_alive and not u.fleeing)
-        a2_fighting = sum(1 for u in self.army2 if u.is_alive and not u.fleeing)
-        a1_alive = sum(1 for u in self.army1 if u.is_alive)
-        a2_alive = sum(1 for u in self.army2 if u.is_alive)
+        """La bataille est finie quand une armée n'a plus personne sur la map."""
+        a1_on_map = sum(1 for u in self.army1 if u.is_alive)
+        a2_on_map = sum(1 for u in self.army2 if u.is_alive)
         
-        if a1_alive == 0 and a2_alive == 0:
+        if a1_on_map == 0 and a2_on_map == 0:
             return "Égalité"
-        if a1_alive == 0:
+        if a1_on_map == 0:
             return "Armée 2"
-        if a2_alive == 0:
-            return "Armée 1"
-        # Tous fuient
-        if a1_fighting == 0:
-            return "Armée 2"
-        if a2_fighting == 0:
+        if a2_on_map == 0:
             return "Armée 1"
         return None
 
     def get_battle_report(self):
-        """Génère le rapport de fin de bataille."""
-        def army_report(roster, fled_list, name):
-            alive = [u for u in roster if u.is_alive and not u.fled]
-            dead = [u for u in roster if not u.is_alive and not u.fled]
-            fled = fled_list[:]
-            # Ajouter les fuyards encore sur la map
+        """Génère le rapport de fin de bataille.
+        Les survivants de l'armée perdante sont considérés comme fuyants."""
+        winner = self.is_battle_over()
+        
+        def count_by_name(unit_list):
+            """Groupe les unités par token_name → [(name, count), ...]"""
+            counts = {}
+            for u in unit_list:
+                n = u.token_name
+                counts[n] = counts.get(n, 0) + 1
+            return sorted(counts.items(), key=lambda x: -x[1])
+        
+        def army_report(roster, fled_list, name, is_winner):
+            all_alive = [u for u in roster if u.is_alive and not u.fled]
+            all_dead = [u for u in roster if not u.is_alive and not u.fled]
+            all_fled_off = fled_list[:]
+            # Fuyards encore sur la map
             for u in roster:
                 if u.fleeing and u.is_alive and not u.fled:
-                    fled.append(u)
+                    all_fled_off.append(u)
+            
+            if is_winner:
+                # Gagnant: vivants = ceux qui ne fuient pas, fuyants = ceux qui fuient
+                alive = [u for u in all_alive if not u.fleeing]
+                fled = [u for u in all_alive if u.fleeing] + all_fled_off
+            else:
+                # Perdant: tous les survivants sont des fuyants
+                alive = []
+                fled = all_alive + all_fled_off
+            
             return {
                 'name': name,
                 'total': len(roster),
-                'alive': alive,
-                'dead': dead,
-                'fled': fled,
+                'alive': count_by_name(alive),
+                'alive_count': len(alive),
+                'dead': count_by_name(all_dead),
+                'dead_count': len(all_dead),
+                'fled': count_by_name(fled),
+                'fled_count': len(fled),
             }
         
-        r1 = army_report(self.army1_roster, self.army1_fled, "Armée 1")
-        r2 = army_report(self.army2_roster, self.army2_fled, "Armée 2")
+        w1 = (winner == "Armée 1")
+        w2 = (winner == "Armée 2")
         
-        winner = self.is_battle_over()
+        r1 = army_report(self.army1_roster, self.army1_fled, "Armée 1", w1)
+        r2 = army_report(self.army2_roster, self.army2_fled, "Armée 2", w2)
         
         return {
             'winner': winner or "En cours",
