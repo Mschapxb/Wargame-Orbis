@@ -119,12 +119,12 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Epée", 1, 2, 3, 3, 0, "1"),
                 ],
-                "traits": ["Sort de bataille (1)"],
+                "traits": ["Sort de bataille (2)"],
                 "sorts": ["Boule de feu", "Soin", "Armure magique", "Projectile magique", "Mur de force"],
             },
             {
                 "nom": "Scorpion",
-                "deplacement": 0,
+                "deplacement": 2,
                 "blessure": 2,
                 "bravoure": 1,
                 "sauvegarde": 7,
@@ -138,7 +138,7 @@ UNIT_DATABASE = {
             },
             {
                 "nom": "Baliste",
-                "deplacement": 0,
+                "deplacement": 1,
                 "blessure": 4,
                 "bravoure": 1,
                 "sauvegarde": 7,
@@ -149,20 +149,6 @@ UNIT_DATABASE = {
                     ("Carreaux de baliste", 18, 1, 4, 2, -2, "1d4"),
                 ],
                 "traits": ["Artillerie"],
-            },
-            {
-                "nom": "Artilleur",
-                "deplacement": 3,
-                "blessure": 1,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Coutelas", 1, 1, 4, 5, 1, "1"),
-                ],
-                "traits": [],
             },
             {
                 "nom": "Housecarl",
@@ -200,7 +186,7 @@ UNIT_DATABASE = {
                     ("Lance",        3, 1, 3, 3,  0, "1"),
                     ("Hache lourde", 2, 1, 3, 3, -1, "1d2"),
                 ],
-                "traits": [],
+                "traits": ["Phalange"],
             },
             {
                 "nom": "Archer covaliir",
@@ -230,7 +216,7 @@ UNIT_DATABASE = {
                     ("Lance", 2, 1, 3, 3, 0, "1"),
                     ("Arc",   9, 1, 3, 3, 0, "1"),
                 ],
-                "traits": [],
+                "traits": ["Charge montée"],
             },
             {
                 "nom": "Officier covaliir",
@@ -259,11 +245,11 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Pique", 3, 1, 3, 3, 0, "1"),
                 ],
-                "traits": [],
+                "traits": ["Phalange", "Anti-Large"],
             },
             {
                 "nom": "Catapulte covaliir",
-                "deplacement": 0,
+                "deplacement": 1,
                 "blessure": 6,
                 "bravoure": 1,
                 "sauvegarde": 7,
@@ -323,7 +309,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Sabots", 1, 2, 3, 3, 0, "1"),
                 ],
-                "traits": [],
+                "traits": ["Charge montée"],
             },
             {
                 "nom": "Pourfendeur de Draconie",
@@ -338,7 +324,7 @@ UNIT_DATABASE = {
                     ("Képesh géant",    2, 2, 3, 3,  0, "1d2"),
                     ("Lance d'arçon",   2, 1, 3, 2, -2, "1d3"),
                 ],
-                "traits": [],
+                "traits": ["Charge montée", "Anti-Infanterie"],
             },
             {
                 "nom": "Chevalier-dragon",
@@ -481,6 +467,16 @@ def create_unit(unit_def, army_color):
         tl = t.lower()
         if "encouragement" in tl:
             unit.encouragement_range = 4
+        if "anti-infanterie" in tl or "anti infanterie" in tl:
+            unit.anti_infanterie = True
+        if "anti-large" in tl or "anti large" in tl:
+            unit.anti_large = True
+        if "phalange" in tl:
+            unit.phalange = True
+        if "charge montée" in tl or "charge montee" in tl:
+            unit.charge_montee = True
+        if "charge d'aïda" in tl or "charge d'aida" in tl or "charge aida" in tl:
+            unit.charge_aida = True
         # "Sort de bataille (N)" → N sorts par round
         if "sort de bataille" in tl:
             import re

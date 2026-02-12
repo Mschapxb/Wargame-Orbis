@@ -47,6 +47,15 @@ class Unit:
         # Nombre de sorts lancables par round
         self.spells_per_round = 1
         
+        # Traits de combat
+        self.anti_infanterie = False
+        self.anti_large = False
+        self.phalange = False
+        self.charge_montee = False  # Cavalerie: +1 blesser, +1 dégâts, -1 perf
+        self.charge_aida = False    # Infanterie: +1 blesser, +1 toucher
+        self.has_charged = False    # A déjà chargé ce round
+        self._phalange_bonus_active = False  # Bonus phalange actif ce round
+        
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
             self.fear_aura = 1
@@ -167,6 +176,31 @@ class Unit:
         end_px = (target.position[0] * cell_size + cell_size // 2,
                   target.position[1] * cell_size + cell_size // 2)
         
+        # Bonus anti-type
+        anti_toucher = 0
+        anti_blesser = 0
+        if self.anti_infanterie and target.unit_type == "Infanterie":
+            anti_toucher = -1  # Plus facile à toucher (valeur basse = mieux)
+            anti_blesser = -1
+        if self.anti_large and target.unit_type in ("Large", "Cavalerie", "Monstre"):
+            anti_toucher = -1
+            anti_blesser = -1
+        
+        # Bonus de charge (appliqué si has_charged ce round)
+        charge_toucher = 0
+        charge_blesser = 0
+        charge_perf = 0
+        charge_degats = 0
+        if self.has_charged:
+            if self.charge_montee:
+                charge_blesser = -1
+                charge_degats = 1
+                charge_perf = -1
+            elif self.charge_aida:
+                charge_toucher = -1
+                charge_blesser = -1
+            self.has_charged = False  # Reset après application
+        
         for arme in self.armes:
             if dist > arme.porte:
                 continue
@@ -174,46 +208,46 @@ class Unit:
             for _ in range(arme.nb_attaque):
                 # Effet visuel selon le type d'arme
                 if arme.porte >= 4:
-                    # Tir à distance (arc, arbalète, catapulte)
                     visual_effects['projectiles'].append(
                         Projectile(start_px, end_px, (200, 180, 100), 40, "arrow", cell_size)
                     )
                 elif arme.porte >= 2:
-                    # CaC à portée (lance, hallebarde, pique)
                     visual_effects['attack_lines'].append(
                         AttackLine(start_px, end_px, (255, 180, 50), 25)
                     )
                 else:
-                    # CaC pur (épée, hache, griffes)
                     visual_effects['attack_lines'].append(
                         AttackLine(start_px, end_px, (255, 100, 100), 25)
                     )
                 
-                # Résolution combat
-                toucher_modifie = arme.toucher + (1 if self.afraid else 0)
+                # Résolution combat avec bonus
+                toucher_final = arme.toucher + (1 if self.afraid else 0) + anti_toucher + charge_toucher
+                blesser_final = arme.blesser + anti_blesser + charge_blesser
+                perf_final = arme.perforation + charge_perf
                 
                 if dist <= 1 and target.awe > 0 and not self.morale_check():
                     target.floating_texts.append(FloatingText("Intimidé!", (255, 180, 60)))
                     continue
                 
                 # Toucher
-                if random.randint(1, 6) < toucher_modifie:
+                if random.randint(1, 6) < toucher_final:
                     target.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
                     continue
                 
                 # Blessure
-                if random.randint(1, 6) < arme.blesser:
+                if random.randint(1, 6) < blesser_final:
                     target.floating_texts.append(FloatingText("Pas blessé!", (255, 200, 120)))
                     continue
                 
                 # Sauvegarde
-                save_modifie = min(7, target.sauvegarde + arme.perforation)
+                save_modifie = min(7, target.sauvegarde + perf_final)
                 if random.randint(1, 6) >= save_modifie:
                     target.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
                     continue
                 
                 # Dégâts
-                target.take_damage(arme.lancer_degats(), False, self)
+                dmg = arme.lancer_degats() + charge_degats
+                target.take_damage(dmg, False, self)
 
     def cast_random_spell(self, battle, visual_effects, cell_size):
         """Lance un sort disponible (pas en cooldown). Gère 5 types de sorts."""

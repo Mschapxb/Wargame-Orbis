@@ -32,7 +32,7 @@ def main():
         ("Hallbardier", 20),
         ("Arbaletrier régulier", 20),
         ("Officier", 10),
-        ("Mage de guerre", 3),
+        ("Mage de guerre", 5),
     ])
     
     # ────────────────────────────────────────────────────────

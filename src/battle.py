@@ -2,7 +2,7 @@ import copy
 import random
 
 from battlefield import Battlefield
-from effects import FloatingText
+from effects import FloatingText, AttackLine
 
 
 class Battle:
@@ -55,6 +55,13 @@ class Battle:
             army1_roles[u.role].append(u)
         for u in self.army2:
             army2_roles[u.role].append(u)
+        
+        # Mélanger les unités dans chaque rôle pour ne pas avoir
+        # 10x la même unité côte à côte
+        import random as _rng
+        for roles in (army1_roles, army2_roles):
+            for role_list in roles.values():
+                _rng.shuffle(role_list)
         
         place_role_units(army1_roles['front'], 8, center_y, -1)
         place_role_units(army1_roles['mid'],   5, center_y, -1)
@@ -252,6 +259,71 @@ class Battle:
                                 unit.floating_texts.append(
                                     FloatingText("Peur!", (255, 180, 60), 60))
 
+    def _charge_phase(self, alive, cell_size):
+        """Phase de charge: les unités avec charge se ruent sur un ennemi à distance de charge."""
+        for unit in alive:
+            if not unit.is_alive or unit.fleeing:
+                continue
+            if not unit.charge_montee and not unit.charge_aida:
+                continue
+            
+            # Distance de charge: entre vitesse et 2x vitesse
+            min_dist = unit.vitesse
+            max_dist = unit.vitesse * 2
+            
+            # Trouver un ennemi dans la zone de charge
+            best_target = None
+            best_dist = 999
+            for enemy in self.get_enemies(unit):
+                if not enemy.is_alive:
+                    continue
+                d = self.battlefield.manhattan_distance(unit.position, enemy.position)
+                if min_dist <= d <= max_dist and d < best_dist:
+                    best_target = enemy
+                    best_dist = d
+            
+            if not best_target:
+                continue
+            
+            # Trouver une case adjacente à la cible pour charger
+            tx, ty = best_target.position
+            charge_pos = None
+            charge_dist = 999
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx, ny = tx + dx, ty + dy
+                    if self.battlefield._can_move_to(unit, (nx, ny), set()):
+                        d = self.battlefield.manhattan_distance(unit.position, (nx, ny))
+                        if d < charge_dist:
+                            charge_pos = (nx, ny)
+                            charge_dist = d
+            
+            if not charge_pos:
+                continue
+            
+            # Déplacer l'unité vers la cible (charge!)
+            self.battlefield.move_unit(unit, charge_pos)
+            unit.has_charged = True
+            
+            # Effet visuel: ligne de charge
+            start_px = (unit.position[0] * cell_size + cell_size // 2,
+                        unit.position[1] * cell_size + cell_size // 2)
+            end_px = (best_target.position[0] * cell_size + cell_size // 2,
+                      best_target.position[1] * cell_size + cell_size // 2)
+            
+            charge_color = (255, 200, 50) if unit.charge_montee else (100, 200, 255)
+            self.visual_effects['attack_lines'].append(
+                AttackLine(start_px, end_px, charge_color, 35)
+            )
+            
+            label = "CHARGE!" if unit.charge_montee else "CHARGE D'AÏDA!"
+            unit.floating_texts.append(FloatingText(label, charge_color, 70))
+            
+            # Attaque de charge immédiate
+            unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
+
     def simulate_round(self, cell_size):
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
@@ -289,6 +361,25 @@ class Battle:
         # Phase de moral (pertes lourdes + auras + stress au combat)
         self.morale_phase()
         
+        # Phase Phalange: +1 sauvegarde si adjacent à un allié phalange
+        for unit in alive:
+            unit._phalange_bonus_active = False
+        for unit in alive:
+            if not unit.phalange or not unit.is_alive:
+                continue
+            for ally in self.get_allies(unit):
+                if not ally.is_alive or not ally.phalange or ally == unit:
+                    continue
+                dist = self.battlefield.manhattan_distance(unit.position, ally.position)
+                if dist <= 1:
+                    if not unit._phalange_bonus_active:
+                        unit._phalange_bonus_active = True
+                        unit.sauvegarde = max(1, unit.sauvegarde - 1)
+                    break  # Un seul bonus suffit
+        
+        # Phase de Charge (avant les attaques normales)
+        self._charge_phase(alive, cell_size)
+        
         # Sorts
         for unit in alive:
             if unit.spells and unit.is_alive:
@@ -300,6 +391,12 @@ class Battle:
                 target = self.get_closest_enemy(unit)
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
+        
+        # Reset phalange bonus en fin de round
+        for unit in alive:
+            if unit._phalange_bonus_active:
+                unit.sauvegarde += 1
+                unit._phalange_bonus_active = False
         
         # Régénération + tick buffs
         for unit in self.army1 + self.army2:
@@ -324,11 +421,15 @@ class Battle:
                 self.battlefield.remove_unit(unit)
         
         # Fuyards qui atteignent le bord → quittent la map
+        # (seulement si ils fuyaient déjà au round précédent)
         bf = self.battlefield
         for unit in self.army1[:]:
             if unit.fleeing and unit.is_alive:
+                if not hasattr(unit, '_flee_rounds'):
+                    unit._flee_rounds = 0
+                unit._flee_rounds += 1
                 x, y = unit.position
-                if x <= 0:
+                if x <= 0 and unit._flee_rounds >= 2:
                     unit.fled = True
                     unit.is_alive = False
                     bf.remove_unit(unit)
@@ -337,8 +438,11 @@ class Battle:
         
         for unit in self.army2[:]:
             if unit.fleeing and unit.is_alive:
+                if not hasattr(unit, '_flee_rounds'):
+                    unit._flee_rounds = 0
+                unit._flee_rounds += 1
                 x, y = unit.position
-                if x >= bf.width - 1:
+                if x >= bf.width - 1 and unit._flee_rounds >= 2:
                     unit.fled = True
                     unit.is_alive = False
                     bf.remove_unit(unit)

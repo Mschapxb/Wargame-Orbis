@@ -199,14 +199,27 @@ class Battlefield:
 
     def compute_move(self, unit, battle, reserved_positions):
         if unit.fleeing:
+            # Unités en fuite: vitesse minimum 1 pour pouvoir fuir
+            flee_speed = max(1, unit.vitesse)
             flee_x = 0 if unit in battle.army1 else self.width - 1
             goal = (flee_x, unit.position[1])
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
             if path:
-                steps = min(unit.vitesse, len(path))
-                new_pos = path[steps - 1]
-                if self._can_move_to(unit, new_pos, reserved_positions):
-                    return new_pos, None
+                steps = min(flee_speed, len(path))
+                if steps > 0:
+                    new_pos = path[steps - 1]
+                    if self._can_move_to(unit, new_pos, reserved_positions):
+                        return new_pos, None
+            return None, None
+        
+        # Unités immobiles (artillerie) ne bougent pas
+        if unit.vitesse <= 0:
+            enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
+            if not enemies:
+                return None, None
+            target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+            if self.manhattan_distance(unit.position, target.position) <= unit._max_range:
+                return None, target
             return None, None
         
         enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
