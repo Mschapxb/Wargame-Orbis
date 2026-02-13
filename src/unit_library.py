@@ -45,7 +45,7 @@ UNIT_DATABASE = {
                 "unit_type": "Infanterie",
                 "armes": [
                     ("Epée",          1, 2, 3, 3,  0, "1"),
-                    ("Lance",         3, 1, 3, 3,  0, "1"),
+                    ("Lance",         2, 1, 3, 3,  0, "1"),
                     ("Hache courte",  1, 1, 3, 3, -1, "1d2"),
                 ],
                 "traits": [],
@@ -88,7 +88,7 @@ UNIT_DATABASE = {
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Hallbarde", 3, 1, 3, 3, -1, "1"),
+                    ("Hallbarde", 2, 1, 3, 3, -1, "1"),
                 ],
                 "traits": ["Anti-Large"],
             },
@@ -102,7 +102,7 @@ UNIT_DATABASE = {
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Hallebarde", 3, 1, 3, 3, -1, "1d2"),
+                    ("Hallebarde", 2, 1, 3, 3, -1, "1d2"),
                     ("Epée",       1, 2, 3, 3,  1, "1"),
                 ],
                 "traits": ["Encouragement"],
@@ -160,7 +160,7 @@ UNIT_DATABASE = {
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Hache à deux mains", 2, 1, 2, 2, -1, "1d2"),
+                    ("Hache à deux mains", 1, 1, 2, 2, -1, "1d2"),
                 ],
                 "traits": [],
             },
@@ -183,8 +183,8 @@ UNIT_DATABASE = {
                 "unit_type": "Infanterie",
                 "armes": [
                     ("Epée",         1, 2, 3, 3,  0, "1"),
-                    ("Lance",        3, 1, 3, 3,  0, "1"),
-                    ("Hache lourde", 2, 1, 3, 3, -1, "1d2"),
+                    ("Lance",        2, 1, 3, 3,  0, "1"),
+                    ("Hache lourde", 1, 1, 3, 3, -1, "1d2"),
                 ],
                 "traits": ["Phalange"],
             },
@@ -198,7 +198,7 @@ UNIT_DATABASE = {
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Arc long", 13, 1, 3, 3, 0, "1"),
+                    ("Arc long", 11, 1, 3, 3, 0, "1"),
                     ("Glaive",    1, 1, 4, 4, 0, "1"),
                 ],
                 "traits": [],
@@ -228,7 +228,7 @@ UNIT_DATABASE = {
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Epée à deux mains", 2, 1, 2, 3, 0, "1d2"),
+                    ("Epée à deux mains", 1, 1, 2, 3, 0, "1d2"),
                     ("Epée",              1, 2, 3, 3, 1, "1"),
                 ],
                 "traits": [],
