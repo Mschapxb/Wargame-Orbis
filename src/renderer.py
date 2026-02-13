@@ -73,20 +73,78 @@ def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
 
 
 def build_grid_surface(battle, cell_size):
-    """Pré-rend la surface de la grille."""
-    W = battle.battlefield.width * cell_size
-    grid_h = battle.battlefield.height * cell_size
+    """Pré-rend la surface de la grille avec le thème de la map."""
+    from maps import get_map_info
+    
+    bf = battle.battlefield
+    W = bf.width * cell_size
+    grid_h = bf.height * cell_size
     grid_surface = pygame.Surface((W, grid_h))
-    for x in range(battle.battlefield.width):
-        for y in range(battle.battlefield.height):
+    
+    theme = get_map_info(bf.map_name)
+    bg = theme["bg_color"]
+    obs_color = theme["obstacle_color"]
+    grid_color = theme["grid_color"]
+    wall_color = theme.get("wall_color", (100, 100, 110))
+    gate_color = theme.get("gate_color", (140, 100, 50))
+    
+    for x in range(bf.width):
+        for y in range(bf.height):
             r = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
-            if battle.battlefield.grid[x][y]:
-                col = (80, 100, 70)
+            cell = bf.grid[x][y]
+            
+            if cell == 2:  # Mur
+                pygame.draw.rect(grid_surface, wall_color, r)
+                # Crénelage
+                pygame.draw.rect(grid_surface, (120, 120, 130), r, 2)
+            elif cell == 3:  # Porte
+                hp = bf.gate_hp.get((x, y), 0)
+                if hp > 0:
+                    pygame.draw.rect(grid_surface, gate_color, r)
+                    # Barres de PV de porte
+                    bar_w = cell_size - 4
+                    pct = hp / 10
+                    pygame.draw.rect(grid_surface, (60, 40, 20),
+                                     (x * cell_size + 2, y * cell_size + cell_size - 5, bar_w, 3))
+                    pygame.draw.rect(grid_surface, (200, 150, 50),
+                                     (x * cell_size + 2, y * cell_size + cell_size - 5, int(bar_w * pct), 3))
+                else:
+                    # Porte détruite — sol visible
+                    v = ((x + y) % 3) * 3
+                    col = (bg[0] + v, bg[1] + v, bg[2] + v)
+                    pygame.draw.rect(grid_surface, col, r)
+                    # Débris
+                    pygame.draw.line(grid_surface, (90, 70, 40),
+                                     (x * cell_size + 2, y * cell_size + 2),
+                                     (x * cell_size + cell_size - 2, y * cell_size + cell_size - 2), 1)
+            elif cell == 1:  # Obstacle
+                if bf.map_name == "Forêt":
+                    # Arbre: cercle vert
+                    pygame.draw.rect(grid_surface, (25, 50, 20), r)
+                    cx = x * cell_size + cell_size // 2
+                    cy_tree = y * cell_size + cell_size // 2
+                    tr = max(2, cell_size // 3)
+                    pygame.draw.circle(grid_surface, (30, 80, 25), (cx, cy_tree), tr)
+                    pygame.draw.circle(grid_surface, (20, 60, 15), (cx, cy_tree), tr, 1)
+                elif bf.map_name == "Village":
+                    # Bâtiment: carré brun
+                    pygame.draw.rect(grid_surface, obs_color, r)
+                    pygame.draw.rect(grid_surface, (70, 55, 35), r, 2)
+                    # Toit
+                    pygame.draw.line(grid_surface, (110, 80, 50),
+                                     (x * cell_size, y * cell_size),
+                                     (x * cell_size + cell_size, y * cell_size), 2)
+                else:
+                    # Prairie/Siège: rocher
+                    pygame.draw.rect(grid_surface, obs_color, r)
             else:
+                # Sol
                 v = ((x + y) % 3) * 3
-                col = (40 + v, 60 + v, 40 + v)
-            pygame.draw.rect(grid_surface, col, r)
-            pygame.draw.rect(grid_surface, (50, 70, 50), r, 1)
+                col = (bg[0] + v, bg[1] + v, bg[2] + v)
+                pygame.draw.rect(grid_surface, col, r)
+            
+            pygame.draw.rect(grid_surface, grid_color, r, 1)
+    
     return grid_surface
 
 
@@ -275,14 +333,20 @@ def run_visual(battle, cell_size):
     grid_surface = build_grid_surface(battle, cell_size)
     
     running = True
+    _return_action = None
     last_round = pygame.time.get_ticks()
     winner = None
     battle_report = None
     show_lines = True
     
-    _original_army1 = battle.army1
-    _original_army2 = battle.army2
+    # Stocker les armées originales (copie profonde) pour le reset
+    import copy
+    _original_army1 = copy.deepcopy(battle.army1_roster)
+    _original_army2 = copy.deepcopy(battle.army2_roster)
+    _bf_w = battle.battlefield.width
+    _bf_h = battle.battlefield.height
     _obstacle_count = 8
+    _map_name = battle.map_name
     
     while running:
         now = pygame.time.get_ticks()
@@ -290,6 +354,7 @@ def run_visual(battle, cell_size):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+                _return_action = None
             
             if event.type == pygame.VIDEORESIZE:
                 new_w, new_h = event.w, event.h
@@ -317,9 +382,13 @@ def run_visual(battle, cell_size):
                     pause = True
                 elif event.key == pygame.K_ESCAPE:
                     running = False
+                    _return_action = None
+                elif event.key == pygame.K_m:
+                    running = False
+                    _return_action = "menu"
                 elif event.key == pygame.K_r:
                     from battle import Battle
-                    battle = Battle(_original_army1, _original_army2, bf_w, bf_h, _obstacle_count)
+                    battle = Battle(_original_army1, _original_army2, _bf_w, _bf_h, _obstacle_count, map_name=_map_name)
                     grid_surface = build_grid_surface(battle, cell_size)
                     winner = None
                     battle_report = None
@@ -331,6 +400,9 @@ def run_visual(battle, cell_size):
             if now - last_round >= delay:
                 battle.simulate_round(cell_size)
                 last_round = now
+                # Rafraîchir la grille si siège (portes détruites)
+                if battle.map_name == "Siège":
+                    grid_surface = build_grid_surface(battle, cell_size)
                 result = battle.is_battle_over()
                 if result:
                     winner = result
@@ -639,7 +711,7 @@ def run_visual(battle, cell_size):
         screen.blit(tiny_font.render("Sort", True, (180, 180, 180)), (lx5 + 12, ly))
         
         # Contrôles
-        ctrl = tiny_font.render("ESPACE=Pause A=Vite N=Normal R=Reset T=Lignes ESC=Quit", True, (150, 170, 200))
+        ctrl = tiny_font.render("ESPACE=Pause A=Vite N=Normal R=Reset T=Lignes M=Menu ESC=Quit", True, (150, 170, 200))
         screen.blit(ctrl, (10, ly + 18))
         
         size = tiny_font.render(f"Grille {bf_w}x{bf_h} | Cell {cell_size}px | FPS: {int(clock.get_fps())}", True, (120, 120, 120))
@@ -648,5 +720,4 @@ def run_visual(battle, cell_size):
         pygame.display.flip()
         clock.tick(60)
     
-    pygame.quit()
-    sys.exit()
+    return _return_action

@@ -54,7 +54,8 @@ class Unit:
         self.charge_montee = False  # Cavalerie: +1 blesser, +1 dégâts, -1 perf
         self.charge_aida = False    # Infanterie: +1 blesser, +1 toucher
         self.has_charged = False    # A déjà chargé ce round
-        self._phalange_bonus_active = False  # Bonus phalange actif ce round
+        self._phalange_bonus_active = False
+        self._on_wall = False  # Sur un mur (siège)
         
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
@@ -170,6 +171,17 @@ class Unit:
             self.current_target = None
             return
         
+        # Vérifier si un mur bloque le CaC
+        target_on_wall = getattr(target, '_on_wall', False)
+        if target_on_wall and self._max_range < 4:
+            # CaC ne peut pas atteindre les unités sur les murs
+            self.floating_texts.append(FloatingText("Mur!", (180, 180, 180)))
+            self.current_target = None
+            return
+        
+        # Bonus sauvegarde mur (+2 pour les défenseurs sur mur)
+        wall_save_bonus = 2 if target_on_wall else 0
+        
         self.current_target = target
         start_px = (self.position[0] * cell_size + cell_size // 2,
                     self.position[1] * cell_size + cell_size // 2)
@@ -239,8 +251,8 @@ class Unit:
                     target.floating_texts.append(FloatingText("Pas blessé!", (255, 200, 120)))
                     continue
                 
-                # Sauvegarde
-                save_modifie = min(7, target.sauvegarde + perf_final)
+                # Sauvegarde (mur donne +2)
+                save_modifie = min(7, target.sauvegarde + perf_final - wall_save_bonus)
                 if random.randint(1, 6) >= save_modifie:
                     target.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
                     continue

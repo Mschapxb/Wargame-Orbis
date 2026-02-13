@@ -3,12 +3,22 @@ import heapq
 
 
 class Battlefield:
-    def __init__(self, width=40, height=30, obstacle_count=8):
+    def __init__(self, width=40, height=30, obstacle_count=8, map_name="Prairie", grid=None, map_data=None):
         self.width = width
         self.height = height
-        self.grid = [[0] * height for _ in range(width)]
+        self.map_name = map_name
         self.units = {}
-        self.add_obstacles(obstacle_count)
+        
+        # Données de siège
+        self.siege_data = map_data or {}
+        self.gate_hp = dict(self.siege_data.get('gates', {}))  # {(x,y): hp}
+        self.walls = set(tuple(w) for w in self.siege_data.get('walls', []))
+        
+        if grid is not None:
+            self.grid = grid
+        else:
+            self.grid = [[0] * height for _ in range(width)]
+            self.add_obstacles(obstacle_count)
 
     def add_obstacles(self, count):
         placed = 0
@@ -36,7 +46,33 @@ class Battlefield:
                 placed += 1
 
     def is_valid(self, x, y):
-        return 0 <= x < self.width and 0 <= y < self.height and self.grid[x][y] == 0
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return False
+        cell = self.grid[x][y]
+        if cell == 0:
+            return True
+        if cell == 3:  # Porte: traversable si détruite (hp <= 0)
+            return self.gate_hp.get((x, y), 0) <= 0
+        return False  # 1=obstacle, 2=mur
+    
+    def is_wall(self, x, y):
+        """Retourne True si la case est un mur."""
+        return 0 <= x < self.width and 0 <= y < self.height and self.grid[x][y] == 2
+    
+    def is_gate(self, x, y):
+        """Retourne True si la case est une porte (intacte)."""
+        return (0 <= x < self.width and 0 <= y < self.height 
+                and self.grid[x][y] == 3 and self.gate_hp.get((x, y), 0) > 0)
+    
+    def damage_gate(self, x, y, dmg):
+        """Inflige des dégâts à une porte. Retourne True si détruite."""
+        pos = (x, y)
+        if pos in self.gate_hp:
+            self.gate_hp[pos] -= dmg
+            if self.gate_hp[pos] <= 0:
+                self.gate_hp[pos] = 0
+                return True
+        return False
 
     def is_occupied(self, x, y):
         return (x, y) in self.units
@@ -244,7 +280,42 @@ class Battlefield:
                 if self._can_move_to(unit, candidate, reserved_positions):
                     return candidate, target
         
+        # Siège: si pas de chemin, CaC va vers la porte la plus proche
+        if self.gate_hp and unit._max_range < 4:
+            intact_gates = [(pos, hp) for pos, hp in self.gate_hp.items() if hp > 0]
+            if intact_gates:
+                # Trouver la porte la plus proche
+                nearest_gate = min(intact_gates, key=lambda g: self.manhattan_distance(unit.position, g[0]))
+                gate_pos = nearest_gate[0]
+                # Aller adjacent à la porte
+                gate_goal = self._find_adjacent_free(gate_pos, unit, reserved_positions)
+                if gate_goal:
+                    gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
+                    if gpath:
+                        steps = min(unit.vitesse, len(gpath))
+                        for i in range(steps, 0, -1):
+                            candidate = gpath[i - 1]
+                            if self._can_move_to(unit, candidate, reserved_positions):
+                                return candidate, target
+        
         return self.fallback_move(unit, target, reserved_positions), target
+    
+    def _find_adjacent_free(self, pos, unit, reserved):
+        """Trouve une case libre adjacente à pos."""
+        px, py = pos
+        best = None
+        best_d = 999
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = px + dx, py + dy
+                if self._can_move_to(unit, (nx, ny), reserved):
+                    d = self.manhattan_distance(unit.position, (nx, ny))
+                    if d < best_d:
+                        best = (nx, ny)
+                        best_d = d
+        return best
 
     def _can_move_to(self, unit, pos, reserved_positions):
         """Vérifie si une unité peut se déplacer vers pos (multi-cases)."""

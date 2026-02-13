@@ -6,10 +6,17 @@ from effects import FloatingText, AttackLine
 
 
 class Battle:
-    def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, obstacle_count=8):
+    def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, 
+                 obstacle_count=8, map_name="Prairie"):
         self.army1 = copy.deepcopy(army1)
         self.army2 = copy.deepcopy(army2)
-        self.battlefield = Battlefield(battlefield_width, battlefield_height, obstacle_count)
+        self.map_name = map_name
+        
+        # Générer la map
+        from maps import generate_map
+        grid, map_data = generate_map(map_name, battlefield_width, battlefield_height)
+        self.battlefield = Battlefield(battlefield_width, battlefield_height, 
+                                        obstacle_count, map_name, grid, map_data)
         self.round = 1
         self.visual_effects = {'projectiles': [], 'attack_lines': [], 'target_indicators': []}
         
@@ -56,20 +63,49 @@ class Battle:
         for u in self.army2:
             army2_roles[u.role].append(u)
         
-        # Mélanger les unités dans chaque rôle pour ne pas avoir
-        # 10x la même unité côte à côte
         import random as _rng
         for roles in (army1_roles, army2_roles):
             for role_list in roles.values():
                 _rng.shuffle(role_list)
         
+        # Placement attaquant (armée 1) — toujours à gauche
         place_role_units(army1_roles['front'], 8, center_y, -1)
         place_role_units(army1_roles['mid'],   5, center_y, -1)
         place_role_units(army1_roles['back'],  2, center_y, -1)
         
-        place_role_units(army2_roles['front'], bf.width - 9, center_y, +1)
-        place_role_units(army2_roles['mid'],   bf.width - 6, center_y, +1)
-        place_role_units(army2_roles['back'],  bf.width - 3, center_y, +1)
+        if self.map_name == "Siège":
+            # Siège: armée 2 (défenseur) se place derrière le mur
+            wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
+            
+            # Archers/back → sur le mur (cases adjacentes au mur côté défenseur)
+            wall_units = []
+            behind_units = []
+            for u in army2_roles['back']:
+                if u._max_range >= 4:  # Tir à distance
+                    wall_units.append(u)
+                    u._on_wall = True  # Marqueur pour bonus mur
+                else:
+                    behind_units.append(u)
+            
+            # Placer les unités sur le mur (juste derrière, x = wall_x + 1)
+            if wall_units:
+                self._place_column(wall_units, wall_x + 1, center_y, bf)
+            if behind_units:
+                self._place_column(behind_units, wall_x + 3, center_y, bf)
+            
+            # Front et mid derrière le mur
+            place_role_units(army2_roles['front'], wall_x + 4, center_y, +1)
+            place_role_units(army2_roles['mid'],   wall_x + 2, center_y, +1)
+            
+            # Ouvrir les portes si l'armée 2 n'a aucune unité à distance
+            has_ranged = any(u._max_range >= 4 for u in self.army2 if u.is_alive)
+            if not has_ranged:
+                for pos in bf.gate_hp:
+                    bf.gate_hp[pos] = 0  # Portes ouvertes
+        else:
+            place_role_units(army2_roles['front'], bf.width - 9, center_y, +1)
+            place_role_units(army2_roles['mid'],   bf.width - 6, center_y, +1)
+            place_role_units(army2_roles['back'],  bf.width - 3, center_y, +1)
     
     def _place_column(self, units, x_col, center_y, bf):
         if not units:
@@ -391,6 +427,34 @@ class Battle:
                 target = self.get_closest_enemy(unit)
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
+        
+        # Phase de siège: attaque des portes par les unités CaC adjacentes
+        if self.battlefield.gate_hp:
+            for unit in self.army1:  # Seul l'attaquant attaque les portes
+                if not unit.is_alive or unit.fleeing:
+                    continue
+                if unit._max_range >= 4:  # Pas les archers
+                    continue
+                ux, uy = unit.position
+                attacked_gate = False
+                for dx in range(-1, 2):
+                    if attacked_gate:
+                        break
+                    for dy in range(-1, 2):
+                        gx, gy = ux + dx, uy + dy
+                        if self.battlefield.is_gate(gx, gy):
+                            # Dégâts = nb d'attaques CaC totales
+                            dmg = sum(a.nb_attaque for a in unit.armes if a.porte < 4)
+                            dmg = max(1, dmg)
+                            destroyed = self.battlefield.damage_gate(gx, gy, dmg)
+                            hp_left = self.battlefield.gate_hp.get((gx, gy), 0)
+                            unit.floating_texts.append(
+                                FloatingText(f"-{dmg} Porte ({hp_left})", (200, 150, 50), 40))
+                            if destroyed:
+                                unit.floating_texts.append(
+                                    FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
+                            attacked_gate = True
+                            break
         
         # Reset phalange bonus en fin de round
         for unit in alive:
