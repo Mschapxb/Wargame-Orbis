@@ -48,7 +48,7 @@ def clear_token_cache():
 
 
 def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
-    """Détecte la résolution écran et calcule la grille qui remplit l'écran.
+    """Calcule une grille large (plus grande que l'écran) avec caméra.
     
     Retourne (grid_width, grid_height, cell_size).
     """
@@ -56,18 +56,14 @@ def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
     screen_w = info.current_w
     screen_h = info.current_h
     
-    # Prendre 95% de l'écran pour laisser un peu de marge
-    usable_w = int(screen_w * 0.95)
-    usable_h = int(screen_h * 0.90)
-    
     cell_size = max(MIN_CELL_SIZE, min(target_cell, MAX_CELL_SIZE))
     
-    grid_w = usable_w // cell_size
-    grid_h = (usable_h - HUD_HEIGHT) // cell_size
+    # Grille = ~2x la taille de l'écran pour permettre le scroll
+    grid_w = (screen_w * 2) // cell_size
+    grid_h = (screen_h * 2) // cell_size
     
-    # Minimums raisonnables
-    grid_w = max(30, grid_w)
-    grid_h = max(20, grid_h)
+    grid_w = max(80, grid_w)
+    grid_h = max(50, grid_h)
     
     return grid_w, grid_h, cell_size
 
@@ -119,7 +115,6 @@ def build_grid_surface(battle, cell_size):
                                      (x * cell_size + cell_size - 2, y * cell_size + cell_size - 2), 1)
             elif cell == 1:  # Obstacle
                 if bf.map_name == "Forêt":
-                    # Arbre: cercle vert
                     pygame.draw.rect(grid_surface, (25, 50, 20), r)
                     cx = x * cell_size + cell_size // 2
                     cy_tree = y * cell_size + cell_size // 2
@@ -127,16 +122,27 @@ def build_grid_surface(battle, cell_size):
                     pygame.draw.circle(grid_surface, (30, 80, 25), (cx, cy_tree), tr)
                     pygame.draw.circle(grid_surface, (20, 60, 15), (cx, cy_tree), tr, 1)
                 elif bf.map_name == "Village":
-                    # Bâtiment: carré brun
                     pygame.draw.rect(grid_surface, obs_color, r)
                     pygame.draw.rect(grid_surface, (70, 55, 35), r, 2)
-                    # Toit
                     pygame.draw.line(grid_surface, (110, 80, 50),
                                      (x * cell_size, y * cell_size),
                                      (x * cell_size + cell_size, y * cell_size), 2)
                 else:
-                    # Prairie/Siège: rocher
                     pygame.draw.rect(grid_surface, obs_color, r)
+            elif cell == 4:  # Rempart marchable
+                # Sol plus clair que le mur, avec bordure
+                ramp_color = (85, 85, 95)
+                pygame.draw.rect(grid_surface, ramp_color, r)
+                pygame.draw.rect(grid_surface, (100, 100, 110), r, 1)
+            elif cell == 5:  # Escalier
+                stair_color = (75, 70, 60)
+                pygame.draw.rect(grid_surface, stair_color, r)
+                # Lignes horizontales pour figurer les marches
+                step_h = max(2, cell_size // 4)
+                for sy in range(y * cell_size + 2, (y + 1) * cell_size - 1, step_h):
+                    pygame.draw.line(grid_surface, (95, 85, 70),
+                                     (x * cell_size + 2, sy),
+                                     (x * cell_size + cell_size - 2, sy), 1)
             else:
                 # Sol
                 v = ((x + y) % 3) * 3
@@ -148,16 +154,17 @@ def build_grid_surface(battle, cell_size):
     return grid_surface
 
 
-def draw_projectile(screen, proj):
+def draw_projectile(screen, proj, ox=0, oy=0):
     pos = proj.get_current_pos()
+    px, py = pos[0] + ox, pos[1] + oy
     angle = proj.get_angle()
     
     if proj.projectile_type == "arrow":
         length = 12
-        ex = pos[0] + length * math.cos(angle)
-        ey = pos[1] + length * math.sin(angle)
-        sx = pos[0] - length * math.cos(angle)
-        sy = pos[1] - length * math.sin(angle)
+        ex = px + length * math.cos(angle)
+        ey = py + length * math.sin(angle)
+        sx = px - length * math.cos(angle)
+        sy = py - length * math.sin(angle)
         pygame.draw.line(screen, proj.color, (sx, sy), (ex, ey), 2)
         a = math.pi / 6
         p1 = (ex - 6 * math.cos(angle - a), ey - 6 * math.sin(angle - a))
@@ -165,18 +172,18 @@ def draw_projectile(screen, proj):
         pygame.draw.polygon(screen, (255, 200, 100), [(ex, ey), p1, p2])
     elif proj.projectile_type == "fireball":
         r = 6
-        pygame.draw.circle(screen, (255, 200, 0), (int(pos[0]), int(pos[1])), r + 2)
-        pygame.draw.circle(screen, (255, 100, 0), (int(pos[0]), int(pos[1])), r)
-        pygame.draw.circle(screen, (255, 255, 100), (int(pos[0]), int(pos[1])), r // 2)
+        pygame.draw.circle(screen, (255, 200, 0), (int(px), int(py)), r + 2)
+        pygame.draw.circle(screen, (255, 100, 0), (int(px), int(py)), r)
+        pygame.draw.circle(screen, (255, 255, 100), (int(px), int(py)), r // 2)
     elif proj.projectile_type == "magic":
         r = 5
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
         for i in range(4):
-            tx = pos[0] - i * 4 * cos_a
-            ty = pos[1] - i * 4 * sin_a
+            tx = px - i * 4 * cos_a
+            ty = py - i * 4 * sin_a
             pygame.draw.circle(screen, (150, 100, min(255, 200 + i * 10)), (int(tx), int(ty)), max(1, r - i))
-        pygame.draw.circle(screen, (200, 150, 255), (int(pos[0]), int(pos[1])), r)
+        pygame.draw.circle(screen, (200, 150, 255), (int(px), int(py)), r)
 
 
 def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
@@ -318,10 +325,12 @@ def run_visual(battle, cell_size):
     
     bf_w = battle.battlefield.width
     bf_h = battle.battlefield.height
-    W = bf_w * cell_size
-    H = bf_h * cell_size + HUD_HEIGHT
     
-    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
+    info = pygame.display.Info()
+    SCREEN_W = info.current_w
+    SCREEN_H = info.current_h
+    
+    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
     pygame.display.set_caption("Battle Simulator")
     clock = pygame.time.Clock()
     
@@ -332,6 +341,32 @@ def run_visual(battle, cell_size):
     
     grid_surface = build_grid_surface(battle, cell_size)
     
+    # ─── Caméra ───
+    world_w = bf_w * cell_size
+    world_h = bf_h * cell_size
+    
+    # Centrer la caméra au départ
+    cam_x = (world_w - SCREEN_W) / 2
+    cam_y = (world_h - (SCREEN_H - HUD_HEIGHT)) / 2
+    cam_x = max(0, cam_x)
+    cam_y = max(0, cam_y)
+    
+    CAM_SPEED = 12  # pixels/frame
+    EDGE_SCROLL_MARGIN = 30
+    dragging = False
+    drag_start = (0, 0)
+    drag_cam_start = (0, 0)
+    
+    def clamp_camera():
+        nonlocal cam_x, cam_y
+        view_h = SCREEN_H - HUD_HEIGHT
+        max_x = max(0, world_w - SCREEN_W)
+        max_y = max(0, world_h - view_h)
+        cam_x = max(0, min(cam_x, max_x))
+        cam_y = max(0, min(cam_y, max_y))
+    
+    clamp_camera()
+    
     running = True
     _return_action = None
     last_round = pygame.time.get_ticks()
@@ -339,7 +374,6 @@ def run_visual(battle, cell_size):
     battle_report = None
     show_lines = True
     
-    # Stocker les armées originales (copie profonde) pour le reset
     import copy
     _original_army1 = copy.deepcopy(battle.army1_roster)
     _original_army2 = copy.deepcopy(battle.army2_roster)
@@ -356,25 +390,27 @@ def run_visual(battle, cell_size):
                 running = False
                 _return_action = None
             
-            if event.type == pygame.VIDEORESIZE:
-                new_w, new_h = event.w, event.h
-                cell_from_w = new_w // bf_w
-                cell_from_h = (new_h - HUD_HEIGHT) // bf_h
-                cell_size = max(MIN_CELL_SIZE, min(min(cell_from_w, cell_from_h), MAX_CELL_SIZE))
-                W = bf_w * cell_size
-                H = bf_h * cell_size + HUD_HEIGHT
-                screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
-                grid_surface = build_grid_surface(battle, cell_size)
-                font_small_size = max(9, cell_size // 3)
-                font_tiny_size = max(7, cell_size // 4)
-                small_font = pygame.font.SysFont("arial", font_small_size)
-                tiny_font = pygame.font.SysFont("arial", font_tiny_size)
-                clear_token_cache()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 2:  # Middle click → drag
+                    dragging = True
+                    drag_start = event.pos
+                    drag_cam_start = (cam_x, cam_y)
+            
+            if event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 2:
+                    dragging = False
+            
+            if event.type == pygame.MOUSEMOTION and dragging:
+                dx = drag_start[0] - event.pos[0]
+                dy = drag_start[1] - event.pos[1]
+                cam_x = drag_cam_start[0] + dx
+                cam_y = drag_cam_start[1] + dy
+                clamp_camera()
             
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     pause = not pause
-                elif event.key == pygame.K_a:
+                elif event.key == pygame.K_f:
                     simulation_speed, pause = "fast", False
                 elif event.key == pygame.K_n:
                     simulation_speed, pause = "normal", False
@@ -390,10 +426,39 @@ def run_visual(battle, cell_size):
                     from battle import Battle
                     battle = Battle(_original_army1, _original_army2, _bf_w, _bf_h, _obstacle_count, map_name=_map_name)
                     grid_surface = build_grid_surface(battle, cell_size)
+                    world_w = _bf_w * cell_size
+                    world_h = _bf_h * cell_size
+                    cam_x = max(0, (world_w - SCREEN_W) / 2)
+                    cam_y = max(0, (world_h - (SCREEN_H - HUD_HEIGHT)) / 2)
+                    clamp_camera()
                     winner = None
                     battle_report = None
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
+        
+        # Déplacement caméra continu (touches maintenues)
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LEFT] or keys[pygame.K_q]:
+            cam_x -= CAM_SPEED
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            cam_x += CAM_SPEED
+        if keys[pygame.K_UP] or keys[pygame.K_z]:
+            cam_y -= CAM_SPEED
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            cam_y += CAM_SPEED
+        
+        # Edge scroll (souris au bord de l'écran)
+        mx, my = pygame.mouse.get_pos()
+        if mx < EDGE_SCROLL_MARGIN:
+            cam_x -= CAM_SPEED
+        elif mx > SCREEN_W - EDGE_SCROLL_MARGIN:
+            cam_x += CAM_SPEED
+        if my < EDGE_SCROLL_MARGIN:
+            cam_y -= CAM_SPEED
+        elif my > SCREEN_H - HUD_HEIGHT - EDGE_SCROLL_MARGIN:
+            cam_y += CAM_SPEED
+        
+        clamp_camera()
         
         if not pause and winner is None:
             delay = 150 if simulation_speed == "fast" else 800
@@ -427,18 +492,30 @@ def run_visual(battle, cell_size):
                     battle.visual_effects[key].remove(fx)
         
         screen.fill((25, 40, 30))
-        screen.blit(grid_surface, (0, 0))
+        
+        # Camera offset pour le rendu monde
+        ox = int(-cam_x)
+        oy = int(-cam_y)
+        
+        # Clipper le rendu monde pour ne pas déborder sur le HUD
+        view_h = SCREEN_H - HUD_HEIGHT
+        screen.set_clip(pygame.Rect(0, 0, SCREEN_W, view_h))
+        
+        screen.blit(grid_surface, (ox, oy))
         
         # Ligne centrale
-        center_x = bf_w // 2 * cell_size
-        pygame.draw.line(screen, (60, 60, 60), (center_x, 0), (center_x, bf_h * cell_size), 1)
+        center_x = bf_w // 2 * cell_size + ox
+        view_h = SCREEN_H - HUD_HEIGHT
+        pygame.draw.line(screen, (60, 60, 60), (center_x, 0), (center_x, view_h), 1)
         
         # Lignes de ciblage (couleur selon type d'attaque)
         if show_lines:
             for att, tgt in battle.visual_effects['target_indicators']:
                 if att.is_alive and tgt.is_alive:
-                    sp = (att.position[0] * cell_size + cell_size // 2, att.position[1] * cell_size + cell_size // 2)
-                    ep = (tgt.position[0] * cell_size + cell_size // 2, tgt.position[1] * cell_size + cell_size // 2)
+                    sp = (att.position[0] * cell_size + cell_size // 2 + ox,
+                          att.position[1] * cell_size + cell_size // 2 + oy)
+                    ep = (tgt.position[0] * cell_size + cell_size // 2 + ox,
+                          tgt.position[1] * cell_size + cell_size // 2 + oy)
                     dist = battle.battlefield.manhattan_distance(att.position, tgt.position)
                     if dist <= att._max_range:
                         if att.attack_type == "spell":
@@ -457,11 +534,13 @@ def run_visual(battle, cell_size):
             t = alpha / 255
             r, g, b = line.color
             color = (int(r * t), int(g * t), int(b * t))
-            pygame.draw.line(screen, color, line.start_pos, line.end_pos, max(1, int(3 * t)))
+            sp = (line.start_pos[0] + ox, line.start_pos[1] + oy)
+            ep = (line.end_pos[0] + ox, line.end_pos[1] + oy)
+            pygame.draw.line(screen, color, sp, ep, max(1, int(3 * t)))
         
         # Projectiles
         for proj in battle.visual_effects['projectiles']:
-            draw_projectile(screen, proj)
+            draw_projectile(screen, proj, ox, oy)
         
         # Explosions AoE (boule de feu)
         for aoe in battle.visual_effects.get('aoe_explosions', []):
@@ -476,7 +555,7 @@ def run_visual(battle, cell_size):
                 inner_r = max(1, r_px // 2)
                 pygame.draw.circle(surf, (255, 220, 50, min(alpha, 200)),
                                    (r_px, r_px), inner_r)
-                screen.blit(surf, (aoe.center_pos[0] - r_px, aoe.center_pos[1] - r_px))
+                screen.blit(surf, (aoe.center_pos[0] - r_px + ox, aoe.center_pos[1] - r_px + oy))
         
         # Rayons de soin
         for beam in battle.visual_effects.get('heal_beams', []):
@@ -485,9 +564,11 @@ def run_visual(battle, cell_size):
                 t = alpha / 255
                 # Ligne verte épaisse + scintillements
                 c = (int(50 * t), int(255 * t), int(100 * t))
-                pygame.draw.line(screen, c, beam.start_pos, beam.end_pos, max(2, int(4 * t)))
+                sp = (beam.start_pos[0] + ox, beam.start_pos[1] + oy)
+                ep = (beam.end_pos[0] + ox, beam.end_pos[1] + oy)
+                pygame.draw.line(screen, c, sp, ep, max(2, int(4 * t)))
                 # Croix verte au point d'arrivée
-                ex, ey = beam.end_pos
+                ex, ey = ep
                 s = max(3, int(8 * t))
                 pygame.draw.line(screen, c, (ex - s, ey), (ex + s, ey), 2)
                 pygame.draw.line(screen, c, (ex, ey - s), (ex, ey + s), 2)
@@ -501,19 +582,18 @@ def run_visual(battle, cell_size):
                 # Anneau bleu qui pulse
                 pygame.draw.circle(surf, (80, 180, 255, min(alpha, 120)),
                                    (r_px, r_px), r_px, max(2, r_px // 4))
-                screen.blit(surf, (shim.center_pos[0] - r_px, shim.center_pos[1] - r_px))
+                screen.blit(surf, (shim.center_pos[0] - r_px + ox, shim.center_pos[1] - r_px + oy))
         
         # Effets de mur
         for wall in battle.visual_effects.get('wall_effects', []):
             alpha = wall.get_alpha()
             if alpha > 10:
                 for wx, wy in wall.positions:
-                    px = wx * cell_size
-                    py = wy * cell_size
+                    px = wx * cell_size + ox
+                    py = wy * cell_size + oy
                     surf = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
                     surf.fill((160, 80, 220, min(alpha, 180)))
                     screen.blit(surf, (px, py))
-                    # Contour
                     pygame.draw.rect(screen, (200, 120, 255),
                                      (px, py, cell_size, cell_size), 2)
         
@@ -539,8 +619,8 @@ def run_visual(battle, cell_size):
                 uw, uh = 2, 4
             
             # Centre pixel de l'unité (milieu de son bloc de cases)
-            cx = x * cell_size + (uw * cell_size) // 2
-            cy = y * cell_size + (uh * cell_size) // 2
+            cx = x * cell_size + (uw * cell_size) // 2 + ox
+            cy = y * cell_size + (uh * cell_size) // 2 + oy
             # Rayon adapté à la taille
             ur = max(3, min(uw, uh) * cell_size // 2 - 4)
             
@@ -640,7 +720,7 @@ def run_visual(battle, cell_size):
             
             # Textes flottants
             if cell_size >= 16:
-                oy = -ur - 6
+                ft_oy = -ur - 6
                 for ft in list(u.floating_texts):
                     ft.age += 1
                     if ft.age > ft.duration:
@@ -649,11 +729,14 @@ def run_visual(battle, cell_size):
                     alpha = 255 - int(255 * (ft.age / ft.duration))
                     ts = tiny_font.render(ft.text, True, ft.color)
                     ts.set_alpha(alpha)
-                    screen.blit(ts, (cx - ts.get_width() // 2, cy + oy - ft.age // 4))
-                    oy -= 10
+                    screen.blit(ts, (cx - ts.get_width() // 2, cy + ft_oy - ft.age // 4))
+                    ft_oy -= 10
         
-        # HUD
-        hy = bf_h * cell_size + 5
+        # HUD (position fixe en bas de l'écran)
+        screen.set_clip(None)  # Retirer le clip pour le HUD
+        view_h = SCREEN_H - HUD_HEIGHT
+        pygame.draw.rect(screen, (20, 25, 30), (0, view_h, SCREEN_W, HUD_HEIGHT))
+        hy = view_h + 5
         a1c = sum(1 for u in battle.army1 if u.is_alive)
         a2c = sum(1 for u in battle.army2 if u.is_alive)
         a1f = len(battle.army1_fled) + sum(1 for u in battle.army1 if u.fleeing and u.is_alive)
@@ -666,7 +749,7 @@ def run_visual(battle, cell_size):
         
         # Rapport de bataille (overlay)
         if battle_report:
-            draw_battle_report(screen, battle_report, W, bf_h * cell_size, small_font, tiny_font)
+            draw_battle_report(screen, battle_report, SCREEN_W, view_h, small_font, tiny_font)
         
         # Légende
         ly = hy + 18
@@ -679,29 +762,23 @@ def run_visual(battle, cell_size):
         pygame.draw.circle(screen, (0, 0, 0), (lx + 105, ly + 5), 4)
         screen.blit(tiny_font.render("Back", True, (180, 180, 180)), (lx + 115, ly))
         
-        # Séparateur
         lx2 = lx + 160
-        # Symboles d'attaque
-        # CaC: X rouge
         pygame.draw.line(screen, (220, 80, 80), (lx2, ly + 1), (lx2 + 8, ly + 9), 2)
         pygame.draw.line(screen, (220, 80, 80), (lx2 + 8, ly + 1), (lx2, ly + 9), 2)
         screen.blit(tiny_font.render("CaC", True, (180, 180, 180)), (lx2 + 12, ly))
         
-        # Portée: | jaune
         lx3 = lx2 + 45
         pygame.draw.line(screen, (255, 200, 50), (lx3 + 4, ly + 9), (lx3 + 4, ly + 1), 2)
         pygame.draw.line(screen, (255, 200, 50), (lx3 + 4, ly + 1), (lx3 + 2, ly + 4), 2)
         pygame.draw.line(screen, (255, 200, 50), (lx3 + 4, ly + 1), (lx3 + 6, ly + 4), 2)
         screen.blit(tiny_font.render("Portée", True, (180, 180, 180)), (lx3 + 12, ly))
         
-        # Tir: → bleu
         lx4 = lx3 + 60
         pygame.draw.line(screen, (80, 160, 255), (lx4, ly + 5), (lx4 + 8, ly + 5), 2)
         pygame.draw.line(screen, (80, 160, 255), (lx4 + 8, ly + 5), (lx4 + 5, ly + 2), 2)
         pygame.draw.line(screen, (80, 160, 255), (lx4 + 8, ly + 5), (lx4 + 5, ly + 8), 2)
         screen.blit(tiny_font.render("Tir", True, (180, 180, 180)), (lx4 + 12, ly))
         
-        # Sort: ✦ violet
         lx5 = lx4 + 40
         sc = lx5 + 4
         pygame.draw.line(screen, (180, 80, 255), (sc, ly + 1), (sc, ly + 9), 2)
@@ -711,11 +788,11 @@ def run_visual(battle, cell_size):
         screen.blit(tiny_font.render("Sort", True, (180, 180, 180)), (lx5 + 12, ly))
         
         # Contrôles
-        ctrl = tiny_font.render("ESPACE=Pause A=Vite N=Normal R=Reset T=Lignes M=Menu ESC=Quit", True, (150, 170, 200))
+        ctrl = tiny_font.render("ESPACE=Pause  ZQSD/Flèches=Caméra  F=Vite  N=Normal  R=Reset  T=Lignes  M=Menu  ESC=Quit", True, (150, 170, 200))
         screen.blit(ctrl, (10, ly + 18))
         
         size = tiny_font.render(f"Grille {bf_w}x{bf_h} | Cell {cell_size}px | FPS: {int(clock.get_fps())}", True, (120, 120, 120))
-        screen.blit(size, (W - size.get_width() - 10, ly + 18))
+        screen.blit(size, (SCREEN_W - size.get_width() - 10, ly + 18))
         
         pygame.display.flip()
         clock.tick(60)

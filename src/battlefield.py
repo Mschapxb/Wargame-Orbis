@@ -12,7 +12,10 @@ class Battlefield:
         # Données de siège
         self.siege_data = map_data or {}
         self.gate_hp = dict(self.siege_data.get('gates', {}))  # {(x,y): hp}
+        self.gate_save = self.siege_data.get('gate_save', 7)   # Sauvegarde des portes
         self.walls = set(tuple(w) for w in self.siege_data.get('walls', []))
+        self.ramparts = set(tuple(r) for r in self.siege_data.get('ramparts', []))
+        self.stairs = set(tuple(s) for s in self.siege_data.get('stairs', []))
         
         if grid is not None:
             self.grid = grid
@@ -51,6 +54,10 @@ class Battlefield:
         cell = self.grid[x][y]
         if cell == 0:
             return True
+        if cell == 4:  # Rempart: marchable
+            return True
+        if cell == 5:  # Escalier: marchable
+            return True
         if cell == 3:  # Porte: traversable si détruite (hp <= 0)
             return self.gate_hp.get((x, y), 0) <= 0
         return False  # 1=obstacle, 2=mur
@@ -58,6 +65,10 @@ class Battlefield:
     def is_wall(self, x, y):
         """Retourne True si la case est un mur."""
         return 0 <= x < self.width and 0 <= y < self.height and self.grid[x][y] == 2
+    
+    def is_rampart(self, x, y):
+        """Retourne True si la case est un rempart marchable."""
+        return (x, y) in self.ramparts
     
     def is_gate(self, x, y):
         """Retourne True si la case est une porte (intacte)."""
@@ -267,6 +278,12 @@ class Battlefield:
         
         if current_dist <= unit._max_range:
             return None, target
+        
+        # Siège: défenseurs sur rempart restent en place tant qu'il reste des portes intactes
+        if self.is_rampart(*unit.position) and self.gate_hp:
+            intact_gates = any(hp > 0 for hp in self.gate_hp.values())
+            if intact_gates:
+                return None, target  # Rester sur le rempart, tirer depuis la position
         
         goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
         if goal is None:

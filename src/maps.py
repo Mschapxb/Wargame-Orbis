@@ -138,7 +138,7 @@ def generate_village(width, height):
 
 
 def generate_siege(width, height):
-    """Siège: mur vertical avec portes, défenseur à droite."""
+    """Siège: mur vertical avec portes, remparts marchables, défenseur à droite."""
     grid = [[0] * height for _ in range(width)]
     
     # Mur vertical au 2/3 de la map (défenseur = armée 2 à droite)
@@ -156,14 +156,28 @@ def generate_siege(width, height):
     # Construire le mur
     walls = []
     gates = []
+    ramparts = []  # Cases marchables sur le mur
+    stairs = []    # Escaliers derrière les remparts
+    
     for y in range(1, height - 1):
         is_gate = any(abs(y - gy) <= 1 for gy in gate_positions)
         if is_gate:
             grid[wall_x][y] = 3  # Porte
             gates.append((wall_x, y))
         else:
-            grid[wall_x][y] = 2  # Mur
+            grid[wall_x][y] = 2  # Mur (infranchissable)
             walls.append((wall_x, y))
+            # Remparts: 2 cases marchables derrière le mur (côté défenseur)
+            for dx in [1, 2]:
+                rx = wall_x + dx
+                if 0 <= rx < width and grid[rx][y] == 0:
+                    grid[rx][y] = 4  # Rempart marchable
+                    ramparts.append((rx, y))
+            # Escalier: 1 case derrière les remparts (wall_x+3)
+            sx = wall_x + 3
+            if 0 <= sx < width and grid[sx][y] == 0:
+                grid[sx][y] = 5  # Escalier
+                stairs.append((sx, y))
     
     # Tours aux coins du mur
     for dy in [-1, 0, 1]:
@@ -173,7 +187,7 @@ def generate_siege(width, height):
                 grid[tx][ty] = 2
                 walls.append((tx, ty))
             tx2 = wall_x + 1
-            if 0 <= tx2 < width and 0 <= ty < height:
+            if 0 <= tx2 < width and 0 <= ty < height and grid[tx2][ty] != 4:
                 grid[tx2][ty] = 2
                 walls.append((tx2, ty))
     
@@ -186,7 +200,11 @@ def generate_siege(width, height):
     
     siege_data = {
         'walls': walls,
+        'ramparts': ramparts,
+        'stairs': stairs,
         'gates': {pos: 10 for pos in gates},  # Chaque porte a 10 PV
+        'gate_save': 3,  # Sauvegarde des portes
+        'gate_positions': gate_positions,  # Y centraux des portes
         'wall_x': wall_x,
     }
     

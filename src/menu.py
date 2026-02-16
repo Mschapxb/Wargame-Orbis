@@ -68,10 +68,10 @@ def run_army_menu(screen_w=None, screen_h=None):
     
     if screen_w is None or screen_h is None:
         info = pygame.display.Info()
-        screen_w = max(MIN_W, info.current_w - 100)
-        screen_h = max(MIN_H, info.current_h - 100)
+        screen_w = max(MIN_W, info.current_w)
+        screen_h = max(MIN_H, info.current_h)
     
-    screen = pygame.display.set_mode((screen_w, screen_h), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
     pygame.display.set_caption("Composition des armées")
     clock = pygame.time.Clock()
     
@@ -150,9 +150,6 @@ def run_army_menu(screen_w=None, screen_h=None):
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
-            if event.type == pygame.VIDEORESIZE:
-                screen_w, screen_h = max(MIN_W, event.w), max(MIN_H, event.h)
-                screen = pygame.display.set_mode((screen_w, screen_h), pygame.RESIZABLE)
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     clicked = True

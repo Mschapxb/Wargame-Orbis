@@ -41,7 +41,7 @@ class Battle:
         usable_height = bf.height - 2
         max_per_col = max(1, usable_height)
         
-        def place_role_units(units, base_x, center_y, step_x):
+        def place_role_units(units, base_x, center_y, step_x, min_x=0):
             if not units:
                 return
             columns = []
@@ -52,8 +52,8 @@ class Battle:
                 columns.append(chunk)
             for col_idx, col_units in enumerate(columns):
                 x_col = base_x + col_idx * step_x
-                x_col = max(0, min(bf.width - 1, x_col))
-                self._place_column(col_units, x_col, center_y, bf)
+                x_col = max(min_x, min(bf.width - 1, x_col))
+                self._place_column(col_units, x_col, center_y, bf, min_x=min_x)
         
         army1_roles = {'front': [], 'mid': [], 'back': []}
         army2_roles = {'front': [], 'mid': [], 'back': []}
@@ -76,43 +76,66 @@ class Battle:
         if self.map_name == "Siège":
             # Siège: armée 2 (défenseur) se place derrière le mur
             wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
+            defender_min_x = wall_x + 1  # Jamais devant le mur
+            gate_positions = bf.siege_data.get('gate_positions', [])
             
-            # Archers/back → sur le mur (cases adjacentes au mur côté défenseur)
-            wall_units = []
-            behind_units = []
+            # === TIREURS (back) → sur les remparts ===
+            wall_shooters = []
+            other_back = []
             for u in army2_roles['back']:
-                if u._max_range >= 4:  # Tir à distance
-                    wall_units.append(u)
-                    u._on_wall = True  # Marqueur pour bonus mur
+                if u._max_range >= 4:
+                    wall_shooters.append(u)
                 else:
-                    behind_units.append(u)
+                    other_back.append(u)
             
-            # Placer les unités sur le mur (juste derrière, x = wall_x + 1)
-            if wall_units:
-                self._place_column(wall_units, wall_x + 1, center_y, bf)
-            if behind_units:
-                self._place_column(behind_units, wall_x + 3, center_y, bf)
+            if wall_shooters:
+                self._place_column(wall_shooters, wall_x + 1, center_y, bf, min_x=defender_min_x)
+            if other_back:
+                self._place_column(other_back, wall_x + 4, center_y, bf, min_x=defender_min_x)
             
-            # Front et mid derrière le mur
-            place_role_units(army2_roles['front'], wall_x + 4, center_y, +1)
-            place_role_units(army2_roles['mid'],   wall_x + 2, center_y, +1)
+            # === MID (tireurs en mid aussi sur remparts, CaC derrière portes) ===
+            mid_shooters = []
+            mid_cac = []
+            for u in army2_roles['mid']:
+                if u._max_range >= 4:
+                    mid_shooters.append(u)
+                else:
+                    mid_cac.append(u)
+            
+            if mid_shooters:
+                self._place_column(mid_shooters, wall_x + 2, center_y, bf, min_x=defender_min_x)
+            
+            # === CaC (front + mid CaC) → derrière les portes ===
+            gate_defenders = army2_roles['front'] + mid_cac
+            if gate_defenders and gate_positions:
+                # Répartir les CaC équitablement devant chaque porte
+                per_gate = max(1, len(gate_defenders) // len(gate_positions))
+                remaining = list(gate_defenders)
+                for gate_y in gate_positions:
+                    batch = remaining[:per_gate]
+                    remaining = remaining[per_gate:]
+                    if batch:
+                        self._place_column(batch, wall_x + 1, gate_y, bf, min_x=defender_min_x)
+                # Restes sur la dernière porte
+                if remaining:
+                    self._place_column(remaining, wall_x + 1, gate_positions[-1], bf, min_x=defender_min_x)
+            elif gate_defenders:
+                place_role_units(gate_defenders, wall_x + 3, center_y, +1, min_x=defender_min_x)
             
             # Ouvrir les portes si l'armée 2 n'a aucune unité à distance
             has_ranged = any(u._max_range >= 4 for u in self.army2 if u.is_alive)
             if not has_ranged:
                 for pos in bf.gate_hp:
-                    bf.gate_hp[pos] = 0  # Portes ouvertes
+                    bf.gate_hp[pos] = 0
         else:
             place_role_units(army2_roles['front'], bf.width - 9, center_y, +1)
             place_role_units(army2_roles['mid'],   bf.width - 6, center_y, +1)
             place_role_units(army2_roles['back'],  bf.width - 3, center_y, +1)
     
-    def _place_column(self, units, x_col, center_y, bf):
+    def _place_column(self, units, x_col, center_y, bf, min_x=0):
         if not units:
             return
-        # Trier: grosses unités d'abord pour leur trouver de la place
         units_sorted = sorted(units, key=lambda u: -u.size)
-        # Calculer l'espace vertical total nécessaire
         total_h = sum(bf.get_unit_dims(u)[1] for u in units_sorted)
         start_y = center_y - total_h // 2
         
@@ -122,13 +145,13 @@ class Battle:
             target_y = max(1, min(bf.height - 1 - h, cur_y))
             pos = (x_col, target_y)
             if not bf.can_place_unit(*pos, u):
-                pos = self._find_free_near_unit(x_col, target_y, u, bf)
+                pos = self._find_free_near_unit(x_col, target_y, u, bf, min_x=min_x)
             if pos is not None:
                 u.position = pos
                 bf.place_unit(u)
             cur_y += h
 
-    def _find_free_near_unit(self, x, y, unit, bf):
+    def _find_free_near_unit(self, x, y, unit, bf, min_x=0):
         """Cherche une position libre pour une unité (multi-cases supporté)."""
         for radius in range(0, max(bf.width, bf.height)):
             for dx in range(-radius, radius + 1):
@@ -136,6 +159,8 @@ class Battle:
                     if abs(dx) != radius and abs(dy) != radius:
                         continue
                     nx, ny = x + dx, y + dy
+                    if nx < min_x:
+                        continue
                     if bf.can_place_unit(nx, ny, unit):
                         return (nx, ny)
         return None
@@ -197,6 +222,15 @@ class Battle:
                     if ally == unit or not ally.is_alive:
                         continue
                     ally.morale_bonus = max(ally.morale_bonus, 1)  # +1, non cumulable
+        
+        # --- 0b) Siège: défenseurs derrière le mur intact → +1 bravoure ---
+        if self.map_name == "Siège":
+            wall_x = self.battlefield.siege_data.get('wall_x', 0)
+            has_intact_gates = any(hp > 0 for hp in self.battlefield.gate_hp.values())
+            if has_intact_gates:
+                for unit in self.army2:
+                    if unit.is_alive and not unit.fleeing and unit.position[0] >= wall_x:
+                        unit.morale_bonus = max(unit.morale_bonus, unit.morale_bonus + 1)
         
         # --- 1) Pertes lourdes (seuil 50% de l'effectif initial) ---
         for army, initial_size in [(self.army1, self.army1_initial_size),
@@ -397,6 +431,10 @@ class Battle:
         # Phase de moral (pertes lourdes + auras + stress au combat)
         self.morale_phase()
         
+        # Phase Rempart: mettre à jour _on_wall dynamiquement
+        for unit in alive:
+            unit._on_wall = self.battlefield.is_rampart(*unit.position)
+        
         # Phase Phalange: +1 sauvegarde si adjacent à un allié phalange
         for unit in alive:
             unit._phalange_bonus_active = False
@@ -422,39 +460,75 @@ class Battle:
                 unit.cast_random_spell(self, self.visual_effects, cell_size)
         
         # Attaques
+        _units_attacked_gate = set()
+        
+        # Phase de siège: attaque des portes (AVANT attaques normales)
+        if self.battlefield.gate_hp and any(h > 0 for h in self.battlefield.gate_hp.values()):
+            gate_save = self.battlefield.gate_save
+            for unit in self.army1:
+                if not unit.is_alive or unit.fleeing:
+                    continue
+                ux, uy = unit.position
+                
+                best_gate = None
+                best_gate_dist = 999
+                for gpos, ghp in self.battlefield.gate_hp.items():
+                    if ghp <= 0:
+                        continue
+                    d = self.battlefield.manhattan_distance((ux, uy), gpos)
+                    if d < best_gate_dist:
+                        best_gate = gpos
+                        best_gate_dist = d
+                
+                if best_gate is None:
+                    continue
+                
+                gx, gy = best_gate
+                is_artillery = (unit.vitesse <= 0)
+                
+                total_dmg = 0
+                for arme in unit.armes:
+                    if arme.porte < 4 and best_gate_dist > 1:
+                        continue
+                    if arme.porte >= 4 and best_gate_dist > arme.porte:
+                        continue
+                    # Arbalétriers/archers mobiles: priorité ennemis
+                    # Artillerie (vitesse 0): tire sur portes même s'il y a des ennemis
+                    if arme.porte >= 4 and not is_artillery:
+                        enemies_in_range = any(
+                            e.is_alive and self.battlefield.manhattan_distance((ux, uy), e.position) <= arme.porte
+                            for e in self.army2
+                        )
+                        if enemies_in_range:
+                            continue
+                    
+                    for _ in range(arme.nb_attaque):
+                        gate_save_mod = min(7, gate_save - arme.perforation)
+                        save_roll = random.randint(1, 6)
+                        if save_roll >= gate_save_mod:
+                            continue
+                        total_dmg += max(1, arme.lancer_degats())
+                
+                if total_dmg > 0:
+                    destroyed = self.battlefield.damage_gate(gx, gy, total_dmg)
+                    hp_left = self.battlefield.gate_hp.get((gx, gy), 0)
+                    unit.floating_texts.append(
+                        FloatingText(f"-{total_dmg} Porte ({hp_left})", (200, 150, 50), 40))
+                    _units_attacked_gate.add(id(unit))
+                    if destroyed:
+                        unit.floating_texts.append(
+                            FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
+                elif best_gate_dist <= 1 and unit._max_range < 4:
+                    unit.floating_texts.append(
+                        FloatingText("Porte résiste!", (150, 130, 80), 30))
+                    _units_attacked_gate.add(id(unit))
+        
+        # Attaques normales (unités qui n'ont pas tapé une porte)
         for unit in alive:
-            if unit.is_alive:
+            if unit.is_alive and id(unit) not in _units_attacked_gate:
                 target = self.get_closest_enemy(unit)
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
-        
-        # Phase de siège: attaque des portes par les unités CaC adjacentes
-        if self.battlefield.gate_hp:
-            for unit in self.army1:  # Seul l'attaquant attaque les portes
-                if not unit.is_alive or unit.fleeing:
-                    continue
-                if unit._max_range >= 4:  # Pas les archers
-                    continue
-                ux, uy = unit.position
-                attacked_gate = False
-                for dx in range(-1, 2):
-                    if attacked_gate:
-                        break
-                    for dy in range(-1, 2):
-                        gx, gy = ux + dx, uy + dy
-                        if self.battlefield.is_gate(gx, gy):
-                            # Dégâts = nb d'attaques CaC totales
-                            dmg = sum(a.nb_attaque for a in unit.armes if a.porte < 4)
-                            dmg = max(1, dmg)
-                            destroyed = self.battlefield.damage_gate(gx, gy, dmg)
-                            hp_left = self.battlefield.gate_hp.get((gx, gy), 0)
-                            unit.floating_texts.append(
-                                FloatingText(f"-{dmg} Porte ({hp_left})", (200, 150, 50), 40))
-                            if destroyed:
-                                unit.floating_texts.append(
-                                    FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
-                            attacked_gate = True
-                            break
         
         # Reset phalange bonus en fin de round
         for unit in alive:
