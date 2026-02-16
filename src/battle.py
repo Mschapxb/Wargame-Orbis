@@ -68,10 +68,18 @@ class Battle:
             for role_list in roles.values():
                 _rng.shuffle(role_list)
         
-        # Placement attaquant (armée 1) — toujours à gauche
-        place_role_units(army1_roles['front'], 8, center_y, -1)
-        place_role_units(army1_roles['mid'],   5, center_y, -1)
-        place_role_units(army1_roles['back'],  2, center_y, -1)
+        # Placement attaquant (armée 1) — à gauche du centre
+        # 25 cases d'écart entre les deux fronts, lignes resserrées
+        mid_x = bf.width // 2
+        gap = 12  # demi-écart: 12 cases de chaque côté = 24-25 cases entre fronts
+        
+        a1_front = mid_x - gap
+        a1_mid   = a1_front - 2
+        a1_back  = a1_front - 4
+        
+        place_role_units(army1_roles['front'], a1_front, center_y, -1)
+        place_role_units(army1_roles['mid'],   a1_mid,   center_y, -1)
+        place_role_units(army1_roles['back'],  a1_back,  center_y, -1)
         
         if self.map_name == "Siège":
             # Siège: armée 2 (défenseur) se place derrière le mur
@@ -128,9 +136,13 @@ class Battle:
                 for pos in bf.gate_hp:
                     bf.gate_hp[pos] = 0
         else:
-            place_role_units(army2_roles['front'], bf.width - 9, center_y, +1)
-            place_role_units(army2_roles['mid'],   bf.width - 6, center_y, +1)
-            place_role_units(army2_roles['back'],  bf.width - 3, center_y, +1)
+            a2_front = mid_x + gap
+            a2_mid   = a2_front + 2
+            a2_back  = a2_front + 4
+            
+            place_role_units(army2_roles['front'], a2_front, center_y, +1)
+            place_role_units(army2_roles['mid'],   a2_mid,   center_y, +1)
+            place_role_units(army2_roles['back'],  a2_back,  center_y, +1)
     
     def _place_column(self, units, x_col, center_y, bf, min_x=0):
         if not units:

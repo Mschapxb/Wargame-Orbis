@@ -76,50 +76,46 @@ def generate_prairie(width, height):
 
 
 def generate_forest(width, height):
-    """Forêt: clusters d'arbres (15-30 obstacles)."""
+    """Forêt: dense avec de nombreux clusters d'arbres."""
     grid = [[0] * height for _ in range(width)]
     
-    # Zones d'armée sans arbres
-    safe_left = 10
-    safe_right = width - 11
+    # Zone de sécurité au centre pour le combat
+    mid_x = width // 2
     
-    # Placer des clusters d'arbres
-    num_clusters = random.randint(5, 8)
+    # Placer de nombreux clusters d'arbres
+    num_clusters = random.randint(12, 20)
     for _ in range(num_clusters):
-        cx = random.randint(safe_left, safe_right)
-        cy = random.randint(4, height - 5)
-        cluster_size = random.randint(3, 6)
+        cx = random.randint(5, width - 6)
+        cy = random.randint(3, height - 4)
+        cluster_size = random.randint(4, 10)
         
         for _ in range(cluster_size):
-            ox = cx + random.randint(-2, 2)
-            oy = cy + random.randint(-2, 2)
+            ox = cx + random.randint(-3, 3)
+            oy = cy + random.randint(-3, 3)
             if 0 < ox < width - 1 and 0 < oy < height - 1:
-                if ox > safe_left - 2 and ox < safe_right + 2:
+                # Laisser un couloir central libre (±3 cases)
+                if abs(ox - mid_x) > 4:
                     grid[ox][oy] = 1
     
     return grid, {}
 
 
 def generate_village(width, height):
-    """Village: bâtiments rectangulaires comme obstacles."""
+    """Village avec de nombreux bâtiments."""
     grid = [[0] * height for _ in range(width)]
     
-    safe_left = 10
-    safe_right = width - 11
-    
-    # Placer 4-7 bâtiments
-    num_buildings = random.randint(4, 7)
+    # Placer 8-14 bâtiments sur toute la carte
+    num_buildings = random.randint(8, 14)
     buildings = []
     
-    for _ in range(num_buildings * 20):
+    for _ in range(num_buildings * 30):
         if len(buildings) >= num_buildings:
             break
-        bw = random.randint(2, 4)
-        bh = random.randint(2, 3)
-        bx = random.randint(safe_left, safe_right - bw)
+        bw = random.randint(2, 5)
+        bh = random.randint(2, 4)
+        bx = random.randint(5, width - 6 - bw)
         by = random.randint(3, height - 4 - bh)
         
-        # Vérifier pas de chevauchement
         overlap = False
         for (ox, oy, ow, oh) in buildings:
             if (bx < ox + ow + 2 and bx + bw + 2 > ox and
@@ -138,45 +134,41 @@ def generate_village(width, height):
 
 
 def generate_siege(width, height):
-    """Siège: mur vertical avec portes, remparts marchables, défenseur à droite."""
+    """Siège: mur vertical avec une porte de 6 cases, remparts et escaliers."""
     grid = [[0] * height for _ in range(width)]
     
     # Mur vertical au 2/3 de la map (défenseur = armée 2 à droite)
     wall_x = width * 2 // 3
     
-    # Portes: 2 ouvertures dans le mur
-    gate_positions = []
-    num_gates = 2
-    gate_spacing = height // (num_gates + 1)
-    
-    for i in range(num_gates):
-        gate_y = gate_spacing * (i + 1)
-        gate_positions.append(gate_y)
+    # Une seule porte de 6 cases, centrée
+    gate_center = height // 2
+    gate_half = 3  # 6 cases: de center-3 à center+2
+    gate_positions = [gate_center]  # Y central pour le placement des défenseurs
     
     # Construire le mur
     walls = []
     gates = []
-    ramparts = []  # Cases marchables sur le mur
-    stairs = []    # Escaliers derrière les remparts
+    ramparts = []
+    stairs = []
     
     for y in range(1, height - 1):
-        is_gate = any(abs(y - gy) <= 1 for gy in gate_positions)
+        is_gate = (gate_center - gate_half <= y < gate_center + gate_half)
         if is_gate:
             grid[wall_x][y] = 3  # Porte
             gates.append((wall_x, y))
         else:
-            grid[wall_x][y] = 2  # Mur (infranchissable)
+            grid[wall_x][y] = 2  # Mur
             walls.append((wall_x, y))
-            # Remparts: 2 cases marchables derrière le mur (côté défenseur)
+            # Remparts: 2 cases marchables derrière le mur
             for dx in [1, 2]:
                 rx = wall_x + dx
                 if 0 <= rx < width and grid[rx][y] == 0:
-                    grid[rx][y] = 4  # Rempart marchable
+                    grid[rx][y] = 4
                     ramparts.append((rx, y))
-            # Escalier: 1 case derrière les remparts (wall_x+3)
+            # Escalier derrière les remparts
             sx = wall_x + 3
             if 0 <= sx < width and grid[sx][y] == 0:
-                grid[sx][y] = 5  # Escalier
+                grid[sx][y] = 5
                 stairs.append((sx, y))
     
     # Tours aux coins du mur

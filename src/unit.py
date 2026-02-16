@@ -184,6 +184,9 @@ class Unit:
         # Bonus sauvegarde rempart (+2 pour les défenseurs sur rempart)
         wall_save_bonus = 2 if target_on_rampart else 0
         
+        # Bonus toucher rempart (-1 = plus facile de toucher depuis le mur)
+        wall_toucher_bonus = -1 if self._on_wall else 0
+        
         self.current_target = target
         start_px = (self.position[0] * cell_size + cell_size // 2,
                     self.position[1] * cell_size + cell_size // 2)
@@ -235,7 +238,7 @@ class Unit:
                     )
                 
                 # Résolution combat avec bonus
-                toucher_final = arme.toucher + (1 if self.afraid else 0) + anti_toucher + charge_toucher
+                toucher_final = arme.toucher + (1 if self.afraid else 0) + anti_toucher + charge_toucher + wall_toucher_bonus
                 blesser_final = arme.blesser + anti_blesser + charge_blesser
                 perf_final = arme.perforation + charge_perf
                 

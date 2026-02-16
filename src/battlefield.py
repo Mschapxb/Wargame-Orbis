@@ -223,6 +223,12 @@ class Battlefield:
         if self.manhattan_distance(unit_pos, target_pos) <= max_range:
             return None  # Déjà à portée
         
+        # Siège: si l'unité est côté attaquant, ne pas viser derrière le mur
+        wall_x = self.siege_data.get('wall_x') if self.siege_data else None
+        unit_is_attacker = wall_x is not None and unit_pos[0] < wall_x
+        # Portes toutes détruites? Alors on peut passer
+        all_gates_open = wall_x is not None and all(hp <= 0 for hp in self.gate_hp.values()) if self.gate_hp else True
+        
         # Collecter les cases à portée de la cible
         candidates = []
         for dx in range(-max_range, max_range + 1):
@@ -232,14 +238,16 @@ class Battlefield:
                 pos = (target_pos[0] + dx, target_pos[1] + dy)
                 if not self.is_valid(*pos) or pos in reserved_positions:
                     continue
+                # Siège: ne pas viser derrière le mur si les portes sont intactes
+                if unit_is_attacker and not all_gates_open and pos[0] >= wall_x:
+                    continue
                 dist = self.chebyshev_distance(unit_pos, pos)
                 is_empty = not self.is_occupied(*pos)
-                # Cases vides en priorité, puis par distance
                 priority = (0 if is_empty else 1, dist)
                 candidates.append((priority, pos))
         
         if not candidates:
-            return target_pos  # Fallback: aller vers la cible
+            return None  # Pas de position valide (sera géré par le fallback siège)
         
         candidates.sort()
         return candidates[0][1]
@@ -277,7 +285,13 @@ class Battlefield:
         current_dist = self.manhattan_distance(unit.position, target.position)
         
         if current_dist <= unit._max_range:
-            return None, target
+            # Siège: vérifier qu'un mur ne bloque pas le CaC
+            wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
+            if wall_x_s and unit._max_range < 4 and unit.position[0] < wall_x_s and target.position[0] >= wall_x_s:
+                # CaC côté attaquant, cible derrière le mur → pas vraiment à portée
+                pass  # Continue vers le pathfinding porte
+            else:
+                return None, target
         
         # Siège: défenseurs sur rempart restent en place tant qu'il reste des portes intactes
         if self.is_rampart(*unit.position) and self.gate_hp:
@@ -286,39 +300,85 @@ class Battlefield:
                 return None, target  # Rester sur le rempart, tirer depuis la position
         
         goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
-        if goal is None:
+        
+        # Siège: si pas de position d'attaque valide côté attaquant, aller vers la porte
+        wall_x_siege = self.siege_data.get('wall_x') if self.siege_data else None
+        if goal is None and wall_x_siege and unit.position[0] < wall_x_siege:
+            # Aller directement vers la porte
+            pass  # Tombe dans le block siège ci-dessous
+        elif goal is None:
             return None, target
+        else:
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
+            if path:
+                steps = min(unit.vitesse, len(path))
+                for i in range(steps, 0, -1):
+                    candidate = path[i - 1]
+                    if self._can_move_to(unit, candidate, reserved_positions):
+                        return candidate, target
         
-        path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
-        if path:
-            steps = min(unit.vitesse, len(path))
-            for i in range(steps, 0, -1):
-                candidate = path[i - 1]
-                if self._can_move_to(unit, candidate, reserved_positions):
-                    return candidate, target
-        
-        # Siège: si pas de chemin, CaC va vers la porte la plus proche
-        if self.gate_hp and unit._max_range < 4:
-            intact_gates = [(pos, hp) for pos, hp in self.gate_hp.items() if hp > 0]
-            if intact_gates:
-                # Trouver la porte la plus proche
-                nearest_gate = min(intact_gates, key=lambda g: self.manhattan_distance(unit.position, g[0]))
-                gate_pos = nearest_gate[0]
-                # Aller adjacent à la porte
-                gate_goal = self._find_adjacent_free(gate_pos, unit, reserved_positions)
-                if gate_goal:
-                    gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
+        # Siège: pas de chemin direct → passer par une porte
+        if self.gate_hp:
+            wall_x = self.siege_data.get('wall_x', 0)
+            ux = unit.position[0]
+            
+            # Unité côté attaquant (à gauche du mur)?
+            if ux < wall_x:
+                # Chercher une porte détruite pour passer à travers
+                destroyed_gates = [pos for pos, hp in self.gate_hp.items() if hp <= 0]
+                if destroyed_gates:
+                    # Aller vers la porte détruite la plus proche (traversable)
+                    nearest = min(destroyed_gates, key=lambda g: self.manhattan_distance(unit.position, g))
+                    gpath = self.a_star_path(unit.position, nearest, unit, battle, reserved_positions)
                     if gpath:
                         steps = min(unit.vitesse, len(gpath))
                         for i in range(steps, 0, -1):
                             candidate = gpath[i - 1]
                             if self._can_move_to(unit, candidate, reserved_positions):
                                 return candidate, target
+                
+                # Sinon aller adjacent à la porte intacte la plus proche (pour la détruire au CaC)
+                intact_gates = [pos for pos, hp in self.gate_hp.items() if hp > 0]
+                if intact_gates:
+                    nearest_gate = min(intact_gates, key=lambda g: self.manhattan_distance(unit.position, g))
+                    gate_goal = self._find_adjacent_free(nearest_gate, unit, reserved_positions, side="left", wall_x=wall_x)
+                    if gate_goal:
+                        gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
+                        if gpath:
+                            steps = min(unit.vitesse, len(gpath))
+                            for i in range(steps, 0, -1):
+                                candidate = gpath[i - 1]
+                                if self._can_move_to(unit, candidate, reserved_positions):
+                                    return candidate, target
+            
+            # Ne PAS utiliser fallback_move classique (ça colle au mur)
+            # Longer le mur vers la porte la plus proche
+            if ux < wall_x:
+                all_gates = list(self.gate_hp.keys())
+                if all_gates:
+                    nearest = min(all_gates, key=lambda g: abs(unit.position[1] - g[1]))
+                    uy = unit.position[1]
+                    gy = nearest[1]
+                    dy = 0 if uy == gy else (1 if gy > uy else -1)
+                    # Essayer dans l'ordre: latéral, diagonales, reculer
+                    candidates = []
+                    if dy != 0:
+                        candidates.append((ux, uy + dy))       # Latéral pur
+                        candidates.append((ux - 1, uy + dy))   # Diagonal en reculant
+                    candidates.append((ux - 1, uy))            # Reculer
+                    if dy != 0:
+                        candidates.append((ux - 2, uy + dy))   # Reculer + latéral
+                        candidates.append((ux - 1, uy + dy*2)) # Recul + grand latéral
+                    
+                    for cand in candidates:
+                        if self._can_move_to(unit, cand, reserved_positions):
+                            return cand, target
+                return None, target
         
         return self.fallback_move(unit, target, reserved_positions), target
     
-    def _find_adjacent_free(self, pos, unit, reserved):
-        """Trouve une case libre adjacente à pos."""
+    def _find_adjacent_free(self, pos, unit, reserved, side=None, wall_x=None):
+        """Trouve une case libre adjacente à pos. side='left' = côté attaquant seulement."""
         px, py = pos
         best = None
         best_d = 999
@@ -327,6 +387,9 @@ class Battlefield:
                 if dx == 0 and dy == 0:
                     continue
                 nx, ny = px + dx, py + dy
+                # Restreindre au côté attaquant si demandé
+                if side == "left" and wall_x is not None and nx >= wall_x:
+                    continue
                 if self._can_move_to(unit, (nx, ny), reserved):
                     d = self.manhattan_distance(unit.position, (nx, ny))
                     if d < best_d:
