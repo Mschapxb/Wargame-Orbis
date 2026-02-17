@@ -212,7 +212,11 @@ class Battlefield:
         return []
 
     def find_best_attack_position(self, unit, target, battle, reserved_positions=None):
-        """Trouve la meilleure case libre à portée de la cible."""
+        """Trouve la meilleure case libre à portée de la cible.
+        
+        Prend en compte la lane assignée à l'unité pour étaler les troupes
+        et éviter que tout le monde converge sur le même point.
+        """
         if reserved_positions is None:
             reserved_positions = set()
         
@@ -221,15 +225,17 @@ class Battlefield:
         unit_pos = unit.position
         
         if self.manhattan_distance(unit_pos, target_pos) <= max_range:
-            return None  # Déjà à portée
+            return None
         
-        # Siège: si l'unité est côté attaquant, ne pas viser derrière le mur
+        # Siège: ne pas viser derrière le mur si portes intactes
         wall_x = self.siege_data.get('wall_x') if self.siege_data else None
         unit_is_attacker = wall_x is not None and unit_pos[0] < wall_x
-        # Portes toutes détruites? Alors on peut passer
         all_gates_open = wall_x is not None and all(hp <= 0 for hp in self.gate_hp.values()) if self.gate_hp else True
         
-        # Collecter les cases à portée de la cible
+        # Lane de l'unité pour l'étalement
+        from ai_commander import get_lane_offset
+        lane_y = get_lane_offset(unit, self)
+        
         candidates = []
         for dx in range(-max_range, max_range + 1):
             for dy in range(-max_range, max_range + 1):
@@ -238,16 +244,19 @@ class Battlefield:
                 pos = (target_pos[0] + dx, target_pos[1] + dy)
                 if not self.is_valid(*pos) or pos in reserved_positions:
                     continue
-                # Siège: ne pas viser derrière le mur si les portes sont intactes
                 if unit_is_attacker and not all_gates_open and pos[0] >= wall_x:
                     continue
+                
+                occupied = self.is_occupied(*pos)
                 dist = self.chebyshev_distance(unit_pos, pos)
-                is_empty = not self.is_occupied(*pos)
-                priority = (0 if is_empty else 1, dist)
+                # Bonus pour les cases alignées avec la lane (étalement Y)
+                lane_dist = abs(pos[1] - lane_y)
+                # Poids: libre > occupé, proche > loin, lane alignée > décalée
+                priority = (0 if not occupied else 1, lane_dist // 3, dist)
                 candidates.append((priority, pos))
         
         if not candidates:
-            return None  # Pas de position valide (sera géré par le fallback siège)
+            return None
         
         candidates.sort()
         return candidates[0][1]
@@ -361,7 +370,13 @@ class Battlefield:
         if self.is_rampart(*unit.position) and self.gate_hp:
             intact_gates = any(hp > 0 for hp in self.gate_hp.values())
             if intact_gates:
-                return None, target  # Rester sur le rempart, tirer depuis la position
+                return None, target
+        
+        # IA hold: rester en position si l'ordre est "hold" et pas d'ennemi au contact
+        order = getattr(unit, '_tactical_order', None)
+        if order and order.order_type == "hold" and current_dist > unit._max_range + 1:
+            # Rester mais garder la cible pour tirer si possible
+            return None, target
         
         goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
         
@@ -415,24 +430,30 @@ class Battlefield:
                                 if self._can_move_to(unit, candidate, reserved_positions):
                                     return candidate, target
             
-            # Ne PAS utiliser fallback_move classique (ça colle au mur)
-            # Longer le mur vers la porte la plus proche
+            # Longer le mur vers la porte la plus proche (ou lane)
             if ux < wall_x:
                 all_gates = list(self.gate_hp.keys())
                 if all_gates:
+                    from ai_commander import get_lane_offset
+                    lane_y = get_lane_offset(unit, self)
                     nearest = min(all_gates, key=lambda g: abs(unit.position[1] - g[1]))
                     uy = unit.position[1]
                     gy = nearest[1]
                     dy = 0 if uy == gy else (1 if gy > uy else -1)
-                    # Essayer dans l'ordre: latéral, diagonales, reculer
+                    
+                    # Essayer: vers la porte, vers la lane, latéral pur, reculer
                     candidates = []
                     if dy != 0:
-                        candidates.append((ux, uy + dy))       # Latéral pur
-                        candidates.append((ux - 1, uy + dy))   # Diagonal en reculant
-                    candidates.append((ux - 1, uy))            # Reculer
+                        candidates.append((ux, uy + dy))
+                        candidates.append((ux - 1, uy + dy))
+                    # Vers la lane si on est pas aligné
+                    dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)
+                    if dy_lane != 0 and dy_lane != dy:
+                        candidates.append((ux, uy + dy_lane))
+                        candidates.append((ux - 1, uy + dy_lane))
+                    candidates.append((ux - 1, uy))
                     if dy != 0:
-                        candidates.append((ux - 2, uy + dy))   # Reculer + latéral
-                        candidates.append((ux - 1, uy + dy*2)) # Recul + grand latéral
+                        candidates.append((ux - 2, uy + dy))
                     
                     for cand in candidates:
                         if self._can_move_to(unit, cand, reserved_positions):
@@ -484,50 +505,62 @@ class Battlefield:
         return {(pos[0] + dx, pos[1] + dy) for dx in range(w) for dy in range(h)}
 
     def fallback_move(self, unit, target, reserved_positions):
-        """Mouvement de secours: avance vers la cible, peut pousser à travers alliés."""
+        """Mouvement de secours: avance vers la cible avec étalement latéral.
+        
+        1) Avancer vers la cible si possible
+        2) Sinon contourner latéralement (vers la lane assignée)
+        3) Si totalement bloqué, reculer pour laisser passer
+        """
         tx, ty = target.position
         ux, uy = unit.position
+        
+        from ai_commander import get_lane_offset
+        lane_y = get_lane_offset(unit, self)
+        
+        best_dist = self.manhattan_distance((ux, uy), (tx, ty))
         
         # Direction principale vers la cible
         dx_main = 0 if tx == ux else (1 if tx > ux else -1)
         dy_main = 0 if ty == uy else (1 if ty > uy else -1)
         
-        # Générer les directions triées: principale d'abord, puis latérales
-        all_dirs = []
+        # Direction latérale vers la lane
+        dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)
+        
+        # Candidats triés: avancer vers cible, contourner vers lane, latéral, reculer
+        moves = []
         for ddx in [-1, 0, 1]:
             for ddy in [-1, 0, 1]:
                 if ddx == 0 and ddy == 0:
                     continue
-                score = abs(ddx - dx_main) + abs(ddy - dy_main)
-                all_dirs.append((score, ddx, ddy))
-        all_dirs.sort()
+                nx, ny = ux + ddx, uy + ddy
+                pos = (nx, ny)
+                if not self._can_move_to(unit, pos, reserved_positions):
+                    continue
+                
+                new_dist = self.manhattan_distance(pos, (tx, ty))
+                # Score composite: rapprochement de la cible + alignement lane
+                approach = best_dist - new_dist  # Positif = on se rapproche
+                lane_align = -abs(ny - lane_y)   # Plus haut = mieux aligné
+                
+                # Prioriser: rapprochement > alignement lane > distance latérale
+                score = (approach * 3 + lane_align, -new_dist)
+                moves.append((score, pos))
         
-        # 1) Essayer les cases libres
-        best_pos = None
-        best_dist = self.manhattan_distance((ux, uy), (tx, ty))
+        if moves:
+            moves.sort(reverse=True)
+            return moves[0][1]
         
-        for _, ddx, ddy in all_dirs:
-            nx, ny = ux + ddx, uy + ddy
-            new_pos = (nx, ny)
-            if self._can_move_to(unit, new_pos, reserved_positions):
-                new_dist = self.manhattan_distance(new_pos, (tx, ty))
-                if new_dist < best_dist:
-                    return new_pos
-        
-        # 2) Si complètement bloqué: chercher une case occupée par un allié
-        #    qui est DERRIÈRE nous (plus loin de la cible) → swap positions
-        for _, ddx, ddy in all_dirs:
-            nx, ny = ux + ddx, uy + ddy
-            new_pos = (nx, ny)
-            if not (0 <= nx < self.width and 0 <= ny < self.height):
+        # Totalement bloqué: essayer de se décaler vers la lane même sans se rapprocher
+        for ddy in [dy_lane, -dy_lane]:
+            if ddy == 0:
                 continue
-            if not self.is_valid(nx, ny):
-                continue
-            new_dist = self.manhattan_distance(new_pos, (tx, ty))
-            if new_dist >= best_dist:
-                continue  # Pas plus proche de la cible
-            # Valide et plus proche → autoriser même si occupé (le mouvement sera résolu)
-            if new_pos not in reserved_positions:
-                return new_pos
+            pos = (ux, uy + ddy)
+            if self._can_move_to(unit, pos, reserved_positions):
+                return pos
+        
+        # Reculer pour désencombrer
+        pos = (ux - dx_main, uy + dy_lane) if dy_lane else (ux - dx_main, uy)
+        if self._can_move_to(unit, pos, reserved_positions):
+            return pos
         
         return None

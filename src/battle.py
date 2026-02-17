@@ -450,33 +450,53 @@ class Battle:
         
         alive = self.get_all_alive()
         
-        # Mouvement: les unités les plus proches de l'ennemi bougent en premier
-        # Ça libère l'espace et permet aux unités arrière de suivre
-        def move_priority(u):
+        # === MOUVEMENT EN 2 PASSES ===
+        # Pass 1: unités déjà au contact (distance ≤ portée) — elles micro-ajustent
+        # Pass 2: unités en approche — elles avancent, étalées en lanes
+        
+        bf = self.battlefield
+        
+        engaged = []
+        approaching = []
+        for u in alive:
+            if u.fleeing or u.vitesse <= 0:
+                engaged.append(u)  # Fuyards et artillerie en premier
+                continue
             enemies = self.get_enemies(u)
             alive_enemies = [e for e in enemies if e.is_alive]
-            if not alive_enemies:
-                return (999, 0)
-            min_dist = min(self.battlefield.manhattan_distance(u.position, e.position) for e in alive_enemies)
-            return (min_dist, -u.vitesse)
+            if alive_enemies:
+                min_d = min(bf.manhattan_distance(u.position, e.position) for e in alive_enemies)
+                if min_d <= u._max_range + 1:
+                    engaged.append(u)
+                else:
+                    approaching.append(u)
+            else:
+                engaged.append(u)
         
-        alive.sort(key=move_priority)
+        # Trier les approchants: les plus proches de l'ennemi d'abord
+        approaching.sort(key=lambda u: min(
+            (bf.manhattan_distance(u.position, e.position) for e in self.get_enemies(u) if e.is_alive),
+            default=999))
+        
+        movement_order = engaged + approaching
         
         reserved = set()
         moves = {}
         
-        for unit in alive:
-            new_pos, target = self.battlefield.compute_move(unit, self, reserved)
+        for unit in movement_order:
+            new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
             if target:
                 self.visual_effects['target_indicators'].append((unit, target))
-            if new_pos and self.battlefield._can_move_to(unit, new_pos, reserved):
+            if new_pos and bf._can_move_to(unit, new_pos, reserved):
                 moves[unit] = new_pos
-                # Réserver toutes les cases de destination
-                reserved.update(self.battlefield._get_reserved_cells(unit, new_pos))
+                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            elif unit.position:
+                # L'unité ne bouge pas → réserver sa position actuelle
+                reserved.update(bf._get_reserved_cells(unit, unit.position))
         
         for unit, new_pos in moves.items():
-            self.battlefield.move_unit(unit, new_pos)
+            bf.move_unit(unit, new_pos)
         
         # Phase de moral (pertes lourdes + auras + stress au combat)
         self.morale_phase()
