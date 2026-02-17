@@ -82,16 +82,19 @@ class CommanderAI:
     def _assign_lanes(self, alive, enemies):
         bf = self.battlefield
         h = bf.height
-        melee = [u for u in alive if u._max_range < 4 and u.vitesse > 0]
-        if not melee:
+        # Assigner des lanes à TOUTES les unités mobiles (pas seulement CaC)
+        # pour que l'approche se fasse en front large
+        mobile = [u for u in alive if u.vitesse > 0]
+        if not mobile:
             return {}
         
         ec_y = sum(e.position[1] for e in enemies) / max(1, len(enemies))
-        num_lanes = max(3, min(10, len(melee) // 3))
-        spacing = max(2, (h - 6) / num_lanes)
+        # Plus de lanes = front plus large = moins de bouchon
+        num_lanes = max(3, min(h - 4, len(mobile)))
+        spacing = max(1, (h - 6) / max(1, num_lanes))
         
         lanes = {}
-        for i, u in enumerate(melee):
+        for i, u in enumerate(mobile):
             offset = ((i % num_lanes) - num_lanes // 2) * spacing
             ty = int(ec_y + offset)
             ty = max(2, min(h - 3, ty))

@@ -210,7 +210,7 @@ UNIT_DATABASE = {
                 "bravoure": 1,
                 "sauvegarde": 7,
                 "role": "mid",
-                "size": 2,
+                "size": 1,
                 "unit_type": "Cavalerie",
                 "armes": [
                     ("Lance", 2, 1, 3, 3, 0, "1"),

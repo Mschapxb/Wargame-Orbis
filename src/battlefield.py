@@ -136,6 +136,7 @@ class Battlefield:
 
     def move_unit(self, unit, new_pos):
         """Déplace une unité vers une nouvelle position."""
+        unit._prev_position = unit.position  # Sauvegarder pour animation
         self.remove_unit(unit)
         unit.position = new_pos
         self.place_unit(unit)
@@ -158,7 +159,11 @@ class Battlefield:
         allies = battle.get_allies(unit)
         ally_positions = {u.position for u in allies if u.is_alive and u != unit}
         
-        ALLY_PENALTY = 2.0  # Traverser un allié coûte cher mais est possible
+        # Pénalité réduite pour traverser un allié — permet un meilleur contournement
+        # Plus l'unité est loin de la cible, moins la pénalité est forte
+        # (les unités en approche doivent pouvoir contourner facilement)
+        dist_to_goal = self.chebyshev_distance(start, goal)
+        ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
         
         open_set = []
         heapq.heappush(open_set, (self.chebyshev_distance(start, goal), 0.0, start))
@@ -562,5 +567,59 @@ class Battlefield:
         pos = (ux - dx_main, uy + dy_lane) if dy_lane else (ux - dx_main, uy)
         if self._can_move_to(unit, pos, reserved_positions):
             return pos
+        
+        return None
+
+    def find_lateral_advance(self, unit, battle, reserved_positions):
+        """Mouvement latéral pour les unités bloquées durant l'approche.
+        
+        Quand une unité ne peut pas avancer tout droit (bloquée par des alliés),
+        elle se décale latéralement vers sa lane pour créer un front plus large
+        et permettre à plusieurs unités d'avancer simultanément.
+        """
+        ux, uy = unit.position
+        enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
+        if not enemies:
+            return None
+        
+        from ai_commander import get_lane_offset
+        lane_y = get_lane_offset(unit, self)
+        
+        # Centre ennemi pour déterminer la direction d'avance
+        ec_x = sum(e.position[0] for e in enemies) / len(enemies)
+        dx_toward = 0 if ec_x == ux else (1 if ec_x > ux else -1)
+        
+        # Direction latérale vers la lane
+        dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)
+        
+        # Essayer dans l'ordre:
+        # 1) Avancer en diagonale vers la lane (avance + étalement)
+        # 2) Se décaler purement vers la lane (étalement pur)
+        # 3) Avancer en diagonale opposée à la lane
+        # 4) Se décaler dans la direction opposée à la lane
+        candidates = []
+        
+        if dy_lane != 0:
+            # Diagonale vers lane + avance
+            candidates.append((ux + dx_toward, uy + dy_lane))
+            # Pur latéral vers lane
+            candidates.append((ux, uy + dy_lane))
+            # Diagonale vers lane + recul (pour se dégager)
+            candidates.append((ux - dx_toward, uy + dy_lane))
+        
+        # Diagonale opposée à la lane + avance (contournement par l'autre côté)
+        if dy_lane != 0:
+            candidates.append((ux + dx_toward, uy - dy_lane))
+            candidates.append((ux, uy - dy_lane))
+        else:
+            # Pas de lane assignée → essayer les deux côtés
+            candidates.append((ux + dx_toward, uy + 1))
+            candidates.append((ux + dx_toward, uy - 1))
+            candidates.append((ux, uy + 1))
+            candidates.append((ux, uy - 1))
+        
+        for pos in candidates:
+            if self._can_move_to(unit, pos, reserved_positions):
+                return pos
         
         return None

@@ -38,6 +38,10 @@ class Battle:
         # Commandants IA
         self.commander1 = CommanderAI(self.army1, self.army2, self.battlefield, is_army1=True)
         self.commander2 = CommanderAI(self.army2, self.army1, self.battlefield, is_army1=False)
+        
+        # Initialiser les positions d'animation (pas de transition au premier frame)
+        for u in self.army1 + self.army2:
+            u._prev_position = u.position
 
     def _place_armies(self, center_y):
         bf = self.battlefield
@@ -72,13 +76,13 @@ class Battle:
                 _rng.shuffle(role_list)
         
         # Placement attaquant (armée 1) — à gauche du centre
-        # 25 cases d'écart entre les deux fronts, lignes resserrées
+        # Lignes resserrées pour que l'armée avance de manière cohésive
         mid_x = bf.width // 2
         gap = 12  # demi-écart: 12 cases de chaque côté = 24-25 cases entre fronts
         
         a1_front = mid_x - gap
-        a1_mid   = a1_front - 2
-        a1_back  = a1_front - 4
+        a1_mid   = a1_front - 1   # mid juste derrière front (1 case)
+        a1_back  = a1_front - 2   # back 2 cases derrière (au lieu de 4)
         
         place_role_units(army1_roles['front'], a1_front, center_y, -1)
         place_role_units(army1_roles['mid'],   a1_mid,   center_y, -1)
@@ -161,8 +165,8 @@ class Battle:
                     bf.gate_hp[pos] = 0
         else:
             a2_front = mid_x + gap
-            a2_mid   = a2_front + 2
-            a2_back  = a2_front + 4
+            a2_mid   = a2_front + 1
+            a2_back  = a2_front + 2
             
             place_role_units(army2_roles['front'], a2_front, center_y, +1)
             place_role_units(army2_roles['mid'],   a2_mid,   center_y, +1)
@@ -366,16 +370,20 @@ class Battle:
                                     FloatingText("Peur!", (255, 180, 60), 60))
 
     def _charge_phase(self, alive, cell_size):
-        """Phase de charge: les unités avec charge se ruent sur un ennemi à distance de charge."""
+        """Phase de charge: les unités avec charge se ruent sur un ennemi à distance de charge.
+        
+        Nerfé: portée réduite (vitesse à 1.5x au lieu de 2x), nécessite un chemin libre,
+        et seule la PREMIÈRE arme est utilisée lors de l'attaque de charge.
+        """
         for unit in alive:
             if not unit.is_alive or unit.fleeing:
                 continue
             if not unit.charge_montee and not unit.charge_aida:
                 continue
             
-            # Distance de charge: entre vitesse et 2x vitesse
+            # Distance de charge réduite: entre vitesse et 1.5x vitesse (au lieu de 2x)
             min_dist = unit.vitesse
-            max_dist = unit.vitesse * 2
+            max_dist = int(unit.vitesse * 1.5)
             
             # Trouver un ennemi dans la zone de charge
             best_target = None
@@ -409,6 +417,11 @@ class Battle:
             if not charge_pos:
                 continue
             
+            # Vérifier qu'il y a un chemin libre (pas de téléportation à travers les alliés)
+            path = self.battlefield.a_star_path(unit.position, charge_pos, unit, self)
+            if not path or len(path) > max_dist:
+                continue
+            
             # Déplacer l'unité vers la cible (charge!)
             self.battlefield.move_unit(unit, charge_pos)
             unit.has_charged = True
@@ -427,8 +440,16 @@ class Battle:
             label = "CHARGE!" if unit.charge_montee else "CHARGE D'AÏDA!"
             unit.floating_texts.append(FloatingText(label, charge_color, 70))
             
-            # Attaque de charge immédiate
-            unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
+            # Attaque de charge: seulement la première arme CaC (pas toutes les armes)
+            if unit.armes:
+                melee_armes = [a for a in unit.armes if a.porte <= 2]
+                if melee_armes:
+                    saved_armes = unit.armes
+                    unit.armes = [melee_armes[0]]
+                    unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
+                    unit.armes = saved_armes
+                else:
+                    unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
 
     def simulate_round(self, cell_size):
         self._alive_cache['dirty'] = True
@@ -450,17 +471,22 @@ class Battle:
         
         alive = self.get_all_alive()
         
-        # === MOUVEMENT EN 2 PASSES ===
-        # Pass 1: unités déjà au contact (distance ≤ portée) — elles micro-ajustent
-        # Pass 2: unités en approche — elles avancent, étalées en lanes
+        # === MOUVEMENT COHÉSIF EN 3 PASSES ===
+        # Pass 1: fuyards et artillerie (statiques)
+        # Pass 2: unités engagées (déjà au contact) — micro-ajustent
+        # Pass 3: unités en approche — avancent en formation avec étalement
+        #   - Triées du FOND vers l'AVANT pour que les arrières ne soient pas
+        #     bloqués par les unités de front qui réservent tout devant elles
         
         bf = self.battlefield
         
-        engaged = []
-        approaching = []
+        static_units = []   # Fuyards, artillerie
+        engaged = []        # Au contact (distance ≤ portée+1)
+        approaching = []    # En approche (pas encore au contact)
+        
         for u in alive:
             if u.fleeing or u.vitesse <= 0:
-                engaged.append(u)  # Fuyards et artillerie en premier
+                static_units.append(u)
                 continue
             enemies = self.get_enemies(u)
             alive_enemies = [e for e in enemies if e.is_alive]
@@ -471,19 +497,13 @@ class Battle:
                 else:
                     approaching.append(u)
             else:
-                engaged.append(u)
+                static_units.append(u)
         
-        # Trier les approchants: les plus proches de l'ennemi d'abord
-        approaching.sort(key=lambda u: min(
-            (bf.manhattan_distance(u.position, e.position) for e in self.get_enemies(u) if e.is_alive),
-            default=999))
-        
-        movement_order = engaged + approaching
-        
+        # === Pass 1: statiques — réservent leur position ===
         reserved = set()
         moves = {}
         
-        for unit in movement_order:
+        for unit in static_units:
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
             if target:
@@ -492,8 +512,82 @@ class Battle:
                 moves[unit] = new_pos
                 reserved.update(bf._get_reserved_cells(unit, new_pos))
             elif unit.position:
-                # L'unité ne bouge pas → réserver sa position actuelle
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
+        
+        # === Pass 2: engagées — se déplacent, triées par proximité ===
+        engaged.sort(key=lambda u: min(
+            (bf.manhattan_distance(u.position, e.position)
+             for e in self.get_enemies(u) if e.is_alive), default=999))
+        
+        for unit in engaged:
+            new_pos, target = bf.compute_move(unit, self, reserved)
+            unit.current_target = target
+            if target:
+                self.visual_effects['target_indicators'].append((unit, target))
+            if new_pos and bf._can_move_to(unit, new_pos, reserved):
+                moves[unit] = new_pos
+                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            elif unit.position:
+                reserved.update(bf._get_reserved_cells(unit, unit.position))
+        
+        # === Pass 3: en approche — avance cohésive ===
+        # Trier les approchants du PLUS LOIN au PLUS PROCHE de l'ennemi
+        # Ainsi les unités de derrière réservent d'abord leur destination
+        # et les unités de devant s'adaptent (au lieu de tout bloquer)
+        approaching.sort(key=lambda u: min(
+            (bf.manhattan_distance(u.position, e.position)
+             for e in self.get_enemies(u) if e.is_alive), default=999),
+            reverse=True)
+        
+        # Calculer la distance min de l'ennemi parmi les approchants
+        # pour limiter la vitesse des plus rapides (cohésion)
+        if approaching:
+            approach_dists = []
+            for u in approaching:
+                ae = [e for e in self.get_enemies(u) if e.is_alive]
+                if ae:
+                    approach_dists.append(
+                        min(bf.manhattan_distance(u.position, e.position) for e in ae))
+            if approach_dists:
+                median_dist = sorted(approach_dists)[len(approach_dists) // 2]
+            else:
+                median_dist = 999
+        
+        for unit in approaching:
+            # Cohésion: les unités très en avance ralentissent pour ne pas
+            # se retrouver isolées. On limite la vitesse effective si l'unité
+            # est significativement plus proche que la médiane de son armée.
+            ae = [e for e in self.get_enemies(unit) if e.is_alive]
+            if ae:
+                my_dist = min(bf.manhattan_distance(unit.position, e.position) for e in ae)
+            else:
+                my_dist = 999
+            
+            # Si l'unité est > 6 cases en avance de la médiane, elle ralentit
+            orig_speed = unit.vitesse
+            advance_gap = median_dist - my_dist
+            if advance_gap > 6 and unit._max_range < 4:
+                # Unité très en avance: ralentir (vitesse min 1)
+                unit.vitesse = max(1, orig_speed - 1)
+            
+            new_pos, target = bf.compute_move(unit, self, reserved)
+            unit.current_target = target
+            if target:
+                self.visual_effects['target_indicators'].append((unit, target))
+            if new_pos and bf._can_move_to(unit, new_pos, reserved):
+                moves[unit] = new_pos
+                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            elif unit.position:
+                # Bloqué: essayer un mouvement latéral pour se décaler et avancer
+                alt_pos = bf.find_lateral_advance(unit, self, reserved)
+                if alt_pos and bf._can_move_to(unit, alt_pos, reserved):
+                    moves[unit] = alt_pos
+                    reserved.update(bf._get_reserved_cells(unit, alt_pos))
+                else:
+                    reserved.update(bf._get_reserved_cells(unit, unit.position))
+            
+            # Restaurer la vitesse originale
+            unit.vitesse = orig_speed
         
         for unit, new_pos in moves.items():
             bf.move_unit(unit, new_pos)

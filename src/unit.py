@@ -27,6 +27,11 @@ class Unit:
         self.role = role
         self.position = (0, 0)
         self.is_alive = True
+        
+        # Animation: position précédente pour interpolation fluide
+        self._prev_position = (0, 0)  # Position au round précédent
+        self._lunge_target = None     # Position pixel de la cible pour lunge CaC
+        self._lunge_timer = 0         # Timer du lunge (frames restantes)
         self.color = color
         self.afraid = False
         self.fleeing = False
@@ -51,8 +56,8 @@ class Unit:
         self.anti_infanterie = False
         self.anti_large = False
         self.phalange = False
-        self.charge_montee = False  # Cavalerie: +1 blesser, +1 dégâts, -1 perf
-        self.charge_aida = False    # Infanterie: +1 blesser, +1 toucher
+        self.charge_montee = False  # Cavalerie: +1 dégâts sur charge
+        self.charge_aida = False    # Infanterie: -1 blesser sur charge
         self.has_charged = False    # A déjà chargé ce round
         self._phalange_bonus_active = False
         self._on_wall = False  # Sur un mur (siège)
@@ -193,6 +198,12 @@ class Unit:
         end_px = (target.position[0] * cell_size + cell_size // 2,
                   target.position[1] * cell_size + cell_size // 2)
         
+        # Animation de lunge CaC: si l'unité est au corps à corps, elle bondit
+        # brièvement vers la cible (pas pour les tirs à distance)
+        if dist <= 2 and self._max_range <= 2:
+            self._lunge_target = end_px
+            self._lunge_timer = 20  # 20 frames de lunge
+        
         # Bonus anti-type
         anti_toucher = 0
         anti_blesser = 0
@@ -204,17 +215,17 @@ class Unit:
             anti_blesser = -1
         
         # Bonus de charge (appliqué si has_charged ce round)
+        # Nerfé: bonus modérés, la charge reste utile pour le déplacement
         charge_toucher = 0
         charge_blesser = 0
         charge_perf = 0
         charge_degats = 0
         if self.has_charged:
             if self.charge_montee:
-                charge_blesser = -1
+                # Cavalerie: seulement +1 dégâts (plus de bonus blesser/perf)
                 charge_degats = 1
-                charge_perf = -1
             elif self.charge_aida:
-                charge_toucher = -1
+                # Infanterie: seulement -1 blesser (plus de bonus toucher)
                 charge_blesser = -1
             self.has_charged = False  # Reset après application
         

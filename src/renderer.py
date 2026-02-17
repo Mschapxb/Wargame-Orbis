@@ -373,6 +373,12 @@ def run_visual(battle, cell_size):
     battle_report = None
     show_lines = True
     
+    # Animation: progression d'interpolation du déplacement
+    move_anim_progress = 1.0  # 0.0 = début mouvement, 1.0 = arrivé
+    MOVE_ANIM_SPEED_NORMAL = 0.07   # Vitesse d'interpolation (mode normal)
+    MOVE_ANIM_SPEED_FAST = 0.20     # Vitesse d'interpolation (mode rapide)
+    round_ready = True  # True = on peut simuler un nouveau round
+    
     import copy
     _original_army1 = copy.deepcopy(battle.army1_roster)
     _original_army2 = copy.deepcopy(battle.army2_roster)
@@ -432,6 +438,8 @@ def run_visual(battle, cell_size):
                     clamp_camera()
                     winner = None
                     battle_report = None
+                    move_anim_progress = 1.0
+                    round_ready = True
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
         
@@ -461,9 +469,14 @@ def run_visual(battle, cell_size):
         
         if not pause and winner is None:
             delay = 150 if simulation_speed == "fast" else 800
-            if now - last_round >= delay:
+            anim_speed = MOVE_ANIM_SPEED_FAST if simulation_speed == "fast" else MOVE_ANIM_SPEED_NORMAL
+            
+            if round_ready and now - last_round >= delay:
+                # Simuler un nouveau round
                 battle.simulate_round(cell_size)
                 last_round = now
+                move_anim_progress = 0.0  # Commencer l'animation
+                round_ready = False
                 # Rafraîchir la grille si siège (portes détruites)
                 if battle.map_name == "Siège":
                     grid_surface = build_grid_surface(battle, cell_size)
@@ -471,6 +484,17 @@ def run_visual(battle, cell_size):
                 if result:
                     winner = result
                     battle_report = battle.get_battle_report()
+            
+            if not round_ready:
+                # Progresser l'animation de déplacement
+                move_anim_progress = min(1.0, move_anim_progress + anim_speed)
+                if move_anim_progress >= 1.0:
+                    round_ready = True
+        
+        # Décompter les timers de lunge sur toutes les unités
+        for u in battle.army1 + battle.army2:
+            if u._lunge_timer > 0:
+                u._lunge_timer -= 1
         
         # Vieillir effets visuels
         for p in battle.visual_effects['projectiles'][:]:
@@ -617,9 +641,35 @@ def run_visual(battle, cell_size):
             else:
                 uw, uh = 2, 4
             
-            # Centre pixel de l'unité (milieu de son bloc de cases)
-            cx = x * cell_size + (uw * cell_size) // 2 + ox
-            cy = y * cell_size + (uh * cell_size) // 2 + oy
+            # === Animation: interpolation fluide entre positions ===
+            prev_x, prev_y = getattr(u, '_prev_position', u.position)
+            t = move_anim_progress  # 0.0→1.0
+            # Ease-out pour un mouvement plus naturel (rapide au début, lent à la fin)
+            t_ease = 1.0 - (1.0 - t) * (1.0 - t)
+            
+            interp_x = prev_x + (x - prev_x) * t_ease
+            interp_y = prev_y + (y - prev_y) * t_ease
+            
+            # Centre pixel de l'unité (avec interpolation)
+            cx = int(interp_x * cell_size + (uw * cell_size) // 2) + ox
+            cy = int(interp_y * cell_size + (uh * cell_size) // 2) + oy
+            
+            # === Animation de lunge CaC ===
+            lunge_target = getattr(u, '_lunge_target', None)
+            lunge_timer = getattr(u, '_lunge_timer', 0)
+            if lunge_target and lunge_timer > 0 and u.is_alive:
+                # Phase aller (10 premières frames) puis retour (10 suivantes)
+                total_lunge = 20
+                lunge_progress = 1.0 - (lunge_timer / total_lunge)
+                # Aller-retour: sin donne 0→1→0 sur [0, pi]
+                lunge_amount = math.sin(lunge_progress * math.pi)
+                # Se déplacer de 30-40% vers la cible
+                lunge_strength = 0.35
+                tx_px = lunge_target[0] + ox
+                ty_px = lunge_target[1] + oy
+                cx = int(cx + (tx_px - cx) * lunge_amount * lunge_strength)
+                cy = int(cy + (ty_px - cy) * lunge_amount * lunge_strength)
+            
             # Rayon adapté à la taille
             ur = max(3, min(uw, uh) * cell_size // 2 - 4)
             
