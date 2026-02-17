@@ -488,11 +488,14 @@ class Unit:
         
         # Créer les obstacles temporaires
         for wx, wy in wall_positions:
+            original = bf.grid[wx][wy]
+            # Ne pas écraser les structures de siège (mur, porte, rempart, escalier)
+            if original in (2, 3, 4, 5):
+                continue
             bf.grid[wx][wy] = 1  # Obstacle
-            # Stocker pour retrait futur
             if not hasattr(bf, '_temp_walls'):
                 bf._temp_walls = []
-            bf._temp_walls.append((wx, wy, spell.wall_duration))
+            bf._temp_walls.append((wx, wy, spell.wall_duration, original))
         
         visual_effects.setdefault('wall_effects', []).append(
             WallEffect(wall_positions, cell_size, 25)

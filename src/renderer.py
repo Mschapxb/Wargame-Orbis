@@ -48,7 +48,7 @@ def clear_token_cache():
 
 
 def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
-    """Calcule une grille large (plus grande que l'écran) avec caméra.
+    """Calcule une grille large avec hauteur fixe de 50 cases.
     
     Retourne (grid_width, grid_height, cell_size).
     """
@@ -58,12 +58,11 @@ def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
     
     cell_size = max(MIN_CELL_SIZE, min(target_cell, MAX_CELL_SIZE))
     
-    # Grille = ~2x la taille de l'écran pour permettre le scroll
+    # Largeur: ~2x l'écran, hauteur: fixe 50 cases
     grid_w = (screen_w * 2) // cell_size
-    grid_h = (screen_h * 2) // cell_size
+    grid_h = 50
     
     grid_w = max(80, grid_w)
-    grid_h = max(50, grid_h)
     
     return grid_w, grid_h, cell_size
 

@@ -3,6 +3,7 @@ import random
 
 from battlefield import Battlefield
 from effects import FloatingText, AttackLine
+from ai_commander import CommanderAI
 
 
 class Battle:
@@ -23,11 +24,9 @@ class Battle:
         self.army1_initial_size = len(self.army1)
         self.army2_initial_size = len(self.army2)
         
-        # Rosters complets (ne changent jamais, pour le rapport de fin)
         self.army1_roster = list(self.army1)
         self.army2_roster = list(self.army2)
         
-        # Unités ayant fui la map
         self.army1_fled = []
         self.army2_fled = []
         
@@ -35,6 +34,10 @@ class Battle:
         
         center_y = self.battlefield.height // 2
         self._place_armies(center_y)
+        
+        # Commandants IA
+        self.commander1 = CommanderAI(self.army1, self.army2, self.battlefield, is_army1=True)
+        self.commander2 = CommanderAI(self.army2, self.army1, self.battlefield, is_army1=False)
 
     def _place_armies(self, center_y):
         bf = self.battlefield
@@ -82,49 +85,70 @@ class Battle:
         place_role_units(army1_roles['back'],  a1_back,  center_y, -1)
         
         if self.map_name == "Siège":
-            # Siège: armée 2 (défenseur) se place derrière le mur
             wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
-            defender_min_x = wall_x + 1  # Jamais devant le mur
+            defender_min_x = wall_x + 1
             gate_positions = bf.siege_data.get('gate_positions', [])
+            gate_center = gate_positions[0] if gate_positions else center_y
             
-            # === TIREURS (back) → sur les remparts ===
-            wall_shooters = []
-            other_back = []
+            # Trouver les Y des portes (cases type 3 sur wall_x)
+            gate_y_set = set()
+            for y in range(bf.height):
+                if bf.grid[wall_x][y] == 3:
+                    gate_y_set.add(y)
+            # Zone porte élargie (±1 case)
+            gate_zone = set()
+            for gy in gate_y_set:
+                for dy in range(-1, 2):
+                    gate_zone.add(gy + dy)
+            
+            # Séparer tireurs vs CaC
+            all_shooters = []
+            gate_defenders = []
+            
             for u in army2_roles['back']:
-                if u._max_range >= 4:
-                    wall_shooters.append(u)
-                else:
-                    other_back.append(u)
-            
-            if wall_shooters:
-                self._place_column(wall_shooters, wall_x + 1, center_y, bf, min_x=defender_min_x)
-            if other_back:
-                self._place_column(other_back, wall_x + 4, center_y, bf, min_x=defender_min_x)
-            
-            # === MID (tireurs en mid aussi sur remparts, CaC derrière portes) ===
-            mid_shooters = []
-            mid_cac = []
+                all_shooters.append(u)
             for u in army2_roles['mid']:
                 if u._max_range >= 4:
-                    mid_shooters.append(u)
+                    all_shooters.append(u)
                 else:
-                    mid_cac.append(u)
+                    gate_defenders.append(u)
+            for u in army2_roles['front']:
+                gate_defenders.append(u)
             
-            if mid_shooters:
-                self._place_column(mid_shooters, wall_x + 2, center_y, bf, min_x=defender_min_x)
+            # === TIREURS → remparts LOIN des portes ===
+            if all_shooters:
+                # Trouver les cases rempart qui ne sont PAS adjacentes à la porte
+                rampart_positions = []
+                for y in range(1, bf.height - 1):
+                    if y not in gate_zone and bf.grid[wall_x + 1][y] == 4:
+                        rampart_positions.append(y)
+                
+                # Placer les tireurs sur ces remparts (alternant haut/bas du mur)
+                placed = 0
+                for i, u in enumerate(all_shooters):
+                    if placed < len(rampart_positions):
+                        ry = rampart_positions[placed]
+                        pos = self._find_free_near_unit(wall_x + 1, ry, u, bf, min_x=defender_min_x)
+                        if pos:
+                            u.position = pos
+                            bf.units[pos] = u
+                            placed += 1
+                            continue
+                    # Débordement: placer sur wall_x + 2
+                    pos = self._find_free_near_unit(wall_x + 2, center_y, u, bf, min_x=defender_min_x)
+                    if pos:
+                        u.position = pos
+                        bf.units[pos] = u
             
-            # === CaC (front + mid CaC) → derrière les portes ===
-            gate_defenders = army2_roles['front'] + mid_cac
+            # === CaC (front + mid) → derrière la porte uniquement ===
             if gate_defenders and gate_positions:
-                # Répartir les CaC équitablement devant chaque porte
                 per_gate = max(1, len(gate_defenders) // len(gate_positions))
                 remaining = list(gate_defenders)
-                for gate_y in gate_positions:
+                for gy in gate_positions:
                     batch = remaining[:per_gate]
                     remaining = remaining[per_gate:]
                     if batch:
-                        self._place_column(batch, wall_x + 1, gate_y, bf, min_x=defender_min_x)
-                # Restes sur la dernière porte
+                        self._place_column(batch, wall_x + 1, gy, bf, min_x=defender_min_x)
                 if remaining:
                     self._place_column(remaining, wall_x + 1, gate_positions[-1], bf, min_x=defender_min_x)
             elif gate_defenders:
@@ -420,9 +444,23 @@ class Battle:
                         u.status_text = "DÉROUTE"
                         u.floating_texts.append(FloatingText("Déroute!", (255, 100, 50), 80))
         
+        # === PHASE DE COMMANDEMENT: les IA assignent les ordres ===
+        self.commander1.issue_orders(self)
+        self.commander2.issue_orders(self)
+        
         alive = self.get_all_alive()
         
-        alive.sort(key=lambda u: (u.vitesse, random.random()), reverse=True)
+        # Mouvement: les unités les plus proches de l'ennemi bougent en premier
+        # Ça libère l'espace et permet aux unités arrière de suivre
+        def move_priority(u):
+            enemies = self.get_enemies(u)
+            alive_enemies = [e for e in enemies if e.is_alive]
+            if not alive_enemies:
+                return (999, 0)
+            min_dist = min(self.battlefield.manhattan_distance(u.position, e.position) for e in alive_enemies)
+            return (min_dist, -u.vitesse)
+        
+        alive.sort(key=move_priority)
         
         reserved = set()
         moves = {}
@@ -536,9 +574,10 @@ class Battle:
                     _units_attacked_gate.add(id(unit))
         
         # Attaques normales (unités qui n'ont pas tapé une porte)
+        from ai_commander import select_tactical_target
         for unit in alive:
             if unit.is_alive and id(unit) not in _units_attacked_gate:
-                target = self.get_closest_enemy(unit)
+                target = select_tactical_target(unit, self, self.battlefield)
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
         
@@ -556,11 +595,16 @@ class Battle:
         # Murs temporaires: décrémenter et retirer
         if hasattr(self.battlefield, '_temp_walls'):
             remaining = []
-            for wx, wy, dur in self.battlefield._temp_walls:
-                if dur <= 1:
-                    self.battlefield.grid[wx][wy] = 0  # Retirer l'obstacle
+            for entry in self.battlefield._temp_walls:
+                if len(entry) == 4:
+                    wx, wy, dur, original = entry
                 else:
-                    remaining.append((wx, wy, dur - 1))
+                    wx, wy, dur = entry
+                    original = 0
+                if dur <= 1:
+                    self.battlefield.grid[wx][wy] = original  # Restaurer la case originale
+                else:
+                    remaining.append((wx, wy, dur - 1, original))
             self.battlefield._temp_walls = remaining
         
         # Nettoyer les unités mortes de la grille
@@ -571,33 +615,21 @@ class Battle:
                 self.battlefield.remove_unit(unit)
         
         # Fuyards qui atteignent le bord → quittent la map
-        # (seulement si ils fuyaient déjà au round précédent)
         bf = self.battlefield
-        for unit in self.army1[:]:
-            if unit.fleeing and unit.is_alive:
-                if not hasattr(unit, '_flee_rounds'):
-                    unit._flee_rounds = 0
-                unit._flee_rounds += 1
-                x, y = unit.position
-                if x <= 0 and unit._flee_rounds >= 2:
-                    unit.fled = True
-                    unit.is_alive = False
-                    bf.remove_unit(unit)
-                    self.army1_fled.append(unit)
-                    self.army1.remove(unit)
-        
-        for unit in self.army2[:]:
-            if unit.fleeing and unit.is_alive:
-                if not hasattr(unit, '_flee_rounds'):
-                    unit._flee_rounds = 0
-                unit._flee_rounds += 1
-                x, y = unit.position
-                if x >= bf.width - 1 and unit._flee_rounds >= 2:
-                    unit.fled = True
-                    unit.is_alive = False
-                    bf.remove_unit(unit)
-                    self.army2_fled.append(unit)
-                    self.army2.remove(unit)
+        for army_list, fled_list in [(self.army1, self.army1_fled), (self.army2, self.army2_fled)]:
+            for unit in army_list[:]:
+                if unit.fleeing and unit.is_alive:
+                    if not hasattr(unit, '_flee_rounds'):
+                        unit._flee_rounds = 0
+                    unit._flee_rounds += 1
+                    x, y = unit.position
+                    at_border = (x <= 0 or x >= bf.width - 1 or y <= 0 or y >= bf.height - 1)
+                    if at_border and unit._flee_rounds >= 2:
+                        unit.fled = True
+                        unit.is_alive = False
+                        bf.remove_unit(unit)
+                        fled_list.append(unit)
+                        army_list.remove(unit)
         
         self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
         self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]

@@ -146,7 +146,7 @@ class Battlefield:
     def chebyshev_distance(self, a, b):
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
-    def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=600):
+    def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=1200):
         """A* avec alliés traversables (coût élevé) au lieu de bloquants.
         
         Ça évite que les unités restent coincées derrière leurs alliés
@@ -158,7 +158,7 @@ class Battlefield:
         allies = battle.get_allies(unit)
         ally_positions = {u.position for u in allies if u.is_alive and u != unit}
         
-        ALLY_PENALTY = 3.0  # Traverser un allié coûte cher mais est possible
+        ALLY_PENALTY = 2.0  # Traverser un allié coûte cher mais est possible
         
         open_set = []
         heapq.heappush(open_set, (self.chebyshev_distance(start, goal), 0.0, start))
@@ -254,10 +254,27 @@ class Battlefield:
 
     def compute_move(self, unit, battle, reserved_positions):
         if unit.fleeing:
-            # Unités en fuite: vitesse minimum 1 pour pouvoir fuir
+            # Unités en fuite: vers le bord le plus proche pour quitter le champ de bataille
             flee_speed = max(1, unit.vitesse)
-            flee_x = 0 if unit in battle.army1 else self.width - 1
-            goal = (flee_x, unit.position[1])
+            ux, uy = unit.position
+            
+            # Trouver le bord le plus proche
+            dist_left = ux
+            dist_right = self.width - 1 - ux
+            dist_top = uy
+            dist_bottom = self.height - 1 - uy
+            
+            min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
+            
+            if min_dist == dist_left:
+                goal = (0, uy)
+            elif min_dist == dist_right:
+                goal = (self.width - 1, uy)
+            elif min_dist == dist_top:
+                goal = (ux, 0)
+            else:
+                goal = (ux, self.height - 1)
+            
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
             if path:
                 steps = min(flee_speed, len(path))
@@ -265,6 +282,27 @@ class Battlefield:
                     new_pos = path[steps - 1]
                     if self._can_move_to(unit, new_pos, reserved_positions):
                         return new_pos, None
+            
+            # Fallback: n'importe quelle direction qui éloigne des ennemis
+            enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
+            if enemies:
+                avg_ex = sum(e.position[0] for e in enemies) / len(enemies)
+                avg_ey = sum(e.position[1] for e in enemies) / len(enemies)
+                best = None
+                best_dist = -1
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = ux + dx, uy + dy
+                        if self._can_move_to(unit, (nx, ny), reserved_positions):
+                            d = abs(nx - avg_ex) + abs(ny - avg_ey)
+                            if d > best_dist:
+                                best = (nx, ny)
+                                best_dist = d
+                if best:
+                    return best, None
+            
             return None, None
         
         # Unités immobiles (artillerie) ne bougent pas
@@ -281,7 +319,33 @@ class Battlefield:
         if not enemies:
             return None, None
         
-        target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+        # Utiliser le ciblage tactique de l'IA si disponible
+        from ai_commander import select_tactical_target, select_tactical_move_target
+        
+        target_unit, move_pos = select_tactical_move_target(unit, battle, self)
+        
+        # Flanquement/protection: se déplacer vers une position, pas une unité
+        if move_pos and target_unit is None:
+            goal = move_pos
+            # Trouver une cible pour le combat (le plus proche)
+            target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
+            if path:
+                steps = min(unit.vitesse, len(path))
+                for i in range(steps, 0, -1):
+                    candidate = path[i - 1]
+                    if self._can_move_to(unit, candidate, reserved_positions):
+                        return candidate, target
+            return self.fallback_move(unit, target, reserved_positions), target
+        
+        # Ciblage tactique: attaquer l'unité assignée par l'IA
+        if target_unit and target_unit.is_alive:
+            target = target_unit
+        else:
+            target = select_tactical_target(unit, battle, self)
+            if target is None:
+                target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+        
         current_dist = self.manhattan_distance(unit.position, target.position)
         
         if current_dist <= unit._max_range:
@@ -420,21 +484,50 @@ class Battlefield:
         return {(pos[0] + dx, pos[1] + dy) for dx in range(w) for dy in range(h)}
 
     def fallback_move(self, unit, target, reserved_positions):
-        """Mouvement simple: 8 directions triées par proximité avec la cible."""
+        """Mouvement de secours: avance vers la cible, peut pousser à travers alliés."""
         tx, ty = target.position
         ux, uy = unit.position
         
-        neighbors = []
+        # Direction principale vers la cible
+        dx_main = 0 if tx == ux else (1 if tx > ux else -1)
+        dy_main = 0 if ty == uy else (1 if ty > uy else -1)
+        
+        # Générer les directions triées: principale d'abord, puis latérales
+        all_dirs = []
         for ddx in [-1, 0, 1]:
             for ddy in [-1, 0, 1]:
                 if ddx == 0 and ddy == 0:
                     continue
-                nx, ny = ux + ddx, uy + ddy
-                if self._can_move_to(unit, (nx, ny), reserved_positions):
-                    dist = self.manhattan_distance((nx, ny), (tx, ty))
-                    neighbors.append((dist, (nx, ny)))
+                score = abs(ddx - dx_main) + abs(ddy - dy_main)
+                all_dirs.append((score, ddx, ddy))
+        all_dirs.sort()
         
-        if neighbors:
-            neighbors.sort()
-            return neighbors[0][1]
+        # 1) Essayer les cases libres
+        best_pos = None
+        best_dist = self.manhattan_distance((ux, uy), (tx, ty))
+        
+        for _, ddx, ddy in all_dirs:
+            nx, ny = ux + ddx, uy + ddy
+            new_pos = (nx, ny)
+            if self._can_move_to(unit, new_pos, reserved_positions):
+                new_dist = self.manhattan_distance(new_pos, (tx, ty))
+                if new_dist < best_dist:
+                    return new_pos
+        
+        # 2) Si complètement bloqué: chercher une case occupée par un allié
+        #    qui est DERRIÈRE nous (plus loin de la cible) → swap positions
+        for _, ddx, ddy in all_dirs:
+            nx, ny = ux + ddx, uy + ddy
+            new_pos = (nx, ny)
+            if not (0 <= nx < self.width and 0 <= ny < self.height):
+                continue
+            if not self.is_valid(nx, ny):
+                continue
+            new_dist = self.manhattan_distance(new_pos, (tx, ty))
+            if new_dist >= best_dist:
+                continue  # Pas plus proche de la cible
+            # Valide et plus proche → autoriser même si occupé (le mouvement sera résolu)
+            if new_pos not in reserved_positions:
+                return new_pos
+        
         return None
