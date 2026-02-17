@@ -62,6 +62,33 @@ class Battle:
                 x_col = max(min_x, min(bf.width - 1, x_col))
                 self._place_column(col_units, x_col, center_y, bf, min_x=min_x)
         
+        def place_back_spread(units, base_x, center_y, step_x, min_x=0):
+            """Place les unités back en les étalant sur toute la hauteur.
+            Les unités large (size >= 2) sont espacées uniformément."""
+            if not units:
+                return
+            # Séparer large et normal
+            large = [u for u in units if u.size >= 2]
+            normal = [u for u in units if u.size < 2]
+            
+            # Étaler les large uniformément sur la hauteur
+            if large:
+                usable = bf.height - 4
+                spacing = max(4, usable // (len(large) + 1))
+                for i, u in enumerate(large):
+                    target_y = 2 + spacing * (i + 1)
+                    target_y = max(2, min(bf.height - 3 - bf.get_unit_dims(u)[1], target_y))
+                    pos = (base_x, target_y)
+                    if not bf.can_place_unit(*pos, u):
+                        pos = self._find_free_near_unit(base_x, target_y, u, bf, min_x=min_x)
+                    if pos is not None:
+                        u.position = pos
+                        bf.place_unit(u)
+            
+            # Placer le reste normalement
+            if normal:
+                self._place_column(normal, base_x, center_y, bf, min_x=min_x)
+        
         army1_roles = {'front': [], 'mid': [], 'back': []}
         army2_roles = {'front': [], 'mid': [], 'back': []}
         
@@ -86,7 +113,7 @@ class Battle:
         
         place_role_units(army1_roles['front'], a1_front, center_y, -1)
         place_role_units(army1_roles['mid'],   a1_mid,   center_y, -1)
-        place_role_units(army1_roles['back'],  a1_back,  center_y, -1)
+        place_back_spread(army1_roles['back'],  a1_back,  center_y, -1)
         
         if self.map_name == "Siège":
             wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
@@ -99,64 +126,127 @@ class Battle:
             for y in range(bf.height):
                 if bf.grid[wall_x][y] == 3:
                     gate_y_set.add(y)
-            # Zone porte élargie (±1 case)
+            # Zone porte élargie (±2 cases) pour garder les CaC proches
             gate_zone = set()
             for gy in gate_y_set:
-                for dy in range(-1, 2):
+                for dy in range(-2, 3):
                     gate_zone.add(gy + dy)
             
-            # Séparer tireurs vs CaC
-            all_shooters = []
-            gate_defenders = []
+            # === Séparer les unités par CAPACITÉ, pas par rôle ===
+            # Tireurs = unités avec arme portée >= 4 OU mage avec sorts
+            # CaC = tout le reste (y compris officiers sans arme à distance)
+            wall_units = []    # Vont sur les remparts (tireurs + mages)
+            gate_units = []    # Vont derrière la porte (CaC + officiers)
             
-            for u in army2_roles['back']:
-                all_shooters.append(u)
-            for u in army2_roles['mid']:
-                if u._max_range >= 4:
-                    all_shooters.append(u)
+            all_defenders = army2_roles['front'] + army2_roles['mid'] + army2_roles['back']
+            for u in all_defenders:
+                if u._max_range >= 4 or u.spells:
+                    wall_units.append(u)
                 else:
-                    gate_defenders.append(u)
-            for u in army2_roles['front']:
-                gate_defenders.append(u)
+                    gate_units.append(u)
             
-            # === TIREURS → remparts LOIN des portes ===
-            if all_shooters:
-                # Trouver les cases rempart qui ne sont PAS adjacentes à la porte
-                rampart_positions = []
-                for y in range(1, bf.height - 1):
-                    if y not in gate_zone and bf.grid[wall_x + 1][y] == 4:
-                        rampart_positions.append(y)
-                
-                # Placer les tireurs sur ces remparts (alternant haut/bas du mur)
-                placed = 0
-                for i, u in enumerate(all_shooters):
-                    if placed < len(rampart_positions):
-                        ry = rampart_positions[placed]
-                        pos = self._find_free_near_unit(wall_x + 1, ry, u, bf, min_x=defender_min_x)
-                        if pos:
+            # === Cases rempart disponibles, triées par distance à la porte ===
+            # Alterner haut/bas de la porte pour étaler les tireurs
+            rampart_slots = []
+            for y in range(1, bf.height - 1):
+                if y not in gate_zone and bf.grid[wall_x + 1][y] == 4:
+                    rampart_slots.append(y)
+            
+            # Trier par distance au centre de la porte (les plus proches d'abord)
+            # en alternant haut et bas pour un étalement symétrique
+            rampart_above = sorted([y for y in rampart_slots if y < gate_center], reverse=True)
+            rampart_below = sorted([y for y in rampart_slots if y >= gate_center])
+            rampart_sorted = []
+            i_a, i_b = 0, 0
+            while i_a < len(rampart_above) or i_b < len(rampart_below):
+                if i_b < len(rampart_below):
+                    rampart_sorted.append(rampart_below[i_b])
+                    i_b += 1
+                if i_a < len(rampart_above):
+                    rampart_sorted.append(rampart_above[i_a])
+                    i_a += 1
+            
+            # === TIREURS/MAGES → remparts étalés autour de la porte ===
+            placed_wall = set()
+            for u in wall_units:
+                placed = False
+                for ry in rampart_sorted:
+                    if ry in placed_wall:
+                        continue
+                    pos = (wall_x + 1, ry)
+                    if bf.can_place_unit(*pos, u):
+                        u.position = pos
+                        bf.place_unit(u)
+                        placed_wall.add(ry)
+                        placed = True
+                        break
+                if not placed:
+                    # Débordement: 2e rang de rempart (wall_x + 2)
+                    for ry in rampart_sorted:
+                        pos = (wall_x + 2, ry)
+                        if bf.can_place_unit(*pos, u):
                             u.position = pos
-                            bf.units[pos] = u
-                            placed += 1
-                            continue
-                    # Débordement: placer sur wall_x + 2
-                    pos = self._find_free_near_unit(wall_x + 2, center_y, u, bf, min_x=defender_min_x)
+                            bf.place_unit(u)
+                            placed = True
+                            break
+                if not placed:
+                    # Dernier recours
+                    pos = self._find_free_near_unit(wall_x + 2, gate_center, u, bf, min_x=defender_min_x)
                     if pos:
                         u.position = pos
-                        bf.units[pos] = u
+                        bf.place_unit(u)
             
-            # === CaC (front + mid) → derrière la porte uniquement ===
-            if gate_defenders and gate_positions:
-                per_gate = max(1, len(gate_defenders) // len(gate_positions))
-                remaining = list(gate_defenders)
-                for gy in gate_positions:
-                    batch = remaining[:per_gate]
-                    remaining = remaining[per_gate:]
-                    if batch:
-                        self._place_column(batch, wall_x + 1, gy, bf, min_x=defender_min_x)
-                if remaining:
-                    self._place_column(remaining, wall_x + 1, gate_positions[-1], bf, min_x=defender_min_x)
-            elif gate_defenders:
-                place_role_units(gate_defenders, wall_x + 3, center_y, +1, min_x=defender_min_x)
+            # === CaC → derrière la porte (PAS sur le rempart) ===
+            # Cases valides: juste derrière la porte (wall_x+1 sur les Y de porte)
+            # puis débordement sur wall_x+2, wall_x+3 etc.
+            gate_ys_sorted = sorted(gate_y_set)
+            
+            placed_gate_positions = set()
+            for u in gate_units:
+                placed = False
+                # D'abord: cases directement derrière la porte (non-rempart)
+                for dx in range(1, 6):
+                    for gy in gate_ys_sorted:
+                        pos = (wall_x + dx, gy)
+                        if pos in placed_gate_positions:
+                            continue
+                        cell = bf.grid[pos[0]][pos[1]] if 0 <= pos[0] < bf.width and 0 <= pos[1] < bf.height else -1
+                        # Éviter les remparts pour les CaC
+                        if cell == 4:
+                            continue
+                        if bf.can_place_unit(*pos, u):
+                            u.position = pos
+                            bf.place_unit(u)
+                            placed_gate_positions.add(pos)
+                            placed = True
+                            break
+                    if placed:
+                        break
+                
+                if not placed:
+                    # Débordement: chercher une case libre proche de la porte, pas sur rempart
+                    for dx in range(1, 8):
+                        for dy_offset in range(0, bf.height // 2):
+                            for sign in [1, -1]:
+                                ny = gate_center + dy_offset * sign
+                                pos = (wall_x + dx, ny)
+                                if not (0 <= pos[0] < bf.width and 0 <= pos[1] < bf.height):
+                                    continue
+                                cell = bf.grid[pos[0]][pos[1]]
+                                if cell == 4:  # Pas de CaC sur rempart
+                                    continue
+                                if pos in placed_gate_positions:
+                                    continue
+                                if bf.can_place_unit(*pos, u):
+                                    u.position = pos
+                                    bf.place_unit(u)
+                                    placed_gate_positions.add(pos)
+                                    placed = True
+                                    break
+                            if placed:
+                                break
+                        if placed:
+                            break
             
             # Ouvrir les portes si l'armée 2 n'a aucune unité à distance
             has_ranged = any(u._max_range >= 4 for u in self.army2 if u.is_alive)
@@ -170,7 +260,7 @@ class Battle:
             
             place_role_units(army2_roles['front'], a2_front, center_y, +1)
             place_role_units(army2_roles['mid'],   a2_mid,   center_y, +1)
-            place_role_units(army2_roles['back'],  a2_back,  center_y, +1)
+            place_back_spread(army2_roles['back'],  a2_back,  center_y, +1)
     
     def _place_column(self, units, x_col, center_y, bf, min_x=0):
         if not units:
@@ -213,18 +303,27 @@ class Battle:
             self._alive_cache['dirty'] = False
         return self._alive_cache['all']
 
+    def _refresh_army_sets(self):
+        """Met à jour les sets d'appartenance pour O(1) lookup."""
+        if not hasattr(self, '_army1_ids') or self._alive_cache['dirty']:
+            self._army1_ids = {id(u) for u in self.army1}
+            self._army2_ids = {id(u) for u in self.army2}
+
     def get_enemies(self, unit):
-        return self.army2 if unit in self.army1 else self.army1
+        self._refresh_army_sets()
+        return self.army2 if id(unit) in self._army1_ids else self.army1
 
     def get_allies(self, unit):
-        return self.army1 if unit in self.army1 else self.army2
+        self._refresh_army_sets()
+        return self.army1 if id(unit) in self._army1_ids else self.army2
 
     def get_closest_enemy(self, unit):
         enemies = self.get_enemies(unit)
         alive_enemies = [e for e in enemies if e.is_alive]
         if not alive_enemies:
             return None
-        return min(alive_enemies, key=lambda e: self.battlefield.manhattan_distance(unit.position, e.position))
+        ux, uy = unit.position
+        return min(alive_enemies, key=lambda e: abs(e.position[0] - ux) + abs(e.position[1] - uy))
 
     def get_units_in_radius(self, center_pos, radius, unit_list):
         result = []
@@ -487,6 +586,10 @@ class Battle:
         for u in alive:
             if u.fleeing or u.vitesse <= 0:
                 static_units.append(u)
+                continue
+            # Siège: tireurs/mages sur rempart → toujours "engaged" (ne bougent pas)
+            if bf.gate_hp and bf.is_rampart(*u.position) and (u._max_range >= 4 or bool(u.spells)):
+                engaged.append(u)
                 continue
             enemies = self.get_enemies(u)
             alive_enemies = [e for e in enemies if e.is_alive]

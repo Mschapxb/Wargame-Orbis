@@ -129,10 +129,16 @@ class Battlefield:
             self.units[cell] = unit
 
     def remove_unit(self, unit):
-        """Retire une unité de la grille."""
-        to_del = [cell for cell, u in self.units.items() if u is unit]
-        for cell in to_del:
-            del self.units[cell]
+        """Retire une unité de la grille (utilise get_unit_cells au lieu de scanner tout le dict)."""
+        if unit.position is None:
+            return
+        x, y = unit.position
+        w, h = self.get_unit_dims(unit)
+        for dx in range(w):
+            for dy in range(h):
+                cell = (x + dx, y + dy)
+                if self.units.get(cell) is unit:
+                    del self.units[cell]
 
     def move_unit(self, unit, new_pos):
         """Déplace une unité vers une nouvelle position."""
@@ -148,71 +154,98 @@ class Battlefield:
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
     def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=1200):
-        """A* avec alliés traversables (coût élevé) au lieu de bloquants.
-        
-        Ça évite que les unités restent coincées derrière leurs alliés
-        quand il reste peu de monde en fin de bataille.
-        """
+        """A* optimisé — opérations inlinées pour la performance."""
         if reserved_positions is None:
             reserved_positions = set()
         
-        allies = battle.get_allies(unit)
-        ally_positions = {u.position for u in allies if u.is_alive and u != unit}
+        if start == goal:
+            return [goal]
         
-        # Pénalité réduite pour traverser un allié — permet un meilleur contournement
-        # Plus l'unité est loin de la cible, moins la pénalité est forte
-        # (les unités en approche doivent pouvoir contourner facilement)
-        dist_to_goal = self.chebyshev_distance(start, goal)
+        allies = battle.get_allies(unit)
+        ally_positions = {u.position for u in allies if u.is_alive and u is not unit}
+        
+        # Pénalité réduite quand loin de la cible
+        sx, sy = start
+        gx, gy = goal
+        dist_to_goal = max(abs(gx - sx), abs(gy - sy))
         ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
         
+        # Cache local pour éviter les lookups d'attributs répétés
+        grid = self.grid
+        width = self.width
+        height = self.height
+        gate_hp = self.gate_hp
+        reserved = reserved_positions
+        
         open_set = []
-        heapq.heappush(open_set, (self.chebyshev_distance(start, goal), 0.0, start))
-        came_from = {}
+        h0 = max(abs(gx - sx), abs(gy - sy))
+        heapq.heappush(open_set, (h0, 0.0, sx, sy))
         g_score = {start: 0.0}
-        directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+        came_from = {}
+        
+        _DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+        _DIAG_COST = 1.414
         nodes_explored = 0
+        _heappush = heapq.heappush
+        _heappop = heapq.heappop
+        _abs = abs
+        _INF = 1e9
         
         while open_set:
-            _, g, current = heapq.heappop(open_set)
+            _, g, cx, cy = _heappop(open_set)
             nodes_explored += 1
             
             if nodes_explored > max_nodes:
                 break
             
-            if current == goal:
+            if cx == gx and cy == gy:
+                # Reconstruire le chemin
                 path = []
+                current = (gx, gy)
                 while current in came_from:
                     path.append(current)
                     current = came_from[current]
                 path.reverse()
                 return path
             
-            # Skip si on a déjà trouvé un meilleur chemin
-            if g > g_score.get(current, float('inf')):
+            current = (cx, cy)
+            if g > g_score.get(current, _INF):
                 continue
             
-            for dx, dy in directions:
-                neighbor = (current[0] + dx, current[1] + dy)
+            for dx, dy in _DIRS:
+                nx, ny = cx + dx, cy + dy
                 
-                if not self.is_valid(*neighbor):
+                # is_valid inliné
+                if nx < 0 or nx >= width or ny < 0 or ny >= height:
                     continue
-                if neighbor in reserved_positions:
+                cell = grid[nx][ny]
+                if cell == 1 or cell == 2:
+                    continue
+                if cell == 3 and gate_hp.get((nx, ny), 0) > 0:
                     continue
                 
-                base_cost = 1.414 if dx != 0 and dy != 0 else 1.0
+                neighbor = (nx, ny)
+                if neighbor in reserved:
+                    continue
                 
-                # Les alliés sont traversables mais avec une pénalité
+                base_cost = _DIAG_COST if (dx and dy) else 1.0
+                
                 if neighbor in ally_positions and neighbor != goal:
-                    cost = base_cost + ALLY_PENALTY
+                    new_g = g + base_cost + ALLY_PENALTY
                 else:
-                    cost = base_cost
+                    new_g = g + base_cost
                 
-                new_g = g + cost
-                if new_g < g_score.get(neighbor, float('inf')):
+                if new_g < g_score.get(neighbor, _INF):
                     came_from[neighbor] = current
                     g_score[neighbor] = new_g
-                    h = self.chebyshev_distance(neighbor, goal)
-                    heapq.heappush(open_set, (new_g + h, new_g, neighbor))
+                    # chebyshev inliné
+                    h = _abs(gx - nx)
+                    hdy = _abs(gy - ny)
+                    if hdy > h:
+                        h = hdy
+                    _heappush(open_set, (new_g + h, new_g, nx, ny))
+        
+        return []
         
         return []
 
@@ -241,35 +274,56 @@ class Battlefield:
         from ai_commander import get_lane_offset
         lane_y = get_lane_offset(unit, self)
         
-        candidates = []
+        tx, ty = target_pos
+        ux, uy = unit_pos
+        grid = self.grid
+        width = self.width
+        height = self.height
+        units_dict = self.units
+        gate_hp_dict = self.gate_hp
+        
+        best_priority = None
+        best_pos = None
+        
         for dx in range(-max_range, max_range + 1):
-            for dy in range(-max_range, max_range + 1):
-                if abs(dx) + abs(dy) > max_range or (dx == 0 and dy == 0):
+            px = tx + dx
+            if px < 0 or px >= width:
+                continue
+            if unit_is_attacker and not all_gates_open and px >= wall_x:
+                continue
+            adx = abs(dx)
+            max_dy = max_range - adx
+            for dy in range(-max_dy, max_dy + 1):
+                if dx == 0 and dy == 0:
                     continue
-                pos = (target_pos[0] + dx, target_pos[1] + dy)
-                if not self.is_valid(*pos) or pos in reserved_positions:
+                py = ty + dy
+                if py < 0 or py >= height:
                     continue
-                if unit_is_attacker and not all_gates_open and pos[0] >= wall_x:
+                # is_valid inliné
+                cell = grid[px][py]
+                if cell == 1 or cell == 2:
+                    continue
+                if cell == 3 and gate_hp_dict.get((px, py), 0) > 0:
+                    continue
+                pos = (px, py)
+                if pos in reserved_positions:
                     continue
                 
-                occupied = self.is_occupied(*pos)
-                dist = self.chebyshev_distance(unit_pos, pos)
-                # Bonus pour les cases alignées avec la lane (étalement Y)
-                lane_dist = abs(pos[1] - lane_y)
-                # Poids: libre > occupé, proche > loin, lane alignée > décalée
-                priority = (0 if not occupied else 1, lane_dist // 3, dist)
-                candidates.append((priority, pos))
+                occupied = 0 if pos not in units_dict else 1
+                dist = max(abs(ux - px), abs(uy - py))
+                lane_dist = abs(py - lane_y) // 3
+                priority = (occupied, lane_dist, dist)
+                
+                if best_priority is None or priority < best_priority:
+                    best_priority = priority
+                    best_pos = pos
         
-        if not candidates:
-            return None
-        
-        candidates.sort()
-        return candidates[0][1]
+        return best_pos
 
     def compute_move(self, unit, battle, reserved_positions):
         if unit.fleeing:
-            # Unités en fuite: vers le bord le plus proche pour quitter le champ de bataille
-            flee_speed = max(1, unit.vitesse)
+            # Unités en fuite: courir vers le bord le plus proche
+            flee_speed = max(2, unit.vitesse)  # Minimum 2 cases/round en fuite
             ux, uy = unit.position
             
             # Trouver le bord le plus proche
@@ -280,42 +334,53 @@ class Battlefield:
             
             min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
             
-            if min_dist == dist_left:
-                goal = (0, uy)
-            elif min_dist == dist_right:
-                goal = (self.width - 1, uy)
-            elif min_dist == dist_top:
+            if min_dist == dist_top:
                 goal = (ux, 0)
-            else:
+            elif min_dist == dist_bottom:
                 goal = (ux, self.height - 1)
+            elif min_dist == dist_left:
+                goal = (0, uy)
+            else:
+                goal = (self.width - 1, uy)
             
+            # Essayer le A* en premier
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
             if path:
                 steps = min(flee_speed, len(path))
-                if steps > 0:
-                    new_pos = path[steps - 1]
+                # Essayer le step le plus loin possible, puis réduire
+                for i in range(steps, 0, -1):
+                    new_pos = path[i - 1]
                     if self._can_move_to(unit, new_pos, reserved_positions):
                         return new_pos, None
             
-            # Fallback: n'importe quelle direction qui éloigne des ennemis
-            enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
-            if enemies:
-                avg_ex = sum(e.position[0] for e in enemies) / len(enemies)
-                avg_ey = sum(e.position[1] for e in enemies) / len(enemies)
-                best = None
-                best_dist = -1
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        if dx == 0 and dy == 0:
+            # Fallback: mouvement direct vers le bord, en essayant plusieurs directions
+            gx, gy = goal
+            dx_main = 0 if gx == ux else (1 if gx > ux else -1)
+            dy_main = 0 if gy == uy else (1 if gy > uy else -1)
+            
+            # Essayer toutes les directions, triées par efficacité vers le bord
+            candidates = []
+            for step in range(flee_speed, 0, -1):
+                for ddx in [-1, 0, 1]:
+                    for ddy in [-1, 0, 1]:
+                        if ddx == 0 and ddy == 0:
                             continue
-                        nx, ny = ux + dx, uy + dy
-                        if self._can_move_to(unit, (nx, ny), reserved_positions):
-                            d = abs(nx - avg_ex) + abs(ny - avg_ey)
-                            if d > best_dist:
-                                best = (nx, ny)
-                                best_dist = d
-                if best:
-                    return best, None
+                        nx, ny = ux + ddx * step, uy + ddy * step
+                        pos = (nx, ny)
+                        if not (0 <= nx < self.width and 0 <= ny < self.height):
+                            # Case hors map = on s'y dirige quand même (pour atteindre le bord)
+                            # Clipper au bord
+                            nx = max(0, min(self.width - 1, nx))
+                            ny = max(0, min(self.height - 1, ny))
+                            pos = (nx, ny)
+                        if self._can_move_to(unit, pos, reserved_positions):
+                            # Score: distance au bord le plus proche (plus petit = mieux)
+                            border_dist = min(nx, self.width - 1 - nx, ny, self.height - 1 - ny)
+                            candidates.append((border_dist, pos))
+            
+            if candidates:
+                candidates.sort()
+                return candidates[0][1], None
             
             return None, None
         
@@ -332,6 +397,19 @@ class Battlefield:
         enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
         if not enemies:
             return None, None
+        
+        # === Siège: tireurs/mages sur rempart ne bougent JAMAIS ===
+        # Ce check est en amont de TOUT le reste pour empêcher l'IA de les déplacer
+        if self.gate_hp and self.is_rampart(*unit.position):
+            if unit._max_range >= 4 or bool(unit.spells):
+                # Trouver une cible à portée si possible
+                ux, uy = unit.position
+                mr = unit._max_range
+                in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr]
+                if in_range:
+                    return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+                # Pas de cible à portée → rester quand même, cibler le plus proche
+                return None, min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         
         # Utiliser le ciblage tactique de l'IA si disponible
         from ai_commander import select_tactical_target, select_tactical_move_target
@@ -371,8 +449,13 @@ class Battlefield:
             else:
                 return None, target
         
-        # Siège: défenseurs sur rempart restent en place tant qu'il reste des portes intactes
+        # Siège: défenseurs TIREURS sur rempart restent TOUJOURS en place
+        # Le rempart donne un avantage défensif trop précieux pour l'abandonner
         if self.is_rampart(*unit.position) and self.gate_hp:
+            if unit._max_range >= 4 or bool(unit.spells):
+                # Tireur/mage sur rempart: ne jamais bouger
+                return None, target
+            # CaC sur rempart: rester tant que portes intactes
             intact_gates = any(hp > 0 for hp in self.gate_hp.values())
             if intact_gates:
                 return None, target

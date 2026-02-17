@@ -117,35 +117,39 @@ class CommanderAI:
         return self._melee_order(unit, enemies, prio)
     
     def _cav_order(self, unit, enemies, prio, ec):
-        bf = self.battlefield
+        ux, uy = unit.position
         hv = [e for _, e in prio if e._max_range >= 4 or e.vitesse <= 0]
         if hv:
-            t = min(hv, key=lambda e: bf.manhattan_distance(unit.position, e.position))
+            t = min(hv, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
             return TacticalOrder("attack", target_unit=t, priority=4)
-        fy = 3 if unit.position[1] < bf.height // 2 else bf.height - 4
+        bf = self.battlefield
+        fy = 3 if uy < bf.height // 2 else bf.height - 4
         return TacticalOrder("flank", target_pos=(int(ec[0]), fy), priority=3)
     
     def _ranged_order(self, unit, enemies, prio):
-        bf = self.battlefield
+        ux, uy = unit.position
+        max_range = unit._max_range
         for _, e in prio:
-            if bf.manhattan_distance(unit.position, e.position) <= unit._max_range:
+            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= max_range:
                 return TacticalOrder("attack", target_unit=e, priority=3)
-        c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
+        c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=1)
     
     def _melee_order(self, unit, enemies, prio):
-        bf = self.battlefield
+        ux, uy = unit.position
+        v2 = unit.vitesse * 2
+        v3 = unit.vitesse * 3
         # Achever blessés proches
         wounded = [e for e in enemies if e.hp < e.max_hp * 0.4
-                   and bf.manhattan_distance(unit.position, e.position) <= unit.vitesse * 2]
+                   and abs(ux - e.position[0]) + abs(uy - e.position[1]) <= v2]
         if wounded:
             return TacticalOrder("attack", target_unit=min(wounded, key=lambda e: e.hp), priority=3)
         # Officier proche
         off = [e for _, e in prio[:3] if e.encouragement_range > 0
-               and bf.manhattan_distance(unit.position, e.position) <= unit.vitesse * 3]
+               and abs(ux - e.position[0]) + abs(uy - e.position[1]) <= v3]
         if off:
             return TacticalOrder("attack", target_unit=off[0], priority=4)
-        c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
+        c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=1)
     
     def _screen_order(self, unit, enemies, mc):
@@ -244,21 +248,27 @@ def select_tactical_target(unit, battle, battlefield):
     if not enemies:
         return None
     
+    ux, uy = unit.position
+    max_range = unit._max_range
+    
     if order and order.order_type == "attack" and order.target_unit and order.target_unit.is_alive:
-        dist = battlefield.manhattan_distance(unit.position, order.target_unit.position)
-        if dist <= unit._max_range:
+        tx, ty = order.target_unit.position
+        dist = abs(ux - tx) + abs(uy - ty)
+        if dist <= max_range:
             return order.target_unit
         # Hors portée → attaquer blessé à portée
-        in_r = [e for e in enemies if battlefield.manhattan_distance(unit.position, e.position) <= unit._max_range]
+        in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
+        in_r = [(e, d) for e, d in in_r if d <= max_range]
         if in_r:
-            return min(in_r, key=lambda e: (e.hp / max(1, e.max_hp), id(e)))
+            return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), id(ed[0])))[0]
     
     if order and order.order_type in ("flank", "hold", "protect"):
-        in_r = [e for e in enemies if battlefield.manhattan_distance(unit.position, e.position) <= unit._max_range]
+        in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
+        in_r = [(e, d) for e, d in in_r if d <= max_range]
         if in_r:
-            return min(in_r, key=lambda e: e.hp)
+            return min(in_r, key=lambda ed: ed[0].hp)[0]
     
-    return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position))
+    return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
 
 
 def select_tactical_move_target(unit, battle, battlefield):
@@ -267,34 +277,39 @@ def select_tactical_move_target(unit, battle, battlefield):
     if not enemies:
         return None, None
     
+    ux, uy = unit.position
+    
     if order is None:
-        return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+        return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
     
     if order.order_type == "attack":
         t = order.target_unit
         if t and t.is_alive:
             return t, None
-        return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+        return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
     
     if order.order_type == "flank" and order.target_pos:
-        if battlefield.manhattan_distance(unit.position, order.target_pos) <= 4:
-            return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+        tx, ty = order.target_pos
+        if abs(ux - tx) + abs(uy - ty) <= 4:
+            return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
         return None, order.target_pos
     
     if order.order_type == "protect" and order.target_pos:
-        if battlefield.manhattan_distance(unit.position, order.target_pos) <= 2:
-            return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+        tx, ty = order.target_pos
+        if abs(ux - tx) + abs(uy - ty) <= 2:
+            return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
         return None, order.target_pos
     
     if order.order_type == "hold":
-        in_r = [e for e in enemies if battlefield.manhattan_distance(unit.position, e.position) <= unit._max_range + 3]
+        max_range = unit._max_range
+        in_r = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= max_range + 3]
         if in_r:
-            return min(in_r, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+            return min(in_r, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
         if order.target_pos:
             return None, order.target_pos
         return None, None
     
-    return min(enemies, key=lambda e: battlefield.manhattan_distance(unit.position, e.position)), None
+    return min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
 
 
 def get_lane_offset(unit, battlefield):
