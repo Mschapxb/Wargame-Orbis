@@ -329,9 +329,10 @@ def run_visual(battle, cell_size):
     SCREEN_W = info.current_w
     SCREEN_H = info.current_h
     
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
+    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.NOFRAME)
     pygame.display.set_caption("Battle Simulator")
     clock = pygame.time.Clock()
+    is_borderless = True  # Mode actuel: True=borderless, False=fullscreen
     
     font_small_size = max(9, cell_size // 3)
     font_tiny_size = max(7, cell_size // 4)
@@ -442,6 +443,15 @@ def run_visual(battle, cell_size):
                     round_ready = True
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
+                elif event.key == pygame.K_b:
+                    # Basculer entre borderless windowed et fullscreen exclusif
+                    is_borderless = not is_borderless
+                    if is_borderless:
+                        screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.NOFRAME)
+                    else:
+                        screen = pygame.display.set_mode((SCREEN_W, SCREEN_H), pygame.FULLSCREEN)
+                    clear_token_cache()
+                    grid_surface = build_grid_surface(battle, cell_size)
         
         # Déplacement caméra continu (touches maintenues)
         keys = pygame.key.get_pressed()
@@ -837,7 +847,7 @@ def run_visual(battle, cell_size):
         screen.blit(tiny_font.render("Sort", True, (180, 180, 180)), (lx5 + 12, ly))
         
         # Contrôles
-        ctrl = tiny_font.render("ESPACE=Pause  ZQSD/Flèches=Caméra  F=Vite  N=Normal  R=Reset  T=Lignes  M=Menu  ESC=Quit", True, (150, 170, 200))
+        ctrl = tiny_font.render("ESPACE=Pause  ZQSD/Flèches=Caméra  F=Vite  N=Normal  R=Reset  T=Lignes  B=Bordure  M=Menu  ESC=Quit", True, (150, 170, 200))
         screen.blit(ctrl, (10, ly + 18))
         
         size = tiny_font.render(f"Grille {bf_w}x{bf_h} | Cell {cell_size}px | FPS: {int(clock.get_fps())}", True, (120, 120, 120))

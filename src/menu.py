@@ -71,7 +71,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         screen_w = max(MIN_W, info.current_w)
         screen_h = max(MIN_H, info.current_h)
     
-    screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
+    screen = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
     pygame.display.set_caption("Composition des armées")
     clock = pygame.time.Clock()
     
