@@ -21,6 +21,7 @@ Champs d'une unité:
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
 from unit import Unit
+import os
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -210,7 +211,7 @@ UNIT_DATABASE = {
                 "bravoure": 1,
                 "sauvegarde": 7,
                 "role": "mid",
-                "size": 1,
+                "size": 2,
                 "unit_type": "Cavalerie",
                 "armes": [
                     ("Lance", 2, 1, 3, 3, 0, "1"),
@@ -561,3 +562,82 @@ def build_army(army_name, composition):
             result.append(u)
     
     return result
+
+
+# ═══════════════════════════════════════════════════════════════
+#               CHARGEMENT DES UNITÉS CUSTOM
+# ═══════════════════════════════════════════════════════════════
+
+CUSTOM_ARMY_NAME = "Unités custom"
+CUSTOM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_units")
+
+
+def load_custom_units_into_db():
+    """Charge toutes les fiches JSON de custom_units/ dans UNIT_DATABASE.
+    
+    Les unités custom sont regroupées sous l'armée 'Unités custom'.
+    Appelé au démarrage et après chaque édition dans l'éditeur.
+    """
+    import json
+    
+    if not os.path.isdir(CUSTOM_DIR):
+        # Pas de dossier custom → retirer l'armée custom si elle existait
+        UNIT_DATABASE.pop(CUSTOM_ARMY_NAME, None)
+        return
+    
+    units = []
+    for fname in sorted(os.listdir(CUSTOM_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        filepath = os.path.join(CUSTOM_DIR, fname)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Valider les champs obligatoires
+            if "nom" not in data or "armes" not in data:
+                continue
+            
+            # Construire le dict au format attendu par create_unit
+            unit_def = {
+                "nom": data["nom"],
+                "deplacement": data.get("deplacement", 3),
+                "blessure": data.get("blessure", 2),
+                "bravoure": data.get("bravoure", 2),
+                "sauvegarde": data.get("sauvegarde", 5),
+                "role": data.get("role", "front"),
+                "size": data.get("size", 1),
+                "unit_type": data.get("unit_type", "Infanterie"),
+                "armes": data.get("armes", []),
+                "traits": data.get("traits", []),
+                "sorts": data.get("sorts", []),
+            }
+            
+            # Copier le token dans tokens/ si token_path existe
+            token_path = data.get("token_path", "")
+            if token_path and os.path.exists(token_path):
+                tokens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
+                os.makedirs(tokens_dir, exist_ok=True)
+                dest = os.path.join(tokens_dir, f"{data['nom']}.png")
+                if os.path.abspath(token_path) != os.path.abspath(dest):
+                    import shutil
+                    try:
+                        shutil.copy2(token_path, dest)
+                    except Exception:
+                        pass
+            
+            units.append(unit_def)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            print(f"  ATTENTION: fichier custom '{fname}' invalide: {e}")
+    
+    if units:
+        UNIT_DATABASE[CUSTOM_ARMY_NAME] = {
+            "color": (180, 140, 220),  # Violet pour les custom
+            "units": units,
+        }
+    else:
+        UNIT_DATABASE.pop(CUSTOM_ARMY_NAME, None)
+
+
+# Chargement automatique au démarrage
+load_custom_units_into_db()

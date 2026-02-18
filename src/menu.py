@@ -474,6 +474,23 @@ def run_army_menu(screen_w=None, screen_h=None):
         map_desc = get_map_info(selected_map).get("description", "")
         draw_text(screen, map_desc, small_font, (btn_x + 10, map_y + 6), TEXT_DIM)
         
+        # ─── BOUTON ÉDITEUR D'UNITÉS ───
+        custom_btn = pygame.Rect(screen_w - 180, map_y, 160, 26)
+        from unit_editor import list_custom_units
+        nb_custom = len(list_custom_units())
+        custom_label = f"Unités custom ({nb_custom})" if nb_custom > 0 else "Créer unités"
+        custom_color = ORANGE if nb_custom > 0 else BTN_NORMAL
+        if draw_button(screen, custom_btn, custom_label, small_font, mouse_pos,
+                       custom_color, (240, 180, 70) if nb_custom > 0 else BTN_HOVER):
+            if clicked:
+                from unit_editor import run_custom_units_screen
+                run_custom_units_screen(screen, screen_w, screen_h)
+                # Recharger la librairie après édition
+                from unit_library import load_custom_units_into_db
+                load_custom_units_into_db()
+                # Refresh db reference
+                db.update(get_library())
+        
         # ─── BOUTON LANCER ───
         can_launch = states[0].total_units > 0 and states[1].total_units > 0
         
