@@ -486,7 +486,6 @@ class Unit:
             if len(wall_positions) >= spell.nb_obstacles:
                 break
             ex, ey = enemy.position
-            # Placer l'obstacle entre l'ennemi et nous
             dx = 1 if self.position[0] > ex else -1 if self.position[0] < ex else 0
             dy = 1 if self.position[1] > ey else -1 if self.position[1] < ey else 0
             
@@ -500,7 +499,6 @@ class Unit:
         # Créer les obstacles temporaires
         for wx, wy in wall_positions:
             original = bf.grid[wx][wy]
-            # Ne pas écraser les structures de siège (mur, porte, rempart, escalier)
             if original in (2, 3, 4, 5):
                 continue
             bf.grid[wx][wy] = 1  # Obstacle

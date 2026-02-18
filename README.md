@@ -1,180 +1,199 @@
-# Dossier Tokens
+# ⚔️ Battle Simulator — Simulateur de Batailles Tactiques
 
-Placez ici les images de tokens pour remplacer les cercles des unités.
+Simulateur de batailles au tour par tour avec rendu visuel en temps réel. Composez vos armées, choisissez un terrain et regardez l'affrontement se dérouler avec pathfinding A*, système de moral, charges de cavalerie, sorts et siège de forteresse.
 
-## Convention de nommage
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Pygame](https://img.shields.io/badge/Pygame-2.5+-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-Chaque fichier doit être un **PNG** nommé exactement comme l'unité dans l'Excel :
+---
+
+## 🚀 Installation
+
+```bash
+# Cloner le projet
+git clone <url-du-repo>
+cd battle-simulator
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Lancer le jeu
+python main.py
+```
+
+> **Prérequis** : Python 3.10+ et Pygame 2.5+. Aucune autre dépendance externe.
+
+---
+
+## 🎮 Comment jouer
+
+### Menu de composition
+
+Au lancement, un menu permet de :
+
+- Sélectionner une **armée prédéfinie** pour chaque camp (Orlandar, Skaldienne, Draconie, Légion sacrée, Héros)
+- Ajouter/retirer des unités individuellement avec les boutons **+/-**
+- Choisir la **carte** (Prairie, Forêt, Village, Siège)
+- Lancer la bataille avec **COMBAT!**
+
+### Contrôles en bataille
+
+| Touche | Action |
+|--------|--------|
+| `ESPACE` | Pause / Reprendre |
+| `F` | Mode rapide |
+| `N` | Mode normal |
+| `ZQSD` / `Flèches` | Déplacer la caméra |
+| `Molette` / `Clic milieu` | Drag caméra |
+| `T` | Afficher/masquer les lignes de ciblage |
+| `B` | Basculer plein écran / fenêtré sans bordure |
+| `R` | Relancer la bataille |
+| `M` | Retour au menu |
+| `ESC` | Quitter |
+
+---
+
+## 🗺️ Cartes disponibles
+
+| Carte | Description |
+|-------|-------------|
+| **Prairie** | Terrain ouvert, quelques obstacles. Favorise la cavalerie et les charges. |
+| **Forêt** | Dense, beaucoup d'arbres. Ralentit les charges, avantage aux embuscades. |
+| **Village** | Bâtiments qui créent des couloirs et des points de choke. |
+| **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. |
+
+---
+
+## ⚙️ Mécanique de combat
+
+### Résolution d'attaque (système à D6)
+
+Chaque attaque suit 3 jets successifs :
+
+1. **Toucher** — jet de D6, réussi si `≥ toucher` de l'arme
+2. **Blesser** — jet de D6, réussi si `≥ blesser` de l'arme
+3. **Sauvegarde** — jet de D6, raté si `< sauvegarde` de la cible (modifié par la perforation)
+
+Si les 3 passent, les dégâts de l'arme sont appliqués.
+
+### Moral
+
+Chaque unité a un score de moral (1-5). Le moral est affecté par les pertes alliées, les auras de peur et la présence d'officiers. Quand le moral est brisé, l'unité **fuit** vers le bord de la carte. Si trop d'unités fuient, c'est la **déroute** générale.
+
+### Charges
+
+- **Charge montée** (cavalerie) : déplacement à 1.5× la vitesse + **+1 dégâts** à l'impact
+- **Charge d'aïda** (infanterie) : déplacement à 1.5× la vitesse + **-1 au jet de blesser** à l'impact
+- Les charges nécessitent un chemin libre (pas de téléportation)
+- Seule la première arme de mêlée frappe pendant la charge
+
+### Siège
+
+- Les **tireurs** et **mages** sur les remparts ne bougent jamais (avantage positionnel)
+- Les défenseurs sur rempart bénéficient de **+2 sauvegarde** (seuil réduit de 2)
+- Les attaquants sur les murs ont **-1 toucher** (plus facile de toucher)
+- Les **portes** ont des PV et peuvent être détruites pour percer la défense
+
+### Sorts
+
+| Sort | Effet |
+|------|-------|
+| Boule de feu | Dégâts de zone (AoE) |
+| Soin | Restaure les PV d'un allié |
+| Armure magique | Bonus de sauvegarde temporaire |
+| Projectile magique | Attaque à distance ciblée |
+| Mur magique | Crée des obstacles temporaires |
+
+### Traits spéciaux
+
+- **Anti-infanterie / Anti-large** : bonus au toucher et blesser contre le type ciblé
+- **Phalange** : bonus défensif en formation serrée
+- **Aura de peur** : force des tests de moral aux unités ennemies proches
+- **Régénération** : récupère des PV chaque tour
+- **Vengeance sanglante** : contre-attaque en mourant
+
+---
+
+## 🏗️ Architecture du projet
 
 ```
-tokens/Infanterie régulière.png
-tokens/Arbaletrier régulier.png
-tokens/Officier.png
-tokens/Fantassin covaliir.png
-...
+battle-simulator/
+├── main.py              # Point d'entrée
+├── menu.py              # Menu de composition des armées (Pygame)
+├── battle.py            # Boucle de simulation (rounds, phases, moral)
+├── battlefield.py       # Grille, pathfinding A*, calcul de mouvement
+├── ai_commander.py      # IA tactique (ordres, ciblage, flanquement)
+├── renderer.py          # Rendu visuel Pygame (grille, unités, effets)
+├── unit.py              # Classe Unit (stats, combat, animations)
+├── unit_library.py      # Base de données d'unités et armées prédéfinies
+├── models.py            # Armes et sorts (Arme, SpellFireball, etc.)
+├── effects.py           # Effets visuels (projectiles, explosions, soins)
+├── maps.py              # Définition des cartes et génération de terrain
+├── tokens/              # Images PNG des tokens d'unités (optionnel)
+└── requirements.txt     # Dépendances Python
 ```
 
-## Format recommandé
+### Boucle de simulation (`battle.py`)
 
-- **Format** : PNG avec transparence (fond transparent)
-- **Taille** : 64×64 px minimum (sera redimensionné automatiquement)
-- **Forme** : Rond de préférence (le token est affiché dans un espace carré)
+Chaque round se déroule en phases :
 
-## Fonctionnement
+1. **Commandement** — l'IA assigne des ordres tactiques (attaque, flanquement, protection, hold)
+2. **Mouvement cohésif** en 3 passes :
+   - Statiques (fuyards, artillerie)
+   - Engagées (au contact) — micro-ajustements
+   - En approche — avance en formation avec cohésion et étalement latéral
+3. **Charge** — cavalerie et infanterie avec bonus temporaires
+4. **Combat** — résolution des attaques (mêlée, portée, sorts)
+5. **Moral** — tests de moral, fuite, déroute
 
-- Si `tokens/NomUnité.png` existe → l'image est affichée à la place du cercle
-- Si le fichier n'existe pas → le cercle coloré classique est affiché
-- Vous pouvez ajouter des tokens progressivement, pas besoin de tous les avoir
+### Pathfinding (`battlefield.py`)
 
-## Liste complète des tokens attendus (119 unités)
+- A* optimisé avec opérations inlinées (chebyshev, is_valid)
+- Les alliés sont **traversables** avec pénalité (pas de blocage permanent)
+- Mouvement latéral de secours quand le chemin est bloqué
 
-### Armée Skaldienne
-- Infanterie régulière.png
-- Eclaireur.png
-- Arbaletrier régulier.png
-- Hallbardier.png
-- Officier.png
-- Mage de guerre.png
-- Scorpion.png
-- Baliste.png
-- Artilleur.png
-- Baliste de Tartaglia.png
-- Housecarl.png
+### IA tactique (`ai_commander.py`)
 
-### Collège de magie
-- Grand Gardien magique.png
-- Gardien Magique.png
+- Attribution de **lanes** pour un front étalé
+- Ordres contextuels : attaque, flanquement, protection des tireurs, hold
+- Ciblage prioritaire : blessés, officiers, artillerie
 
-### Ordre de Chevalerie
-- Chasseur.png
-- Joueur de behourd.png
-- Chevalier Skaldien.png
-- Champion de joute.png
-- Champion de tournoi.png
+---
 
-### Ordre Eternel
-- Adepte Eternel.png
-- Guerrier Squelette.png
-- Eternel.png
+## 🎨 Tokens personnalisés
 
-### Invocation Eternel
-- Fléau.png
-- Porteur de mort.png
-- Scorpion Baliste.png
-- Golem d'obsidienne.png
-- Golem d'os.png
+Placez des images PNG dans le dossier `tokens/` avec le nom correspondant au `token_name` de l'unité. Les tokens sont automatiquement redimensionnés à la taille de la cellule.
 
-### Légion sacrée
-- Légionnaire sacré.png
-- Archer sacré.png
-- Mage sacré.png
-- Capitaine sacré.png
+Exemple : pour une unité avec `token_name = "chevalier"`, créez `tokens/chevalier.png`.
 
-### Héros
-- Général Kaiden.png
-- Anna rosas.png
-- Ardiok le Trancheur.png
-- Talioen le Vif.png
-- Apis.png
-- Oros.png
+---
 
-### Armée Orlandar
-- Fantassin covaliir.png
-- Archer covaliir.png
-- Cavalier covaliir.png
-- Officier covaliir.png
-- Maître d'armes Covaliir.png
-- Equipée d'arbalète.png
-- Equipée d'acrobate.png
-- Equipée de piquier.png
-- Porte-étendard.png
-- Catapulte covaliir.png
-- Artilleur covaliir.png
+## 🔧 Personnalisation
 
-### Draconie
-- Suppléant de Draconie.png
-- Cheval de Draconie.png
-- Pourfendeur de Draconie.png
-- Echanson dragon.png
-- Chevalier-dragon.png
+### Ajouter une unité
 
-### Arkkar
-- Citoyen du par-delà.png
-- Infanterie.png
-- Idole au visage de fer.png
-- Cavalerie idole de fer.png
-- Monteur de Rhino.png
-- Dragon soumis au par-delà.png
-- Maître des bêtes.png
-- Occultiste.png
-- Bretteur pyromancien.png
+Éditez `unit_library.py` et ajoutez une entrée dans le dictionnaire de la faction :
 
-### Al-Athar
-- Alonginus Drake.png
-- Veracruz Mazapàn.png
-- Samson du Lane.png
-- Samson [Monté].png
+```python
+"Mon Unité": {
+    "pv": 10,           # Points de vie
+    "vitesse": 4,       # Cases par tour
+    "morale": 3,        # Score de moral (1-5)
+    "sauvegarde": 5,    # Seuil de sauvegarde (D6)
+    "color": (R, G, B), # Couleur du token
+    "role": "front",    # front / mid / back
+    "unit_type": "Infanterie",  # Infanterie / Cavalerie / Large / Artillerie / Monstre / Héros
+    "armes": [
+        Arme("Épée", nb_attaque=2, toucher=3, blesser=4, perforation=0, degats="1d6", porte=1),
+    ],
+}
+```
 
-### Armée Aïdatienne
-- Garde de l'archipel.png
-- Bretteur de l'archipel.png
-- Panthère.png
-- Corsaire.png
-- Protecteur de Dalse.png
-- Natif.png
-- Natif Sarbacanier.png
+### Ajouter une carte
 
-### Armée Marcheurs Jaunes
-- Acolyte.png
-- Trancheur Jaune.png
-- Bouclier Jaune.png
-- Mage Jaune.png
-- Araignée.png
-- Abomination de chair.png
-- Marteau Jaune.png
-- Behemoth.png
-- Ailé Jaune.png
+Éditez `maps.py` et ajoutez une entrée dans `MAP_TYPES` avec les couleurs et la fonction de génération d'obstacles.
 
-### Armée Muhr
-- Lancier.png
-- Tirailleur.png
-- Archer.png
-- Cavalier.png
-- Chars.png
-- Champion des sacrées.png
-- Lion sacré.png
-- Crocodile géant.png
-- Eléphant de guerre.png
+---
 
-### Armée Huǒ shé
-- Conscrit (lame).png
-- Conscrit (arc).png
-- Guetteur du rempart.png
-- Sentinelle du rempart.png
-- Cavalier du levant.png
-- Dépositaire du sabre.png
-- Moine.png
-- Maître taoïste.png
-- Jiangshi.png
+## 📋 Crédits
 
-### Autres
-- Patroclus le surgelé.png
-- Homme de neige.png
-- Wilmar Lay.png
-- Tartaglia.png
-- Diane, La Reine Dieu.png
-- Edolion.png
-- Guerrier rat.png
-- Porte bouclier rat.png
-- Beugleur rat.png
-- Arbaletrier rat.png
-- Garde Marsik.png
-- Pretendant Champion.png
-- Alchimiste.png
-- Firastien (L).png
-- Nagwar le Brutal.png
-- Hyène*.png
-- Zarog le Géant.png
-- Tengu-Abomination.png
-- Tengu-Sabre.png
-- Tengu-Sanrei.png
+Développé en Python avec Pygame. Système de combat inspiré des wargames sur table.
