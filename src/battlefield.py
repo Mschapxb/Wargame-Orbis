@@ -399,17 +399,38 @@ class Battlefield:
             return None, None
         
         # === Siège: tireurs/mages sur rempart ne bougent JAMAIS ===
-        # Ce check est en amont de TOUT le reste pour empêcher l'IA de les déplacer
         if self.gate_hp and self.is_rampart(*unit.position):
             if unit._max_range >= 4 or bool(unit.spells):
-                # Trouver une cible à portée si possible
                 ux, uy = unit.position
                 mr = unit._max_range
                 in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr]
                 if in_range:
                     return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
-                # Pas de cible à portée → rester quand même, cibler le plus proche
                 return None, min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+        
+        # === COMBAT COLLANT: si un ennemi est au contact (dist ≤ portée), ===
+        # === l'unité reste et le combat, elle ne se déplace PAS ===
+        ux, uy = unit.position
+        closest_dist = 999
+        closest_enemy = None
+        for e in enemies:
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            if d < closest_dist:
+                closest_dist = d
+                closest_enemy = e
+        
+        if closest_dist <= unit._max_range and not unit.fleeing:
+            # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
+            in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
+            # Priorité: le plus blessé en proportion, puis le plus proche
+            best_target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
+            
+            # Exception siège: CaC côté attaquant vs cible derrière le mur
+            wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
+            if wall_x_s and unit._max_range < 4 and ux < wall_x_s and best_target.position[0] >= wall_x_s:
+                pass  # Continue vers le pathfinding normal
+            else:
+                return None, best_target
         
         # Utiliser le ciblage tactique de l'IA si disponible
         from ai_commander import select_tactical_target, select_tactical_move_target

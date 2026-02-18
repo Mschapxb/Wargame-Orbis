@@ -91,6 +91,18 @@ def run_army_menu(screen_w=None, screen_h=None):
             self.side = side  # 0 = gauche, 1 = droite
             self.composition = {}  # {(army_name, unit_name): count}
             self.scroll_offset = 0
+            self.show_bonuses = False  # Toggle affichage des bonus
+            # Bonus globaux appliqués à toutes les unités de cette armée
+            self.bonuses = {
+                "mouvement": 0,
+                "pv": 0,
+                "moral": 0,
+                "sauvegarde": 0,
+                "toucher": 0,
+                "blesser": 0,
+                "perforation": 0,
+                "degats": 0,
+            }
         
         @property
         def total_units(self):
@@ -120,7 +132,7 @@ def run_army_menu(screen_w=None, screen_h=None):
             return result
         
         def build(self):
-            """Construit la liste d'unités à partir de la composition multi-faction."""
+            """Construit la liste d'unités avec bonus appliqués."""
             from unit_library import build_army as _build
             all_units = []
             # Grouper par faction
@@ -133,6 +145,35 @@ def run_army_menu(screen_w=None, screen_h=None):
                 by_faction[army_name].append((unit_name, count))
             for army_name, comp in by_faction.items():
                 all_units.extend(_build(army_name, comp))
+            
+            # Appliquer les bonus globaux
+            b = self.bonuses
+            for u in all_units:
+                if b["mouvement"] != 0:
+                    u.vitesse = max(0, u.vitesse + b["mouvement"])
+                    u.speed = u.vitesse
+                if b["pv"] != 0:
+                    bonus_hp = b["pv"]
+                    u.pv = max(1, u.pv + bonus_hp)
+                    u.max_pv = u.pv
+                    u.hp = u.pv
+                    u.max_hp = u.pv
+                if b["moral"] != 0:
+                    u.morale = max(1, min(6, u.morale + b["moral"]))
+                    u.base_morale = u.morale
+                if b["sauvegarde"] != 0:
+                    u.sauvegarde = max(2, min(7, u.sauvegarde + b["sauvegarde"]))
+                if b["toucher"] != 0 or b["blesser"] != 0 or b["perforation"] != 0 or b["degats"] != 0:
+                    for arme in u.armes:
+                        if b["toucher"] != 0:
+                            arme.toucher = max(2, arme.toucher + b["toucher"])
+                        if b["blesser"] != 0:
+                            arme.blesser = max(2, arme.blesser + b["blesser"])
+                        if b["perforation"] != 0:
+                            arme.perforation = arme.perforation + b["perforation"]
+                        if b["degats"] != 0:
+                            arme._bonus = arme._bonus + b["degats"]
+            
             return all_units
     
     states = [ArmyState(0), ArmyState(1)]
@@ -203,7 +244,8 @@ def run_army_menu(screen_w=None, screen_h=None):
             
             # ─── Liste de toutes les factions + unités (scrollable) ───
             units_area_top = cy
-            units_area_h = panel_h - (cy - py) - 120
+            bonus_extra = 100 if state.show_bonuses else 0
+            units_area_h = panel_h - (cy - py) - 120 - bonus_extra
             
             if panel_rect.collidepoint(mouse_pos) and scroll_delta != 0:
                 state.scroll_offset = max(0, state.scroll_offset + scroll_delta)
@@ -327,7 +369,69 @@ def run_army_menu(screen_w=None, screen_h=None):
                            BTN_DANGER, (220, 70, 70)):
                 if clicked:
                     state.clear()
+            
+            # Bouton toggle bonus
+            bonus_toggle_btn = pygame.Rect(px + panel_w - 140, compo_y - 2, 64, 22)
+            has_any_bonus = any(v != 0 for v in state.bonuses.values())
+            toggle_color = ORANGE if has_any_bonus else BTN_NORMAL
+            if draw_button(screen, bonus_toggle_btn, "Bonus", small_font, mouse_pos,
+                           toggle_color, (240, 180, 70) if has_any_bonus else BTN_HOVER):
+                if clicked:
+                    state.show_bonuses = not state.show_bonuses
+            
             compo_y += 22
+            
+            # ─── Section Bonus (collapsible) ───
+            if state.show_bonuses:
+                pygame.draw.line(screen, ORANGE, (cx, compo_y), (px + panel_w - 10, compo_y), 1)
+                compo_y += 4
+                
+                # Disposition: 2 colonnes de 4 stats
+                bonus_keys = list(state.bonuses.keys())
+                # Noms courts pour l'affichage
+                bonus_labels = {
+                    "mouvement": "Mouv",
+                    "pv": "PV",
+                    "moral": "Moral",
+                    "sauvegarde": "Svg",
+                    "toucher": "Touch",
+                    "blesser": "Bless",
+                    "perforation": "Perf",
+                    "degats": "Dégâts",
+                }
+                col_w = (panel_w - 30) // 2
+                
+                for idx, key in enumerate(bonus_keys):
+                    col = idx % 2
+                    row = idx // 2
+                    bx = cx + col * col_w
+                    by = compo_y + row * 22
+                    
+                    label = bonus_labels.get(key, key)
+                    val = state.bonuses[key]
+                    
+                    # Label
+                    draw_text(screen, f"{label}:", stat_font, (bx, by + 2), TEXT_DIM)
+                    
+                    # Bouton -
+                    minus_btn = pygame.Rect(bx + 50, by, 20, 18)
+                    if draw_button(screen, minus_btn, "-", small_font, mouse_pos, BTN_DANGER, (220, 70, 70)):
+                        if clicked:
+                            state.bonuses[key] = max(-5, val - 1)
+                    
+                    # Valeur
+                    val_str = f"{val:+d}" if val != 0 else "0"
+                    val_color = GREEN if val > 0 else RED if val < 0 else TEXT_DIM
+                    vt = body_font.render(val_str, True, val_color)
+                    screen.blit(vt, (bx + 76 - vt.get_width() // 2, by))
+                    
+                    # Bouton +
+                    plus_btn = pygame.Rect(bx + 90, by, 20, 18)
+                    if draw_button(screen, plus_btn, "+", small_font, mouse_pos, GREEN, (100, 220, 100)):
+                        if clicked:
+                            state.bonuses[key] = min(5, val + 1)
+                
+                compo_y += (len(bonus_keys) + 1) // 2 * 22 + 4
             
             # Liste compacte de la compo (groupée par faction)
             last_faction = None

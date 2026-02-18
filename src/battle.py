@@ -681,11 +681,20 @@ class Battle:
                 moves[unit] = new_pos
                 reserved.update(bf._get_reserved_cells(unit, new_pos))
             elif unit.position:
-                # Bloqué: essayer un mouvement latéral pour se décaler et avancer
-                alt_pos = bf.find_lateral_advance(unit, self, reserved)
-                if alt_pos and bf._can_move_to(unit, alt_pos, reserved):
-                    moves[unit] = alt_pos
-                    reserved.update(bf._get_reserved_cells(unit, alt_pos))
+                # Bloqué: essayer un mouvement latéral SEULEMENT si pas d'ennemi au contact
+                # (sinon on risque de s'éloigner d'un ennemi qu'on devrait combattre)
+                ux, uy = unit.position
+                enemy_in_range = any(
+                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range
+                    for e in self.get_enemies(unit) if e.is_alive
+                )
+                if not enemy_in_range:
+                    alt_pos = bf.find_lateral_advance(unit, self, reserved)
+                    if alt_pos and bf._can_move_to(unit, alt_pos, reserved):
+                        moves[unit] = alt_pos
+                        reserved.update(bf._get_reserved_cells(unit, alt_pos))
+                    else:
+                        reserved.update(bf._get_reserved_cells(unit, unit.position))
                 else:
                     reserved.update(bf._get_reserved_cells(unit, unit.position))
             
@@ -795,6 +804,26 @@ class Battle:
         for unit in alive:
             if unit.is_alive and id(unit) not in _units_attacked_gate:
                 target = select_tactical_target(unit, self, self.battlefield)
+                ux, uy = unit.position
+                
+                # Si la cible tactique est hors de portée, chercher un ennemi à portée
+                if target:
+                    td = abs(ux - target.position[0]) + abs(uy - target.position[1])
+                    if td > unit._max_range:
+                        # Cible IA hors de portée: fallback sur l'ennemi à portée le plus blessé
+                        enemies = self.get_enemies(unit)
+                        in_range = [e for e in enemies if e.is_alive and
+                                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
+                        if in_range:
+                            target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                else:
+                    # Pas de cible tactique: chercher l'ennemi le plus proche à portée
+                    enemies = self.get_enemies(unit)
+                    in_range = [e for e in enemies if e.is_alive and
+                                abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
+                    if in_range:
+                        target = min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+                
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
         
