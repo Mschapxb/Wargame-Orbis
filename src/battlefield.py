@@ -246,8 +246,6 @@ class Battlefield:
                     _heappush(open_set, (new_g + h, new_g, nx, ny))
         
         return []
-        
-        return []
 
     def find_best_attack_position(self, unit, target, battle, reserved_positions=None):
         """Trouve la meilleure case libre à portée de la cible.
@@ -310,7 +308,7 @@ class Battlefield:
                     continue
                 
                 occupied = 0 if pos not in units_dict else 1
-                dist = max(abs(ux - px), abs(uy - py))
+                dist = abs(ux - px) + abs(uy - py)
                 lane_dist = abs(py - lane_y) // 3
                 priority = (occupied, lane_dist, dist)
                 

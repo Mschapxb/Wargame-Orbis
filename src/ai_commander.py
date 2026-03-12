@@ -70,7 +70,10 @@ class CommanderAI:
         for e in enemies:
             d = 0
             if e.encouragement_range > 0: d += 5
-            if e.spells: d += 4
+            if e.spells:
+                d += 4
+                # Soigneurs ennemis = menace prioritaire (ils régénèrent leur armée)
+                if any(s.spell_type == "heal" for s in e.spells): d += 3
             if e._max_range >= 8: d += 3
             elif e._max_range >= 4: d += 2
             if e.hp < e.max_hp * 0.4: d += 2
@@ -105,7 +108,10 @@ class CommanderAI:
     
     def _standard(self, unit, enemies, prio, ec, mc, battle):
         bf = self.battlefield
-        
+
+        # Mages: positionnement à mi-portée, cibles prioritaires
+        if unit.spells:
+            return self._mage_order(unit, enemies, prio)
         if unit.vitesse >= 6 and self.style in ("flanker", "balanced"):
             return self._cav_order(unit, enemies, prio, ec)
         if unit._max_range >= 4:
@@ -115,6 +121,27 @@ class CommanderAI:
         if self.style == "ranged_heavy" and unit.role == "front":
             return self._screen_order(unit, enemies, mc)
         return self._melee_order(unit, enemies, prio)
+
+    def _mage_order(self, unit, enemies, prio):
+        """Ordre pour les mages: se maintenir à portée de sort, cibler les cibles prioritaires."""
+        ux, uy = unit.position
+        # Portée de sort maximale disponible (pour se positionner)
+        max_spell_range = max((s.porte for s in unit.spells), default=6)
+        safe_range = max(3, max_spell_range // 2)
+
+        # Cible prioritaire dans le top3 de la liste
+        for _, e in prio[:3]:
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            if d <= max_spell_range:
+                return TacticalOrder("attack", target_unit=e, priority=5)
+
+        # Pas de cible prioritaire à portée → avancer vers la plus proche
+        if prio:
+            t = prio[0][1]
+            return TacticalOrder("attack", target_unit=t, priority=2)
+
+        closest = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+        return TacticalOrder("attack", target_unit=closest, priority=1)
     
     def _cav_order(self, unit, enemies, prio, ec):
         ux, uy = unit.position

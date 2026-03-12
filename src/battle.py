@@ -805,25 +805,53 @@ class Battle:
             if unit.is_alive and id(unit) not in _units_attacked_gate:
                 target = select_tactical_target(unit, self, self.battlefield)
                 ux, uy = unit.position
-                
+                is_ranged = unit._max_range >= 4
+
                 # Si la cible tactique est hors de portée, chercher un ennemi à portée
                 if target:
                     td = abs(ux - target.position[0]) + abs(uy - target.position[1])
                     if td > unit._max_range:
-                        # Cible IA hors de portée: fallback sur l'ennemi à portée le plus blessé
                         enemies = self.get_enemies(unit)
                         in_range = [e for e in enemies if e.is_alive and
                                     abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
                         if in_range:
-                            target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                            if is_ranged:
+                                # Unités à distance: préférer les ennemis NON engagés en mêlée
+                                # avec un allié (tir plus utile sur ennemis libres)
+                                allies = self.get_allies(unit)
+                                not_engaged = [
+                                    e for e in in_range
+                                    if not any(
+                                        abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
+                                        for a in allies if a.is_alive and a._max_range < 4
+                                    )
+                                ]
+                                pool = not_engaged if not_engaged else in_range
+                                target = min(pool, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                                   abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                            else:
+                                target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                                       abs(ux - e.position[0]) + abs(uy - e.position[1])))
                 else:
                     # Pas de cible tactique: chercher l'ennemi le plus proche à portée
                     enemies = self.get_enemies(unit)
                     in_range = [e for e in enemies if e.is_alive and
                                 abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
                     if in_range:
-                        target = min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
-                
+                        if is_ranged:
+                            allies = self.get_allies(unit)
+                            not_engaged = [
+                                e for e in in_range
+                                if not any(
+                                    abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
+                                    for a in allies if a.is_alive and a._max_range < 4
+                                )
+                            ]
+                            pool = not_engaged if not_engaged else in_range
+                            target = min(pool, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+                        else:
+                            target = min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+
                 if target:
                     unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
         

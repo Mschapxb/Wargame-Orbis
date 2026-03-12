@@ -282,21 +282,58 @@ class Unit:
         """Lance un sort disponible (pas en cooldown). Gère 5 types de sorts."""
         if not self.spells or self.fleeing:
             return
-        
+
         # Tick cooldowns
         for s in self.spells:
             s.tick_cooldown()
-        
+
         # Sorts prêts
         ready = [s for s in self.spells if s.is_ready()]
         if not ready:
             return
-        
+
         # Nombre de sorts lançables ce round (trait "Sort de bataille[N]")
         max_casts = getattr(self, 'spells_per_round', 1)
         casts_done = 0
-        
-        random.shuffle(ready)
+
+        # Priorité tactique des sorts:
+        # heal → utile si allié blessé à portée
+        # fireball → utile si plusieurs ennemis regroupés
+        # armor → buffer un allié vulnérable
+        # projectile → tir ciblé
+        # wall → ralentir l'ennemi (dernier recours)
+        def _spell_priority(spell):
+            if spell.spell_type == "heal":
+                allies = battle.get_allies(self)
+                wounded_count = sum(
+                    1 for a in allies
+                    if a.is_alive and a != self and a.hp < a.max_hp * 0.75
+                    and battle.battlefield.manhattan_distance(self.position, a.position) <= spell.porte
+                )
+                return (0, -wounded_count)
+            elif spell.spell_type == "fireball":
+                enemies = battle.get_enemies(self)
+                close_count = sum(
+                    1 for e in enemies
+                    if e.is_alive
+                    and battle.battlefield.manhattan_distance(self.position, e.position) <= spell.porte
+                )
+                return (1, -close_count)
+            elif spell.spell_type == "armor":
+                allies = battle.get_allies(self)
+                vulnerable = sum(
+                    1 for a in allies
+                    if a.is_alive and not getattr(a, '_armor_buff', False)
+                    and battle.battlefield.manhattan_distance(self.position, a.position) <= spell.porte
+                )
+                return (2, -vulnerable)
+            elif spell.spell_type == "projectile":
+                return (3, 0)
+            elif spell.spell_type == "wall":
+                return (4, 0)
+            return (5, 0)
+
+        ready.sort(key=_spell_priority)
         
         for spell in ready:
             if casts_done >= max_casts:
@@ -323,13 +360,33 @@ class Unit:
         return (pos[0] * cell_size + cell_size // 2, pos[1] * cell_size + cell_size // 2)
     
     def _cast_fireball(self, spell, battle, visual_effects, cell_size):
-        """Boule de feu — AoE sur zone 3×3 autour de l'ennemi le plus proche."""
-        target = battle.get_closest_enemy(self)
+        """Boule de feu — AoE sur la zone 3×3 couvrant le plus d'ennemis."""
+        enemies = [e for e in battle.get_enemies(self) if e.is_alive]
+        if not enemies:
+            return False
+
+        half = spell.aoe_size // 2
+
+        # Trouver l'ennemi dont la zone AoE touche le plus d'ennemis à portée
+        best_target = None
+        best_count = -1
+        for candidate in enemies:
+            dist = battle.battlefield.manhattan_distance(self.position, candidate.position)
+            if dist > spell.porte:
+                continue
+            tx, ty = candidate.position
+            count = sum(
+                1 for e in enemies
+                if abs(e.position[0] - tx) <= half and abs(e.position[1] - ty) <= half
+            )
+            if count > best_count:
+                best_count = count
+                best_target = candidate
+
+        target = best_target
         if not target:
             return False
         dist = battle.battlefield.manhattan_distance(self.position, target.position)
-        if dist > spell.porte:
-            return False
         
         start_px = self._pos_to_px(self.position, cell_size)
         end_px = self._pos_to_px(target.position, cell_size)
@@ -404,21 +461,21 @@ class Unit:
         return True
     
     def _cast_armor(self, spell, battle, visual_effects, cell_size):
-        """Armure magique — +2 de sauvegarde à soi-même ou un allié."""
-        # Chercher un allié sans buff à portée (ou soi-même)
+        """Armure magique — +2 de sauvegarde à l'allié le plus vulnérable à portée."""
         candidates = [self]
         for ally in battle.get_allies(self):
             if ally.is_alive and ally != self:
                 d = battle.battlefield.manhattan_distance(self.position, ally.position)
                 if d <= spell.porte:
                     candidates.append(ally)
-        
-        # Préférer ceux qui n'ont pas déjà le buff
+
+        # Cibler uniquement ceux sans buff actif
         unbuffed = [c for c in candidates if not getattr(c, '_armor_buff', False)]
-        target = random.choice(unbuffed) if unbuffed else None
-        
-        if not target:
+        if not unbuffed:
             return False
+
+        # Priorité: allié avec la sauvegarde la plus faible (plus vulnérable) et le moins de PV
+        target = min(unbuffed, key=lambda c: (c.sauvegarde, c.hp / max(1, c.max_hp)))
         
         # Appliquer le buff
         target._armor_buff = True
