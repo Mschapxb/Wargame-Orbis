@@ -423,6 +423,8 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
     active_traits = set(data.get("traits", []))
     active_spells = set(data.get("sorts", []))
     token_path = data.get("token_path", "")
+    if token_path and not os.path.isabs(token_path):
+        token_path = os.path.normpath(os.path.join(CUSTOM_DIR, token_path))
     token_preview = None
     if token_path and os.path.exists(token_path):
         try:
@@ -754,7 +756,7 @@ def _build_result(inp_nom, inp_dep, inp_pv, inp_brv, inp_svg, inp_size,
         "armes": armes,
         "traits": sorted(active_traits),
         "sorts": sorted(active_spells),
-        "token_path": token_path,
+        "token_path": os.path.relpath(token_path, CUSTOM_DIR) if token_path else "",
         "color": color,
     }
 
@@ -834,6 +836,8 @@ def run_custom_units_screen(screen, screen_w, screen_h):
 
                 # Token preview
                 token_path = data.get("token_path", "")
+                if token_path and not os.path.isabs(token_path):
+                    token_path = os.path.normpath(os.path.join(CUSTOM_DIR, token_path))
                 if token_path and os.path.exists(token_path):
                     try:
                         img = pygame.image.load(token_path).convert_alpha()

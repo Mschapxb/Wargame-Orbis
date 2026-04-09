@@ -339,8 +339,9 @@ def run_visual(battle, cell_size):
     small_font = pygame.font.SysFont("arial", font_small_size)
     tiny_font = pygame.font.SysFont("arial", font_tiny_size)
     
+    battle.cell_size = cell_size
     grid_surface = build_grid_surface(battle, cell_size)
-    
+
     # ─── Caméra ───
     world_w = bf_w * cell_size
     world_h = bf_h * cell_size
@@ -380,9 +381,8 @@ def run_visual(battle, cell_size):
     MOVE_ANIM_SPEED_FAST = 0.20     # Vitesse d'interpolation (mode rapide)
     round_ready = True  # True = on peut simuler un nouveau round
     
-    import copy
-    _original_army1 = copy.deepcopy(battle.army1_roster)
-    _original_army2 = copy.deepcopy(battle.army2_roster)
+    _original_army1 = battle._restart_army1
+    _original_army2 = battle._restart_army2
     _bf_w = battle.battlefield.width
     _bf_h = battle.battlefield.height
     _obstacle_count = 8
@@ -483,7 +483,7 @@ def run_visual(battle, cell_size):
             
             if round_ready and now - last_round >= delay:
                 # Simuler un nouveau round
-                battle.simulate_round(cell_size)
+                battle.simulate_round()
                 last_round = now
                 move_anim_progress = 0.0  # Commencer l'animation
                 round_ready = False
@@ -675,8 +675,8 @@ def run_visual(battle, cell_size):
                 lunge_amount = math.sin(lunge_progress * math.pi)
                 # Se déplacer de 30-40% vers la cible
                 lunge_strength = 0.35
-                tx_px = lunge_target[0] + ox
-                ty_px = lunge_target[1] + oy
+                tx_px = lunge_target[0] * cell_size + cell_size // 2 + ox
+                ty_px = lunge_target[1] * cell_size + cell_size // 2 + oy
                 cx = int(cx + (tx_px - cx) * lunge_amount * lunge_strength)
                 cy = int(cy + (ty_px - cy) * lunge_amount * lunge_strength)
             

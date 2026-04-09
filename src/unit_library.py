@@ -615,6 +615,8 @@ def load_custom_units_into_db():
             
             # Copier le token dans tokens/ si token_path existe
             token_path = data.get("token_path", "")
+            if token_path and not os.path.isabs(token_path):
+                token_path = os.path.normpath(os.path.join(os.path.dirname(filepath), token_path))
             if token_path and os.path.exists(token_path):
                 tokens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
                 os.makedirs(tokens_dir, exist_ok=True)

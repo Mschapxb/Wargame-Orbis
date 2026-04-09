@@ -28,7 +28,7 @@
     "Projectile magique",
     "Soin"
   ],
-  "token_path": "c:\\Users\\angel\\Documents\\Wargame-Orbis\\src\\tokens\\token_1.png",
+  "token_path": "../tokens/token_1.png",
   "color": [
     200,
     200,

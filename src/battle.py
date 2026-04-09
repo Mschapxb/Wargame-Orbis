@@ -2,7 +2,8 @@ import copy
 import random
 
 from battlefield import Battlefield
-from effects import FloatingText, AttackLine
+from effects import (FloatingText, AttackLine, Projectile,
+                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect)
 from ai_commander import CommanderAI
 
 
@@ -31,7 +32,10 @@ class Battle:
         self.army2_fled = []
         
         self._alive_cache = {'army1': [], 'army2': [], 'dirty': True}
-        
+
+        self._restart_army1 = copy.deepcopy(self.army1)
+        self._restart_army2 = copy.deepcopy(self.army2)
+
         center_y = self.battlefield.height // 2
         self._place_armies(center_y)
         
@@ -39,9 +43,62 @@ class Battle:
         self.commander1 = CommanderAI(self.army1, self.army2, self.battlefield, is_army1=True)
         self.commander2 = CommanderAI(self.army2, self.army1, self.battlefield, is_army1=False)
         
+        # Taille de cellule en pixels (définie par le renderer avant le premier round)
+        self.cell_size = 32
+
         # Initialiser les positions d'animation (pas de transition au premier frame)
         for u in self.army1 + self.army2:
             u._prev_position = u.position
+
+    def _apply_combat_events(self, events):
+        """Convertit les événements grid-coords produits par unit.py en effets visuels pixels."""
+        cs = self.cell_size
+
+        def to_px(gpos):
+            return (gpos[0] * cs + cs // 2, gpos[1] * cs + cs // 2)
+
+        for evt in events:
+            t = evt['type']
+            if t == 'arrow':
+                self.visual_effects['projectiles'].append(
+                    Projectile(to_px(evt['from_grid']), to_px(evt['to_grid']),
+                               (200, 180, 100), 40, "arrow", cs))
+            elif t == 'reach':
+                self.visual_effects['attack_lines'].append(
+                    AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
+                               (255, 180, 50), 25))
+            elif t == 'melee':
+                self.visual_effects['attack_lines'].append(
+                    AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
+                               (255, 100, 100), 25))
+            elif t == 'fireball':
+                fp = to_px(evt['from_grid'])
+                tp = to_px(evt['to_grid'])
+                self.visual_effects['projectiles'].append(
+                    Projectile(fp, tp, (255, 100, 0), 35, "fireball", cs))
+                aoe_r = (evt['aoe_size'] // 2) * cs + cs // 2
+                self.visual_effects.setdefault('aoe_explosions', []).append(
+                    AoeExplosion(tp, aoe_r, (255, 120, 0), 35))
+            elif t == 'heal':
+                self.visual_effects.setdefault('heal_beams', []).append(
+                    HealBeam(to_px(evt['from_grid']), to_px(evt['to_grid']), 30))
+            elif t == 'armor':
+                px = to_px(evt['at_grid'])
+                ur = max(3, cs // 2 - 4) * max(1, evt['unit_size'])
+                self.visual_effects.setdefault('armor_shimmers', []).append(
+                    ArmorShimmer(px, ur, 40))
+            elif t == 'magic_projectile':
+                sp = to_px(evt['from_grid'])
+                ep = to_px(evt['to_grid'])
+                import random as _rng
+                for i in range(3):
+                    off = (_rng.randint(-8, 8), _rng.randint(-8, 8))
+                    ep_off = (ep[0] + off[0], ep[1] + off[1])
+                    self.visual_effects['projectiles'].append(
+                        Projectile(sp, ep_off, (180, 80, 255), 25 + i * 5, "magic", cs))
+            elif t == 'wall':
+                self.visual_effects.setdefault('wall_effects', []).append(
+                    WallEffect(evt['positions'], cs, 25))
 
     def _place_armies(self, center_y):
         bf = self.battlefield
@@ -369,7 +426,7 @@ class Battle:
             if has_intact_gates:
                 for unit in self.army2:
                     if unit.is_alive and not unit.fleeing and unit.position[0] >= wall_x:
-                        unit.morale_bonus = max(unit.morale_bonus, unit.morale_bonus + 1)
+                        unit.morale_bonus += 1
         
         # --- 1) Pertes lourdes (seuil 50% de l'effectif initial) ---
         for army, initial_size in [(self.army1, self.army1_initial_size),
@@ -468,7 +525,7 @@ class Battle:
                                 unit.floating_texts.append(
                                     FloatingText("Peur!", (255, 180, 60), 60))
 
-    def _charge_phase(self, alive, cell_size):
+    def _charge_phase(self, alive):
         """Phase de charge: les unités avec charge se ruent sur un ennemi à distance de charge.
         
         Nerfé: portée réduite (vitesse à 1.5x au lieu de 2x), nécessite un chemin libre,
@@ -526,31 +583,32 @@ class Battle:
             unit.has_charged = True
             
             # Effet visuel: ligne de charge
-            start_px = (unit.position[0] * cell_size + cell_size // 2,
-                        unit.position[1] * cell_size + cell_size // 2)
-            end_px = (best_target.position[0] * cell_size + cell_size // 2,
-                      best_target.position[1] * cell_size + cell_size // 2)
-            
+            cs = self.cell_size
+            start_px = (unit.position[0] * cs + cs // 2,
+                        unit.position[1] * cs + cs // 2)
+            end_px = (best_target.position[0] * cs + cs // 2,
+                      best_target.position[1] * cs + cs // 2)
+
             charge_color = (255, 200, 50) if unit.charge_montee else (100, 200, 255)
             self.visual_effects['attack_lines'].append(
                 AttackLine(start_px, end_px, charge_color, 35)
             )
-            
+
             label = "CHARGE!" if unit.charge_montee else "CHARGE D'AÏDA!"
             unit.floating_texts.append(FloatingText(label, charge_color, 70))
-            
+
             # Attaque de charge: seulement la première arme CaC (pas toutes les armes)
             if unit.armes:
                 melee_armes = [a for a in unit.armes if a.porte <= 2]
                 if melee_armes:
                     saved_armes = unit.armes
                     unit.armes = [melee_armes[0]]
-                    unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
+                    self._apply_combat_events(unit.perform_attacks(best_target, self.battlefield))
                     unit.armes = saved_armes
                 else:
-                    unit.perform_attacks(best_target, self.battlefield, self.visual_effects, cell_size)
+                    self._apply_combat_events(unit.perform_attacks(best_target, self.battlefield))
 
-    def simulate_round(self, cell_size):
+    def simulate_round(self):
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
         
@@ -728,12 +786,12 @@ class Battle:
                     break  # Un seul bonus suffit
         
         # Phase de Charge (avant les attaques normales)
-        self._charge_phase(alive, cell_size)
+        self._charge_phase(alive)
         
         # Sorts
         for unit in alive:
             if unit.spells and unit.is_alive:
-                unit.cast_random_spell(self, self.visual_effects, cell_size)
+                self._apply_combat_events(unit.cast_random_spell(self))
         
         # Attaques
         _units_attacked_gate = set()
@@ -853,7 +911,7 @@ class Battle:
                             target = min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
 
                 if target:
-                    unit.perform_attacks(target, self.battlefield, self.visual_effects, cell_size)
+                    self._apply_combat_events(unit.perform_attacks(target, self.battlefield))
         
         # Reset phalange bonus en fin de round
         for unit in alive:

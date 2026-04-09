@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest tests/test_main.py -v)",
+      "Bash(python -m pytest tests/test_main.py -q)"
     ]
   }
 }
