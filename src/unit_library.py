@@ -1,22 +1,31 @@
-"""Bibliothèque d'unités — définie directement en Python.
+"""Bibliothèque d'unités WW1 — Orbis Naturae Battle : Grande Guerre.
 
-Pour ajouter une unité, copier un bloc existant dans UNIT_DATABASE et modifier les valeurs.
-Aucune dépendance externe.
+Factions disponibles:
+    • Infanterie Alliée (France / Empire Britannique)
+    • Puissances Centrales (Empire Allemand)
+    • Corps Expéditionnaire (troupes d'élite et matériel lourd)
+    • Unités custom
 
 Format d'une arme:
     ("Nom arme", portée, nb_attaques, toucher, blesser, perforation, "dégâts")
 
+    portée  1  = corps à corps (baïonnette, crosse, couteau)
+    portée  2  = portée courte (pistolet, fusil court)
+    portée  6  = tir moyen (fusil, carabine)
+    portée 10  = tir long (fusil de précision, mitrailleuse)
+    portée 14+ = artillerie / mortier
+
 Champs d'une unité:
-    nom             : str       — nom complet (aussi le nom du token PNG)
-    deplacement     : int       — vitesse en cases par round
-    blessure        : int       — points de vie
-    bravoure        : int       — moral (1-6, test sur 1d6 ≤ bravoure)
-    sauvegarde      : int       — sauvegarde (1-6, réussie si 1d6 ≥ sauv, 7 = aucune)
-    role            : str       — "front", "mid", "back" (position de départ)
-    size            : int       — taille en cases (1=1x1, 2=2x2, 3=3x3)
-    unit_type       : str       — "Infanterie", "Large", "Cavalerie", "Artillerie", "Monstre", "Héros"
-    armes           : list      — liste de tuples (nom, portée, attaques, toucher, blesser, perf, dégâts)
-    traits          : list      — liste de strings: "Encouragement", "Planqué", "Anti-Large", etc.
+    nom          str  — nom complet
+    deplacement  int  — cases / round (0 = immobile)
+    blessure     int  — points de vie
+    bravoure     int  — moral (1-6)
+    sauvegarde   int  — seuil de sauvegarde (7 = aucune armure)
+    role         str  — "front" | "mid" | "back"
+    size         int  — 1=1×1, 2=2×2, 3=2×4
+    unit_type    str  — "Infanterie" | "Cavalerie" | "Artillerie" | "Blindé" | "Héros"
+    armes        list — tuples (nom, portée, attaques, toucher, blesser, perf, dégâts)
+    traits       list — traits spéciaux WW1
 """
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
@@ -25,409 +34,520 @@ import os
 
 
 # ═══════════════════════════════════════════════════════════════
-#                     BASE DE DONNÉES
+#                     BASE DE DONNÉES WW1
 # ═══════════════════════════════════════════════════════════════
 
 UNIT_DATABASE = {
 
-    # ──────────────── ARMÉE SKALDIENNE ────────────────
+    # ─────────────── INFANTERIE ALLIÉE ───────────────
+    # France, Empire britannique — troupes de l'Entente
 
-    "Armée Skaldienne": {
-        "color": (80, 140, 200),
+    "Infanterie Alliée": {
+        "color": (60, 100, 180),   # Bleu horizon / kaki britannique
         "units": [
+
             {
-                "nom": "Infanterie régulière",
+                "nom": "Poilu",
                 "deplacement": 3,
                 "blessure": 2,
-                "bravoure": 1,
-                "sauvegarde": 6,
-                "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Epée",          1, 2, 3, 3,  0, "1"),
-                    ("Lance",         2, 1, 3, 3,  0, "1"),
-                    ("Hache courte",  1, 1, 3, 3, -1, "1d2"),
-                ],
-                "traits": [],
-            },
-            {
-                "nom": "Eclaireur",
-                "deplacement": 5,
-                "blessure": 1,
-                "bravoure": 1,
+                "bravoure": 2,
                 "sauvegarde": 7,
                 "role": "front",
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Coutelas", 1, 2, 4, 4, 1, "1"),
+                    ("Lebel + Baïonnette", 6, 1, 3, 3,  0, "1"),
+                    ("Baïonnette",          1, 2, 3, 3,  0, "1"),
                 ],
-                "traits": ["Planqué", "Eclaireur", "Rapide"],
+                "traits": [],
             },
+
             {
-                "nom": "Arbaletrier régulier",
-                "deplacement": 4,
+                "nom": "Tommy",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Lee-Enfield", 7, 1, 3, 3,  0, "1"),
+                    ("Baïonnette",   1, 1, 3, 3,  0, "1"),
+                ],
+                "traits": ["Tir rapide"],
+            },
+
+            {
+                "nom": "Tireur d'élite",
+                "deplacement": 3,
                 "blessure": 1,
-                "bravoure": 1,
+                "bravoure": 2,
                 "sauvegarde": 7,
                 "role": "back",
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Arbalète", 9, 1, 3, 3, -1, "1"),
+                    ("Fusil de précision", 14, 1, 2, 2, -1, "1d2"),
                 ],
-                "traits": [],
+                "traits": ["Planqué", "Embusqué"],
             },
+
             {
-                "nom": "Hallbardier",
+                "nom": "Mitrailleur",
+                "deplacement": 2,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Mitrailleuse Hotchkiss", 10, 3, 3, 3, 0, "1"),
+                ],
+                "traits": ["Artillerie legere", "Tir de saturation"],
+            },
+
+            {
+                "nom": "Grenadier",
                 "deplacement": 3,
                 "blessure": 2,
-                "bravoure": 1,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Grenade Mills",  4, 2, 3, 2, -1, "1d2"),
+                    ("Baïonnette",      1, 1, 3, 3,  0, "1"),
+                ],
+                "traits": ["Anti-Infanterie"],
+            },
+
+            {
+                "nom": "Officier allié",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 3,
                 "sauvegarde": 6,
                 "role": "mid",
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Hallbarde", 2, 1, 3, 3, -1, "1"),
-                ],
-                "traits": ["Anti-Large"],
-            },
-            {
-                "nom": "Officier",
-                "deplacement": 3,
-                "blessure": 3,
-                "bravoure": 2,
-                "sauvegarde": 5,
-                "role": "mid",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Hallebarde", 2, 1, 3, 3, -1, "1d2"),
-                    ("Epée",       1, 2, 3, 3,  1, "1"),
+                    ("Pistolet Webley", 3, 2, 3, 3, 0, "1"),
+                    ("Canne de marche", 1, 1, 3, 3, 0, "1"),
                 ],
                 "traits": ["Encouragement"],
             },
+
             {
-                "nom": "Mage de guerre",
-                "deplacement": 3,
-                "blessure": 3,
+                "nom": "Cavalier allié",
+                "deplacement": 7,
+                "blessure": 2,
                 "bravoure": 2,
-                "sauvegarde": 5,
-                "role": "mid",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Epée", 1, 2, 3, 3, 0, "1"),
-                ],
-                "traits": ["Sort de bataille (2)"],
-                "sorts": ["Boule de feu", "Soin", "Armure magique", "Projectile magique", "Mur de force"],
-            },
-            {
-                "nom": "Scorpion",
-                "deplacement": 2,
-                "blessure": 2,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "back",
-                "size": 1,
-                "unit_type": "Artillerie",
-                "armes": [
-                    ("Carreaux de Scorpion", 13, 1, 3, 2, -1, "1d2"),
-                ],
-                "traits": ["Artillerie legere"],
-            },
-            {
-                "nom": "Baliste",
-                "deplacement": 1,
-                "blessure": 4,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "back",
-                "size": 2,
-                "unit_type": "Artillerie",
-                "armes": [
-                    ("Carreaux de baliste", 18, 1, 4, 2, -2, "1d4"),
-                ],
-                "traits": ["Artillerie"],
-            },
-            {
-                "nom": "Housecarl",
-                "deplacement": 3,
-                "blessure": 4,
-                "bravoure": 3,
-                "sauvegarde": 6,
-                "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Hache à deux mains", 1, 1, 2, 2, -1, "1d2"),
-                ],
-                "traits": [],
-            },
-        ],
-    },
-
-    # ──────────────── ARMÉE ORLANDAR ────────────────
-
-    "Armée Orlandar": {
-        "color": (60, 160, 60),
-        "units": [
-            {
-                "nom": "Fantassin covaliir",
-                "deplacement": 3,
-                "blessure": 2,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Epée",         1, 2, 3, 3,  0, "1"),
-                    ("Lance",        2, 1, 3, 3,  0, "1"),
-                    ("Hache lourde", 1, 1, 3, 3, -1, "1d2"),
-                ],
-                "traits": ["Phalange"],
-            },
-            {
-                "nom": "Archer covaliir",
-                "deplacement": 4,
-                "blessure": 1,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "back",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Arc long", 11, 1, 3, 3, 0, "1"),
-                    ("Glaive",    1, 1, 4, 4, 0, "1"),
-                ],
-                "traits": [],
-            },
-            {
-                "nom": "Cavalier covaliir",
-                "deplacement": 8,
-                "blessure": 2,
-                "bravoure": 1,
                 "sauvegarde": 7,
                 "role": "mid",
                 "size": 2,
                 "unit_type": "Cavalerie",
                 "armes": [
-                    ("Lance", 2, 1, 3, 3, 0, "1"),
-                    ("Arc",   9, 1, 3, 3, 0, "1"),
+                    ("Lance de cavalerie", 2, 1, 3, 2, -1, "1d2"),
+                    ("Carabine",            5, 1, 3, 3,  0, "1"),
                 ],
-                "traits": ["Charge montée"],
+                "traits": ["Charge montée", "Reconnaissance"],
             },
+
             {
-                "nom": "Officier covaliir",
-                "deplacement": 3,
-                "blessure": 3,
-                "bravoure": 2,
-                "sauvegarde": 6,
-                "role": "mid",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Epée à deux mains", 1, 1, 2, 3, 0, "1d2"),
-                    ("Epée",              1, 2, 3, 3, 1, "1"),
-                ],
-                "traits": [],
-            },
-            {
-                "nom": "Equipée de piquier",
-                "deplacement": 2,
-                "blessure": 2,
-                "bravoure": 1,
-                "sauvegarde": 6,
-                "role": "mid",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Pique", 3, 1, 3, 3, 0, "1"),
-                ],
-                "traits": ["Phalange", "Anti-Large"],
-            },
-            {
-                "nom": "Catapulte covaliir",
+                "nom": "Artillerie de campagne",
                 "deplacement": 1,
-                "blessure": 6,
-                "bravoure": 1,
+                "blessure": 4,
+                "bravoure": 2,
                 "sauvegarde": 7,
                 "role": "back",
                 "size": 2,
                 "unit_type": "Artillerie",
                 "armes": [
-                    ("Roche", 24, 1, 5, 5, -3, "2+1d4"),
+                    ("Canon 75mm", 20, 1, 3, 2, -3, "2+1d4"),
                 ],
-                "traits": ["Artillerie"],
+                "traits": ["Artillerie", "Tir indirect"],
             },
-            {
-                "nom": "Porte-étendard",
-                "deplacement": 3,
-                "blessure": 1,
-                "bravoure": 1,
-                "sauvegarde": 7,
-                "role": "mid",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Pique drappée", 2, 1, 4, 4, 0, "1"),
-                ],
-                "traits": ["Encouragement"],
-            },
-        ],
-    },
 
-    # ──────────────── DRACONIE ────────────────
-
-    "Draconie": {
-        "color": (200, 60, 60),
-        "units": [
             {
-                "nom": "Suppléant de Draconie",
-                "deplacement": 3,
-                "blessure": 2,
-                "bravoure": 1,
-                "sauvegarde": 6,
-                "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Epée", 1, 2, 3, 3, 0, "1"),
-                ],
-                "traits": [],
-            },
-            {
-                "nom": "Cheval de Draconie",
-                "deplacement": 8,
-                "blessure": 2,
-                "bravoure": 2,
-                "sauvegarde": 6,
-                "role": "front",
-                "size": 2,
-                "unit_type": "Cavalerie",
-                "armes": [
-                    ("Sabots", 1, 2, 3, 3, 0, "1"),
-                ],
-                "traits": ["Charge montée"],
-            },
-            {
-                "nom": "Pourfendeur de Draconie",
-                "deplacement": 8,
-                "blessure": 6,
-                "bravoure": 3,
-                "sauvegarde": 5,
-                "role": "front",
-                "size": 2,
-                "unit_type": "Large",
-                "armes": [
-                    ("Képesh géant",    2, 2, 3, 3,  0, "1d2"),
-                    ("Lance d'arçon",   2, 1, 3, 2, -2, "1d3"),
-                ],
-                "traits": ["Charge montée", "Anti-Infanterie"],
-            },
-            {
-                "nom": "Chevalier-dragon",
-                "deplacement": 4,
-                "blessure": 6,
-                "bravoure": 2,
-                "sauvegarde": 5,
-                "role": "front",
-                "size": 2,
-                "unit_type": "Large",
-                "armes": [
-                    ("Epée à deux mains", 2, 2, 4, 4, 0, "1d2"),
-                    ("Hallebarde",        3, 1, 3, 3, -1, "1d2"),
-                ],
-                "traits": [],
-            },
-        ],
-    },
-
-    # ──────────────── LÉGION SACRÉE ────────────────
-
-    "Légion sacrée": {
-        "color": (220, 200, 60),
-        "units": [
-            {
-                "nom": "Légionnaire sacré",
-                "deplacement": 2,
+                "nom": "Mortier de tranchée",
+                "deplacement": 1,
                 "blessure": 3,
                 "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Mortier Stokes", 12, 1, 4, 2, -2, "1+1d4"),
+                ],
+                "traits": ["Artillerie legere", "Tir indirect"],
+            },
+
+            {
+                "nom": "Tank Mark IV",
+                "deplacement": 2,
+                "blessure": 10,
+                "bravoure": 3,
                 "sauvegarde": 3,
                 "role": "front",
-                "size": 1,
-                "unit_type": "Infanterie",
+                "size": 2,
+                "unit_type": "Blindé",
                 "armes": [
-                    ("Epée", 1, 2, 3, 2, 0, "1"),
+                    ("Canon de flanc 6-pdr", 8, 1, 3, 2, -3, "1d4"),
+                    ("Mitrailleuse Lewis",    6, 2, 3, 3,  0, "1"),
                 ],
-                "traits": [],
+                "traits": ["Blindage", "Ecrase barbelés", "Terreur"],
             },
+
             {
-                "nom": "Archer sacré",
+                "nom": "Sapeur",
                 "deplacement": 3,
                 "blessure": 2,
                 "bravoure": 2,
-                "sauvegarde": 5,
-                "role": "back",
-                "size": 1,
-                "unit_type": "Infanterie",
-                "armes": [
-                    ("Arc sacré", 13, 1, 3, 2, -2, "1d2"),
-                ],
-                "traits": [],
-            },
-            {
-                "nom": "Capitaine sacré",
-                "deplacement": 2,
-                "blessure": 4,
-                "bravoure": 3,
-                "sauvegarde": 4,
+                "sauvegarde": 7,
                 "role": "front",
                 "size": 1,
                 "unit_type": "Infanterie",
                 "armes": [
-                    ("Masse à deux mains", 2, 1, 2, 2, -1, "1d2"),
+                    ("Explosif C2",  2, 1, 2, 1, -3, "1d4"),
+                    ("Pelle de tranchée", 1, 1, 3, 3, 0, "1"),
                 ],
-                "traits": ["Encouragement"],
+                "traits": ["Sapeur", "Anti-Blindé"],
             },
         ],
     },
 
-    # ──────────────── HÉROS ────────────────
+    # ─────────────── PUISSANCES CENTRALES ───────────────
+    # Empire Allemand — Kaiserreich
 
-    "Héros": {
-        "color": (255, 215, 0),
+    "Puissances Centrales": {
+        "color": (160, 120, 60),   # Feldgrau / gris-vert allemand
         "units": [
+
             {
-                "nom": "Général Kaiden",
-                "deplacement": 6,
-                "blessure": 6,
-                "bravoure": 3,
-                "sauvegarde": 4,
+                "nom": "Feldsoldat",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 7,
                 "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Gewehr 98 + Baïonnette", 7, 1, 3, 3,  0, "1"),
+                    ("Baïonnette Seitengewehr", 1, 1, 3, 3,  0, "1"),
+                ],
+                "traits": [],
+            },
+
+            {
+                "nom": "Sturmtruppen",
+                "deplacement": 4,
+                "blessure": 2,
+                "bravoure": 3,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Grenade à manche",  4, 2, 2, 2, -1, "1d2"),
+                    ("Pistolet P08 Luger", 2, 2, 3, 3,  0, "1"),
+                    ("Trench knife",       1, 2, 3, 3,  0, "1"),
+                ],
+                "traits": ["Anti-Infanterie", "Assaut", "Infiltration"],
+            },
+
+            {
+                "nom": "Scharfschütze",
+                "deplacement": 3,
+                "blessure": 1,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Gew 98 optique", 16, 1, 2, 2, -1, "1d2"),
+                ],
+                "traits": ["Planqué", "Embusqué"],
+            },
+
+            {
+                "nom": "MG-Trupp",
+                "deplacement": 2,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("MG 08 Maxim", 11, 3, 2, 3, 0, "1"),
+                ],
+                "traits": ["Artillerie legere", "Tir de saturation", "Position défensive"],
+            },
+
+            {
+                "nom": "Lanceur de gaz",
+                "deplacement": 2,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Obus de gaz moutarde", 6, 1, 3, 2, 0, "1"),
+                    ("Baïonnette",            1, 1, 4, 4, 0, "1"),
+                ],
+                "traits": ["Gaz de combat", "Terreur"],
+            },
+
+            {
+                "nom": "Officier allemand",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 3,
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("P08 Luger", 3, 2, 3, 3, 0, "1"),
+                    ("Sabre",     1, 2, 3, 3, 0, "1"),
+                ],
+                "traits": ["Encouragement", "Tactique d'assaut"],
+            },
+
+            {
+                "nom": "Uhlanen",
+                "deplacement": 7,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "mid",
+                "size": 2,
+                "unit_type": "Cavalerie",
+                "armes": [
+                    ("Lance de uhlan", 2, 1, 3, 2, -1, "1d2"),
+                    ("Carabine Kar98",  5, 1, 3, 3,  0, "1"),
+                ],
+                "traits": ["Charge montée", "Reconnaissance"],
+            },
+
+            {
+                "nom": "Artillerie lourde",
+                "deplacement": 0,
+                "blessure": 5,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 2,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Obusier 150mm", 24, 1, 4, 2, -4, "3+1d4"),
+                ],
+                "traits": ["Artillerie", "Tir indirect", "Barrage"],
+            },
+
+            {
+                "nom": "Minenwerfer",
+                "deplacement": 1,
+                "blessure": 3,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Minenwerfer 76mm", 10, 1, 3, 2, -2, "1+1d3"),
+                ],
+                "traits": ["Artillerie legere", "Tir indirect"],
+            },
+
+            {
+                "nom": "A7V Sturmpanzer",
+                "deplacement": 2,
+                "blessure": 12,
+                "bravoure": 3,
+                "sauvegarde": 2,
+                "role": "front",
+                "size": 3,
+                "unit_type": "Blindé",
+                "armes": [
+                    ("Canon Maxim-Nordenfeld", 10, 1, 3, 2, -4, "1d4"),
+                    ("Mitrailleuse MG 08",      6, 3, 2, 3,  0, "1"),
+                ],
+                "traits": ["Blindage lourd", "Ecrase barbelés", "Terreur", "Anti-Infanterie"],
+            },
+
+            {
+                "nom": "Pionier",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Lance-flammes",  3, 1, 2, 1, -2, "1d3"),
+                    ("Hache de pionier", 1, 1, 3, 3, 0, "1"),
+                ],
+                "traits": ["Lance-flammes", "Terreur", "Anti-Infanterie"],
+            },
+        ],
+    },
+
+    # ─────────────── CORPS EXPÉDITIONNAIRE ───────────────
+    # Unités d'élite, matériel spécialisé — jouable par les deux camps
+
+    "Corps Expéditionnaire": {
+        "color": (120, 90, 50),  # Kaki universel
+
+        "units": [
+
+            {
+                "nom": "Légion étrangère",
+                "deplacement": 3,
+                "blessure": 3,
+                "bravoure": 3,
+                "sauvegarde": 6,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Lebel + Baïonnette", 6, 1, 3, 3,  0, "1"),
+                    ("Baïonnette Rosalie",  1, 2, 3, 2,  0, "1"),
+                ],
+                "traits": ["Anti-Infanterie", "Moral d'acier"],
+            },
+
+            {
+                "nom": "Stosstruppen d'élite",
+                "deplacement": 4,
+                "blessure": 3,
+                "bravoure": 3,
+                "sauvegarde": 5,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("MP 18 Bergmann",   4, 3, 3, 3,  0, "1"),
+                    ("Grenade à manche",  3, 2, 2, 2, -1, "1d2"),
+                    ("Trench knife",       1, 2, 3, 3,  0, "1"),
+                ],
+                "traits": ["Assaut", "Anti-Infanterie", "Infiltration"],
+            },
+
+            {
+                "nom": "Tireur de clocher",
+                "deplacement": 2,
+                "blessure": 2,
+                "bravoure": 3,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Fusil Mauser G98 optique", 18, 1, 2, 2, -2, "1d2+1"),
+                ],
+                "traits": ["Planqué", "Embusqué", "Position haute"],
+            },
+
+            {
+                "nom": "Section mitrailleuse lourde",
+                "deplacement": 1,
+                "blessure": 4,
+                "bravoure": 2,
+                "sauvegarde": 6,
+                "role": "back",
+                "size": 2,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Vickers / MG 08 (position)", 12, 4, 2, 3, 0, "1"),
+                ],
+                "traits": ["Artillerie legere", "Tir de saturation", "Position défensive", "Anti-Infanterie"],
+            },
+
+            {
+                "nom": "Canon antichar de campagne",
+                "deplacement": 1,
+                "blessure": 4,
+                "bravoure": 2,
+                "sauvegarde": 7,
+                "role": "back",
+                "size": 2,
+                "unit_type": "Artillerie",
+                "armes": [
+                    ("Canon 37mm AT", 10, 1, 2, 1, -5, "1d4"),
+                ],
+                "traits": ["Artillerie legere", "Anti-Blindé"],
+            },
+
+            {
+                "nom": "Général de brigade",
+                "deplacement": 4,
+                "blessure": 4,
+                "bravoure": 4,
+                "sauvegarde": 5,
+                "role": "mid",
                 "size": 1,
                 "unit_type": "Héros",
                 "armes": [
-                    ("Epée", 1, 3, 3, 2, 0, "1d2"),
+                    ("Pistolet de commandement", 3, 2, 3, 3, 0, "1"),
                 ],
-                "traits": ["Encouragement"],
+                "traits": ["Encouragement", "Moral d'acier", "Tactique d'assaut"],
             },
+
             {
-                "nom": "Edolion",
-                "deplacement": 6,
-                "blessure": 12,
+                "nom": "Hussard de la Mort",
+                "deplacement": 8,
+                "blessure": 3,
                 "bravoure": 3,
-                "sauvegarde": 3,
-                "role": "front",
-                "size": 3,
-                "unit_type": "Monstre",
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 2,
+                "unit_type": "Cavalerie",
                 "armes": [
-                    ("Griffe",          3, 2, 4, 2, -2, "1+1d3"),
-                    ("Charge Volante", 2, 1, 3, 2, -3, "2+1d4"),
+                    ("Sabre de hussard",  1, 2, 2, 2,  0, "1d2"),
+                    ("Carabine légère",   5, 1, 3, 3,  0, "1"),
                 ],
-                "traits": [],
+                "traits": ["Charge montée", "Terreur", "Reconnaissance"],
+            },
+
+            {
+                "nom": "Tank FT-17",
+                "deplacement": 2,
+                "blessure": 7,
+                "bravoure": 3,
+                "sauvegarde": 4,
+                "role": "front",
+                "size": 1,
+                "unit_type": "Blindé",
+                "armes": [
+                    ("Canon Puteaux 37mm", 7, 1, 3, 2, -3, "1d3"),
+                ],
+                "traits": ["Blindage", "Ecrase barbelés"],
+            },
+
+            {
+                "nom": "Tankiste de soutien",
+                "deplacement": 3,
+                "blessure": 2,
+                "bravoure": 2,
+                "sauvegarde": 6,
+                "role": "mid",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Pistolet + grenades", 3, 1, 3, 3, 0, "1"),
+                    ("Clef à molette",       1, 1, 4, 4, 0, "1"),
+                ],
+                "traits": ["Réparation blindé", "Anti-Blindé"],
             },
         ],
     },
@@ -435,20 +555,67 @@ UNIT_DATABASE = {
 
 
 # ═══════════════════════════════════════════════════════════════
+#               MAPPING DES TRAITS WW1
+# ═══════════════════════════════════════════════════════════════
+
+WW1_TRAIT_MAP = {
+    # Traits réutilisés du système de base
+    "encouragement":       lambda u: setattr(u, 'encouragement_range', 4),
+    "anti-infanterie":     lambda u: setattr(u, 'anti_infanterie', True),
+    "anti-large":          lambda u: setattr(u, 'anti_large', True),
+    "planqué":             lambda u: None,  # géré par battle.py
+    "charge montée":       lambda u: setattr(u, 'charge_montee', True),
+    "artillerie":          lambda u: setattr(u, 'vitesse', 0),       # immobile
+    "artillerie legere":   lambda u: None,                           # peut bouger mais lentement
+
+    # Traits WW1 spécifiques — mappés sur les attributs existants
+    "terreur":             lambda u: setattr(u, 'fear_aura', 2),     # Effroi (= causes_dread)
+    "blindage":            lambda u: setattr(u, 'sauvegarde', max(2, u.sauvegarde - 1)),
+    "blindage lourd":      lambda u: setattr(u, 'sauvegarde', max(2, u.sauvegarde - 2)),
+    "tir rapide":          lambda u: _boost_nb_attacks(u, 1),        # +1 attaque pour la première arme à tir
+    "tir de saturation":   lambda u: setattr(u, 'anti_infanterie', True),
+    "embusqué":            lambda u: setattr(u, 'morale_bonus', u.morale_bonus + 1),
+    "assaut":              lambda u: setattr(u, 'charge_aida', True),
+    "anti-blindé":         lambda u: setattr(u, 'anti_large', True), # anti_large = anti-blindé
+    "écrase barbelés":     lambda u: None,                           # effet carte géré par battle.py
+    "ecrase barbelés":     lambda u: None,
+    "infiltration":        lambda u: setattr(u, 'vitesse', u.vitesse + 1),
+    "gaz de combat":       lambda u: setattr(u, 'fear_aura', 1),
+    "lance-flammes":       lambda u: setattr(u, 'fear_aura', 2),
+    "moral d'acier":       lambda u: setattr(u, 'immune_mind', True),
+    "tir indirect":        lambda u: None,                           # déjà pris en compte via portée
+    "barrage":             lambda u: None,
+    "position défensive":  lambda u: setattr(u, '_phalange_bonus_active', True),
+    "position haute":      lambda u: setattr(u, 'morale_bonus', u.morale_bonus + 1),
+    "réparation blindé":   lambda u: setattr(u, 'regeneration', 5),
+    "reconnaissance":      lambda u: setattr(u, 'vitesse', u.vitesse + 1),
+    "sapeur":              lambda u: None,
+    "tactique d'assaut":   lambda u: setattr(u, 'encouragement_range', 4),
+}
+
+
+def _boost_nb_attacks(unit, bonus):
+    """Ajoute +bonus attaque à la première arme à tir (portée >= 4)."""
+    for arme in unit.armes:
+        if arme.porte >= 4:
+            arme.nb_attaque += bonus
+            return
+
+
+# ═══════════════════════════════════════════════════════════════
 #                     FONCTIONS DE CRÉATION
 # ═══════════════════════════════════════════════════════════════
 
 def _build_arme(arme_tuple):
-    """Crée un objet Arme depuis un tuple (nom, portée, attaques, toucher, blesser, perf, dégâts)."""
     nom, portee, nb_att, toucher, blesser, perf, degats = arme_tuple
     return Arme(nom, nb_attaque=nb_att, toucher=toucher, blesser=blesser,
                 perforation=perf, degats=degats, porte=portee)
 
 
 def create_unit(unit_def, army_color):
-    """Crée un objet Unit depuis un dict de définition."""
+    """Crée un objet Unit depuis un dict de définition WW1."""
     armes = [_build_arme(a) for a in unit_def["armes"]]
-    
+
     unit = Unit(
         name=unit_def["nom"][:10],
         pv=unit_def["blessure"],
@@ -462,60 +629,45 @@ def create_unit(unit_def, army_color):
         unit_type=unit_def.get("unit_type", "Infanterie"),
     )
     unit.token_name = unit_def["nom"]
-    
-    # Traits
-    for t in unit_def.get("traits", []):
-        tl = t.lower()
-        if "encouragement" in tl:
-            unit.encouragement_range = 4
-        if "anti-infanterie" in tl or "anti infanterie" in tl:
-            unit.anti_infanterie = True
-        if "anti-large" in tl or "anti large" in tl:
-            unit.anti_large = True
-        if "phalange" in tl:
-            unit.phalange = True
-        if "charge montée" in tl or "charge montee" in tl:
-            unit.charge_montee = True
-        if "charge d'aïda" in tl or "charge d'aida" in tl or "charge aida" in tl:
-            unit.charge_aida = True
-        # "Sort de bataille (N)" → N sorts par round
-        if "sort de bataille" in tl:
+
+    # Appliquer les traits WW1
+    for trait in unit_def.get("traits", []):
+        key = trait.lower().strip()
+        fn = WW1_TRAIT_MAP.get(key)
+        if fn:
+            fn(unit)
+        # Compatibilité avec le moteur de base pour "Sort de bataille"
+        if "sort de bataille" in key:
             import re
-            m = re.search(r'\((\d+)\)', t)
+            m = re.search(r'\((\d+)\)', trait)
             if m:
                 unit.spells_per_round = int(m.group(1))
-    
-    # Sorts
-    SPELL_CATALOG = {
-        "Boule de feu":        lambda: SpellFireball(porte=9, toucher=3, blesser=1, perforation=-2, degats="1d4", aoe_size=3, cooldown=2),
-        "Soin":                lambda: SpellHeal(porte=6, cooldown=3),
-        "Armure magique":      lambda: SpellMagicArmor(porte=4, bonus=2, duration=3, cooldown=4),
-        "Projectile magique":  lambda: SpellMagicProjectile(porte=15, toucher=3, blesser=1, degats="3d2", cooldown=1),
-        "Mur de force":        lambda: SpellWall(porte=8, nb_obstacles=3, wall_duration=5, cooldown=5),
-    }
-    
-    for spell_name in unit_def.get("sorts", []):
-        factory = SPELL_CATALOG.get(spell_name)
-        if factory:
-            unit.spells.append(factory())
-        else:
-            print(f"  ATTENTION: sort '{spell_name}' inconnu")
-    
+
+    # Recalcul du cache max_range après modifications
+    unit._max_range = max((a.porte for a in unit.armes), default=1) if unit.armes else 1
+
+    # Recalcul attack_type
+    if unit.spells:
+        unit.attack_type = "spell"
+    elif unit._max_range >= 4:
+        unit.attack_type = "ranged"
+    elif unit._max_range >= 2:
+        unit.attack_type = "reach"
+    else:
+        unit.attack_type = "melee"
+
     return unit
 
 
 def get_library():
-    """Retourne la base de données brute."""
     return UNIT_DATABASE
 
 
 def list_armies():
-    """Liste les noms d'armées disponibles."""
     return sorted(UNIT_DATABASE.keys())
 
 
 def list_units(army_name):
-    """Liste les noms d'unités d'une armée."""
     army = UNIT_DATABASE.get(army_name)
     if not army:
         return []
@@ -523,7 +675,6 @@ def list_units(army_name):
 
 
 def make_unit(army_name, unit_name):
-    """Crée un objet Unit depuis la bibliothèque."""
     army = UNIT_DATABASE.get(army_name)
     if not army:
         return None
@@ -535,32 +686,31 @@ def make_unit(army_name, unit_name):
 
 def build_army(army_name, composition):
     """Construit une liste de Units.
-    
+
     composition: liste de tuples (nom_unité, quantité)
-    Exemple: build_army("Armée Skaldienne", [("Infanterie régulière", 10), ("Officier", 2)])
+    Exemple: build_army("Infanterie Alliée", [("Poilu", 8), ("Tank Mark IV", 1)])
     """
     army_data = UNIT_DATABASE.get(army_name)
     if not army_data:
         print(f"ERREUR: armée '{army_name}' introuvable.")
         print(f"Armées disponibles: {', '.join(sorted(UNIT_DATABASE.keys()))}")
         return []
-    
+
     color = army_data["color"]
     unit_by_name = {u["nom"]: u for u in army_data["units"]}
-    
+
     result = []
     for unit_name, count in composition:
         u_def = unit_by_name.get(unit_name)
         if u_def is None:
             print(f"  ATTENTION: '{unit_name}' introuvable dans '{army_name}'")
-            print(f"  Disponibles: {', '.join(unit_by_name.keys())}")
             continue
         for i in range(count):
             u = create_unit(u_def, color)
             short = unit_name[:6]
             u.name = f"{short}{i + 1}" if count > 1 else short
             result.append(u)
-    
+
     return result
 
 
@@ -573,18 +723,12 @@ CUSTOM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_un
 
 
 def load_custom_units_into_db():
-    """Charge toutes les fiches JSON de custom_units/ dans UNIT_DATABASE.
-    
-    Les unités custom sont regroupées sous l'armée 'Unités custom'.
-    Appelé au démarrage et après chaque édition dans l'éditeur.
-    """
     import json
-    
+
     if not os.path.isdir(CUSTOM_DIR):
-        # Pas de dossier custom → retirer l'armée custom si elle existait
         UNIT_DATABASE.pop(CUSTOM_ARMY_NAME, None)
         return
-    
+
     units = []
     for fname in sorted(os.listdir(CUSTOM_DIR)):
         if not fname.endswith(".json"):
@@ -593,27 +737,21 @@ def load_custom_units_into_db():
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
-            # Valider les champs obligatoires
             if "nom" not in data or "armes" not in data:
                 continue
-            
-            # Construire le dict au format attendu par create_unit
             unit_def = {
-                "nom": data["nom"],
+                "nom":        data["nom"],
                 "deplacement": data.get("deplacement", 3),
-                "blessure": data.get("blessure", 2),
-                "bravoure": data.get("bravoure", 2),
-                "sauvegarde": data.get("sauvegarde", 5),
-                "role": data.get("role", "front"),
-                "size": data.get("size", 1),
-                "unit_type": data.get("unit_type", "Infanterie"),
-                "armes": data.get("armes", []),
-                "traits": data.get("traits", []),
-                "sorts": data.get("sorts", []),
+                "blessure":   data.get("blessure", 2),
+                "bravoure":   data.get("bravoure", 2),
+                "sauvegarde": data.get("sauvegarde", 7),
+                "role":       data.get("role", "front"),
+                "size":       data.get("size", 1),
+                "unit_type":  data.get("unit_type", "Infanterie"),
+                "armes":      data.get("armes", []),
+                "traits":     data.get("traits", []),
+                "sorts":      data.get("sorts", []),
             }
-            
-            # Copier le token dans tokens/ si token_path existe
             token_path = data.get("token_path", "")
             if token_path and not os.path.isabs(token_path):
                 token_path = os.path.normpath(os.path.join(os.path.dirname(filepath), token_path))
@@ -627,19 +765,17 @@ def load_custom_units_into_db():
                         shutil.copy2(token_path, dest)
                     except Exception:
                         pass
-            
             units.append(unit_def)
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"  ATTENTION: fichier custom '{fname}' invalide: {e}")
-    
+
     if units:
         UNIT_DATABASE[CUSTOM_ARMY_NAME] = {
-            "color": (180, 140, 220),  # Violet pour les custom
+            "color": (180, 140, 220),
             "units": units,
         }
     else:
         UNIT_DATABASE.pop(CUSTOM_ARMY_NAME, None)
 
 
-# Chargement automatique au démarrage
 load_custom_units_into_db()
