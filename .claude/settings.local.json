@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python -c \":*)",
       "Bash(python -m pytest tests/test_main.py -v)",
-      "Bash(python -m pytest tests/test_main.py -q)"
+      "Bash(python -m pytest tests/test_main.py -q)",
+      "Bash(python -c \"from src.maps import generate_forest, generate_village; g,_ = generate_forest\\(120,50\\); print\\('Forêt OK'\\); g,_ = generate_village\\(120,50\\); print\\('Village OK'\\)\")"
     ]
   }
 }

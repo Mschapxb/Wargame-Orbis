@@ -126,6 +126,16 @@ def build_grid_surface(battle, cell_size):
                     pygame.draw.line(grid_surface, (110, 80, 50),
                                      (x * cell_size, y * cell_size),
                                      (x * cell_size + cell_size, y * cell_size), 2)
+                elif bf.map_name == "Défilé":
+                    # Rochers gris-brun stratifiés
+                    pygame.draw.rect(grid_surface, (75, 68, 58), r)
+                    pygame.draw.rect(grid_surface, (95, 88, 75), r, 1)
+                    if cell_size >= 16:
+                        # Stries horizontales pour simuler les strates
+                        mid = y * cell_size + cell_size // 2
+                        pygame.draw.line(grid_surface, (100, 92, 80),
+                                         (x * cell_size + 2, mid),
+                                         (x * cell_size + cell_size - 2, mid), 1)
                 else:
                     pygame.draw.rect(grid_surface, obs_color, r)
             elif cell == 4:  # Rempart marchable
