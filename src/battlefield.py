@@ -77,6 +77,51 @@ class Battlefield:
                 return False
         self.gates_open = False
         return True
+
+    def has_line_of_fire(self, shooter, target):
+        """Ligne de vue pour les tirs (armes portée >= 4).
+
+        Les murs et les portes fermées intactes BLOQUENT les tirs.
+        Exception: une unité sur un rempart est surélevée — elle peut tirer
+        par-dessus le mur, et peut être visée par-dessus le mur (c'est tout
+        l'intérêt et le risque d'être sur le rempart).
+        """
+        if not self.walls and not self.gate_hp:
+            return True  # Pas de fortifications sur cette carte
+        sx, sy = shooter.position
+        tx, ty = target.position
+        if self.is_rampart(sx, sy) or self.is_rampart(tx, ty):
+            return True
+        return self._los_clear(sx, sy, tx, ty)
+
+    def _los_clear(self, x0, y0, x1, y1):
+        """Trace de Bresenham: False si un mur (2) ou une porte fermée
+        intacte (3) se trouve entre les deux points (exclus)."""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        step_x = 1 if x1 > x0 else -1
+        step_y = 1 if y1 > y0 else -1
+        err = dx - dy
+        x, y = x0, y0
+        grid = self.grid
+        gate_hp = self.gate_hp
+        gates_open = self.gates_open
+        while True:
+            if (x != x0 or y != y0) and (x != x1 or y != y1):
+                c = grid[x][y]
+                if c == 2:
+                    return False
+                if c == 3 and not gates_open and gate_hp.get((x, y), 0) > 0:
+                    return False
+            if x == x1 and y == y1:
+                return True
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += step_x
+            if e2 < dx:
+                err += dx
+                y += step_y
     
     def is_wall(self, x, y):
         """Retourne True si la case est un mur."""
@@ -400,15 +445,32 @@ class Battlefield:
             
             return None, None
         
-        # Unités immobiles (artillerie) ne bougent pas
-        if unit.vitesse <= 0:
+        # Artillerie: ancrée tant qu'elle a une cible atteignable, sinon
+        # repositionnement lent (les machines de guerre ont vitesse 1-2).
+        # Unités vraiment immobiles (vitesse 0): ne bougent jamais.
+        if unit.vitesse <= 0 or getattr(unit, 'is_artillery', False):
             enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
             if not enemies:
                 return None, None
-            target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
-            if self.manhattan_distance(unit.position, target.position) <= unit._max_range:
-                return None, target
-            return None, None
+            # L'artillerie ne vise QUE ce qu'elle peut atteindre ET voir
+            # (sinon elle "tirait" inutilement sur des cibles hors d'atteinte)
+            mr = unit._max_range
+            ux_a, uy_a = unit.position
+            reachable = [e for e in enemies
+                         if abs(ux_a - e.position[0]) + abs(uy_a - e.position[1]) <= mr
+                         and self.has_line_of_fire(unit, e)]
+            if reachable:
+                # Priorité: achever les blessés, sinon le plus proche
+                t = min(reachable, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                  abs(ux_a - e.position[0]) + abs(uy_a - e.position[1])))
+                return None, t
+            if unit.vitesse <= 0:
+                return None, None  # Immobile et rien d'atteignable: tenir, sans visée
+            # Artillerie mobile sans cible visible: si elle est sur un rempart
+            # en défense, elle y reste (descendre seule = suicide); sinon elle
+            # se repositionne lentement via la logique normale ci-dessous.
+            if self.gate_hp and self.is_rampart(ux_a, uy_a):
+                return None, None
         
         enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
         if not enemies:
@@ -419,10 +481,12 @@ class Battlefield:
             if unit._max_range >= 4 or bool(unit.spells):
                 ux, uy = unit.position
                 mr = unit._max_range
-                in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr]
+                in_range = [e for e in enemies
+                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr
+                            and self.has_line_of_fire(unit, e)]
                 if in_range:
                     return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
-                return None, min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+                return None, None  # Rien à portée: pas de visée futile
         
         # === COMBAT COLLANT: si un ennemi est au contact (dist ≤ portée), ===
         # === l'unité reste et le combat, elle ne se déplace PAS ===
@@ -441,18 +505,23 @@ class Battlefield:
         if closest_dist <= unit._max_range and not unit.fleeing and not _is_kiting:
             # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
             in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
-            # Priorité: le plus blessé en proportion, puis le plus proche
-            best_target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
-            
-            # Exception siège: CaC séparé de sa cible par le mur (dans un sens
-            # comme dans l'autre) → la distance Manhattan ment, continuer le pathfinding
-            wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
-            if (wall_x_s and unit._max_range < 4
-                    and ((ux < wall_x_s) != (best_target.position[0] < wall_x_s))
-                    and not self.gates_open):
-                pass  # Continue vers le pathfinding normal
-            else:
-                return None, best_target
+            # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
+            # derrière la porte ne doit pas figer un arbalétrier sur place)
+            if unit._max_range >= 4:
+                in_range = [e for e in in_range if self.has_line_of_fire(unit, e)]
+            if in_range:
+                # Priorité: le plus blessé en proportion, puis le plus proche
+                best_target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                
+                # Exception siège: CaC séparé de sa cible par le mur (dans un sens
+                # comme dans l'autre) → la distance Manhattan ment, continuer le pathfinding
+                wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
+                if (wall_x_s and unit._max_range < 4
+                        and ((ux < wall_x_s) != (best_target.position[0] < wall_x_s))
+                        and not self.gates_open):
+                    pass  # Continue vers le pathfinding normal
+                else:
+                    return None, best_target
         
         # Utiliser le ciblage tactique de l'IA si disponible
         from ai_commander import select_tactical_target, select_tactical_move_target

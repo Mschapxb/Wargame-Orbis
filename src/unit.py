@@ -222,6 +222,10 @@ class Unit:
         for arme in self.armes:
             if dist > arme.porte:
                 continue
+            # Ligne de vue: un mur ou une porte fermée bloque les tirs
+            # (les unités sur rempart tirent par-dessus — géré dans la LOS)
+            if arme.porte >= 4 and not battlefield.has_line_of_fire(self, target):
+                continue
 
             for _ in range(arme.nb_attaque):
                 # Événement visuel selon le type d'arme
@@ -525,6 +529,14 @@ class Unit:
                 self.sauvegarde += self._armor_buff_amount
                 self._armor_buff = False
                 self.floating_texts.append(FloatingText("Armure dissipée", (150, 150, 200), 50))
+
+    @property
+    def is_artillery(self):
+        """Machine de guerre: type 'Artillerie' (Baliste, Scorpion, Catapulte...)
+        ou unité immobile dotée d'une arme de tir. Important: les machines du
+        jeu ont une vitesse de 1-2 (repositionnement lent), PAS 0 — c'est
+        pourquoi le test `vitesse <= 0` seul ne les détectait jamais."""
+        return self.unit_type == "Artillerie" or (self.vitesse <= 0 and self._max_range >= 4)
 
     @property
     def hp(self):

@@ -12,9 +12,11 @@ class FloatingText:
 
 
 class Projectile:
-    __slots__ = ['start_pos', 'end_pos', 'color', 'duration', 'age', 'projectile_type', 'cell_size', '_dx', '_dy']
+    __slots__ = ['start_pos', 'end_pos', 'color', 'duration', 'age',
+                 'projectile_type', 'cell_size', 'delay', '_dx', '_dy']
     
-    def __init__(self, start_pos, end_pos, color, duration=30, projectile_type="arrow", cell_size=32):
+    def __init__(self, start_pos, end_pos, color, duration=30,
+                 projectile_type="arrow", cell_size=32, delay=0):
         self.start_pos = start_pos
         self.end_pos = end_pos
         self.color = color
@@ -22,12 +24,14 @@ class Projectile:
         self.age = 0
         self.projectile_type = projectile_type
         self.cell_size = cell_size
+        self.delay = delay  # Frames avant l'envol (volées en cascade)
         # Pré-calculer les deltas
         self._dx = end_pos[0] - start_pos[0]
         self._dy = end_pos[1] - start_pos[1]
         
     def get_current_pos(self):
-        progress = min(1.0, self.age / (self.duration * 0.7))
+        eff_age = max(0, self.age - self.delay)
+        progress = min(1.0, eff_age / (self.duration * 0.7))
         x = self.start_pos[0] + self._dx * progress
         y = self.start_pos[1] + self._dy * progress
         if self.projectile_type == "arrow":
@@ -36,11 +40,15 @@ class Projectile:
             y -= 25 * math.sin(progress * math.pi)
         return (x, y)
     
+    def is_flying(self):
+        """False tant que le projectile attend son tour dans la volée."""
+        return self.age >= self.delay
+    
     def get_angle(self):
         return math.atan2(self._dy, self._dx)
     
     def is_alive(self):
-        return self.age < self.duration
+        return self.age < self.duration + self.delay
 
 
 class AttackLine:
@@ -132,3 +140,22 @@ class WallEffect:
     
     def get_alpha(self):
         return int(200 * (1 - self.age / self.duration))
+
+
+class DeathFade:
+    """Mort d'une unité — croix qui s'estompe + nuage de poussière,
+    pour éviter la disparition instantanée 'informatique'."""
+    __slots__ = ['center_pos', 'radius', 'team_color', 'duration', 'age']
+    
+    def __init__(self, center_pos, radius, team_color, duration=55):
+        self.center_pos = center_pos  # En pixels monde
+        self.radius = radius
+        self.team_color = team_color
+        self.duration = duration
+        self.age = 0
+    
+    def is_alive(self):
+        return self.age < self.duration
+    
+    def get_progress(self):
+        return min(1.0, self.age / self.duration)

@@ -100,7 +100,7 @@ class CommanderAI:
             'en_melee': sum(unit_melee_power(e) for e in theirs),
             'my_ranged_units': [u for u in mine if u._max_range >= 4 or u.spells],
             'en_ranged_units': [e for e in theirs if e._max_range >= 4 or e.spells],
-            'en_artillery': [e for e in theirs if e.vitesse <= 0 and e._max_range >= 4],
+            'en_artillery': [e for e in theirs if getattr(e, 'is_artillery', False)],
             'my_fast': [u for u in mine if u.vitesse >= 6],
             'mine': mine, 'theirs': theirs,
         }
@@ -258,8 +258,8 @@ class CommanderAI:
             if e.spells:
                 d += 4
                 if any(s.spell_type == "heal" for s in e.spells): d += 3
-            if e.vitesse <= 0 and e._max_range >= 4:
-                d += 4  # Artillerie: menace majeure, immobile = proie facile
+            if getattr(e, 'is_artillery', False):
+                d += 4  # Artillerie: menace majeure, lente = proie facile
             if e._max_range >= 8: d += 3
             elif e._max_range >= 4: d += 2
             if e.hp < e.max_hp * 0.4: d += 2
@@ -389,7 +389,7 @@ class CommanderAI:
             t = min(s['en_artillery'],
                     key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
             return TacticalOrder("attack", target_unit=t, priority=5)
-        hv = [e for _, e in prio if e._max_range >= 4 or e.vitesse <= 0]
+        hv = [e for _, e in prio if e._max_range >= 4 or getattr(e, 'is_artillery', False)]
         if hv:
             t = min(hv, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
             return TacticalOrder("attack", target_unit=t, priority=4)
@@ -400,13 +400,18 @@ class CommanderAI:
     def _ranged_order(self, unit, enemies, prio):
         ux, uy = unit.position
         max_range = unit._max_range
-        # Focus fire: cible commune si à portée
+        bf = self.battlefield
+
+        def visible(e):
+            return (abs(ux - e.position[0]) + abs(uy - e.position[1]) <= max_range
+                    and bf.has_line_of_fire(unit, e))
+
+        # Focus fire: cible commune si à portée ET visible
         ft = self.focus_target
-        if ft and ft.is_alive:
-            if abs(ux - ft.position[0]) + abs(uy - ft.position[1]) <= max_range:
-                return TacticalOrder("attack", target_unit=ft, priority=4)
+        if ft and ft.is_alive and visible(ft):
+            return TacticalOrder("attack", target_unit=ft, priority=4)
         for _, e in prio:
-            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= max_range:
+            if visible(e):
                 return TacticalOrder("attack", target_unit=e, priority=3)
         # Posture hold_line: ne pas avancer, attendre que l'ennemi entre
         # dans la zone de feu
@@ -561,20 +566,28 @@ def select_tactical_target(unit, battle, battlefield):
 
     ux, uy = unit.position
     max_range = unit._max_range
+    is_ranged = max_range >= 4
+
+    def _reachable(e, d):
+        if d > max_range:
+            return False
+        if is_ranged and not battlefield.has_line_of_fire(unit, e):
+            return False
+        return True
 
     if order and order.order_type == "attack" and order.target_unit and order.target_unit.is_alive:
         tx, ty = order.target_unit.position
         dist = abs(ux - tx) + abs(uy - ty)
-        if dist <= max_range:
+        if _reachable(order.target_unit, dist):
             return order.target_unit
         in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
-        in_r = [(e, d) for e, d in in_r if d <= max_range]
+        in_r = [(e, d) for e, d in in_r if _reachable(e, d)]
         if in_r:
             return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), id(ed[0])))[0]
 
     if order and order.order_type in ("flank", "hold", "protect", "kite"):
         in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
-        in_r = [(e, d) for e, d in in_r if d <= max_range]
+        in_r = [(e, d) for e, d in in_r if _reachable(e, d)]
         if in_r:
             return min(in_r, key=lambda ed: ed[0].hp)[0]
 

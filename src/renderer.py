@@ -524,8 +524,10 @@ def run_visual(battle, cell_size):
     
     # Animation: progression d'interpolation du déplacement
     move_anim_progress = 1.0  # 0.0 = début mouvement, 1.0 = arrivé
-    MOVE_ANIM_SPEED_NORMAL = 0.07   # Vitesse d'interpolation (mode normal)
-    MOVE_ANIM_SPEED_FAST = 0.20     # Vitesse d'interpolation (mode rapide)
+    # Plus lent qu'avant: le déplacement occupe ~60% du round au lieu de ~25%
+    # → fini l'effet "téléportation puis attente" trop mécanique
+    MOVE_ANIM_SPEED_NORMAL = 0.035  # Vitesse d'interpolation (mode normal)
+    MOVE_ANIM_SPEED_FAST = 0.18     # Vitesse d'interpolation (mode rapide)
     round_ready = True  # True = on peut simuler un nouveau round
     
     _original_army1 = battle._restart_army1
@@ -688,7 +690,7 @@ def run_visual(battle, cell_size):
         # Vieillir effets visuels
         for p in battle.visual_effects['projectiles'][:]:
             p.age += 1
-            if p.age >= p.duration:
+            if not p.is_alive():
                 battle.visual_effects['projectiles'].remove(p)
         
         for l in battle.visual_effects['attack_lines'][:]:
@@ -696,8 +698,8 @@ def run_visual(battle, cell_size):
             if l.age >= l.duration:
                 battle.visual_effects['attack_lines'].remove(l)
         
-        # Effets de sorts
-        for key in ['aoe_explosions', 'heal_beams', 'armor_shimmers', 'wall_effects']:
+        # Effets de sorts + morts en fondu
+        for key in ['aoe_explosions', 'heal_beams', 'armor_shimmers', 'wall_effects', 'death_fades']:
             for fx in battle.visual_effects.get(key, [])[:]:
                 fx.age += 1
                 if not fx.is_alive():
@@ -730,6 +732,10 @@ def run_visual(battle, cell_size):
                           tgt.position[1] * cell_size + cell_size // 2 + oy)
                     dist = battle.battlefield.manhattan_distance(att.position, tgt.position)
                     if dist <= att._max_range:
+                        # Pas de ligne de visée à travers un mur/porte fermée
+                        if (att.attack_type == "ranged"
+                                and not battle.battlefield.has_line_of_fire(att, tgt)):
+                            continue
                         if att.attack_type == "spell":
                             color = (120, 60, 180)
                         elif att.attack_type == "ranged":
@@ -750,9 +756,10 @@ def run_visual(battle, cell_size):
             ep = (line.end_pos[0] + ox, line.end_pos[1] + oy)
             pygame.draw.line(screen, color, sp, ep, max(1, int(3 * t)))
         
-        # Projectiles
+        # Projectiles (les flèches en attente de volée ne sont pas dessinées)
         for proj in battle.visual_effects['projectiles']:
-            draw_projectile(screen, proj, ox, oy)
+            if proj.is_flying():
+                draw_projectile(screen, proj, ox, oy)
         
         # Explosions AoE (boule de feu)
         for aoe in battle.visual_effects.get('aoe_explosions', []):
@@ -809,6 +816,34 @@ def run_visual(battle, cell_size):
                     pygame.draw.rect(screen, (200, 120, 255),
                                      (px, py, cell_size, cell_size), 2)
         
+        # Morts en fondu: croix qui s'estompe + nuage de poussière
+        for df in battle.visual_effects.get('death_fades', []):
+            prog = df.get_progress()
+            alpha = int(210 * (1 - prog))
+            if alpha <= 8:
+                continue
+            dx_px = df.center_pos[0] + ox
+            dy_px = df.center_pos[1] + oy
+            gh = df.radius
+            # Poussière: anneau qui s'étend et se dissipe (premier tiers)
+            if prog < 0.45:
+                dust_p = prog / 0.45
+                dust_r = int(gh * (0.6 + dust_p * 1.3))
+                dust_a = int(110 * (1 - dust_p))
+                dsurf = pygame.Surface((dust_r * 2 + 2, dust_r * 2 + 2), pygame.SRCALPHA)
+                pygame.draw.circle(dsurf, (160, 150, 130, dust_a),
+                                   (dust_r + 1, dust_r + 1), dust_r, max(1, dust_r // 3))
+                screen.blit(dsurf, (dx_px - dust_r - 1, dy_px - dust_r - 1))
+            # Croix qui s'estompe
+            xsurf = pygame.Surface((gh * 2 + 4, gh * 2 + 4), pygame.SRCALPHA)
+            cc = (80, 80, 80, alpha)
+            pygame.draw.line(xsurf, cc, (2, 2), (gh * 2 + 1, gh * 2 + 1), 2)
+            pygame.draw.line(xsurf, cc, (gh * 2 + 1, 2), (2, gh * 2 + 1), 2)
+            tc = df.team_color
+            pygame.draw.circle(xsurf, (tc[0] // 3, tc[1] // 3, tc[2] // 3, alpha),
+                               (gh + 2, gh + 2), gh + 1, 1)
+            screen.blit(xsurf, (dx_px - gh - 2, dy_px - gh - 2))
+        
         # Unités
         ur_base = max(3, cell_size // 2 - 4)
         tick_time = pygame.time.get_ticks()
@@ -831,10 +866,21 @@ def run_visual(battle, cell_size):
                 uw, uh = 2, 4
             
             # === Animation: interpolation fluide entre positions ===
+            # Chaque unité a un léger décalage de départ et une vitesse propre
+            # (déterministes par unité) → l'armée ne bouge plus en bloc robotique
             prev_x, prev_y = getattr(u, '_prev_position', u.position)
-            t = move_anim_progress  # 0.0→1.0
+            seed_u = id(u) % 9973
+            is_moving = (prev_x != x or prev_y != y)
+            
+            if is_moving:
+                delay_u = (seed_u % 11) / 11.0 * 0.22        # 0 → 0.22 de retard
+                speed_u = 1.0 + ((seed_u // 11) % 7) / 7.0 * 0.25  # 1.0 → 1.25x
+                t_u = max(0.0, min(1.0, (move_anim_progress - delay_u) * speed_u
+                                   / max(0.05, 1.0 - delay_u)))
+            else:
+                t_u = 1.0
             # Ease-out pour un mouvement plus naturel (rapide au début, lent à la fin)
-            t_ease = 1.0 - (1.0 - t) * (1.0 - t)
+            t_ease = 1.0 - (1.0 - t_u) * (1.0 - t_u)
             
             interp_x = prev_x + (x - prev_x) * t_ease
             interp_y = prev_y + (y - prev_y) * t_ease
@@ -842,6 +888,21 @@ def run_visual(battle, cell_size):
             # Centre pixel de l'unité (avec interpolation)
             cx = int(interp_x * cell_size + (uw * cell_size) // 2) + ox
             cy = int(interp_y * cell_size + (uh * cell_size) // 2) + oy
+            
+            # Balancement de marche: petit rebond vertical pendant le trajet
+            # (un "pas" par case parcourue, amorti en fin de course)
+            if is_moving and t_u < 1.0 and u.is_alive and not u.fleeing:
+                dist_cells = abs(x - prev_x) + abs(y - prev_y)
+                steps = max(1, min(4, dist_cells))
+                bob = abs(math.sin(t_u * math.pi * steps)) * cell_size * 0.07 * (1.0 - t_u * 0.5)
+                cy -= int(bob)
+            
+            # Secousse d'impact: l'unité tremble brièvement quand elle encaisse
+            hit_flash = getattr(u, '_hit_flash', 0)
+            if hit_flash > 0 and u.is_alive:
+                sh_amp = max(1.0, cell_size / 14.0) * (hit_flash / 12.0)
+                cx += int(math.sin(tick_time * 0.09 + seed_u) * sh_amp)
+                cy += int(math.cos(tick_time * 0.11 + seed_u) * sh_amp * 0.6)
             
             # === Animation de lunge CaC ===
             lunge_target = getattr(u, '_lunge_target', None)

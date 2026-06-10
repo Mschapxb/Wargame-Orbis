@@ -3,8 +3,12 @@ import random
 
 from battlefield import Battlefield
 from effects import (FloatingText, AttackLine, Projectile,
-                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect)
+                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect, DeathFade)
 from ai_commander import CommanderAI
+
+# RNG dédiée aux effets visuels (délais de volée, dispersion...)
+# — flux séparé pour ne JAMAIS influencer les dés de la simulation
+_FX_RNG = random.Random(20260610)
 
 
 class Battle:
@@ -60,9 +64,12 @@ class Battle:
         for evt in events:
             t = evt['type']
             if t == 'arrow':
+                # Délai aléatoire (visuel): les volées partent en cascade
+                # au lieu de toutes en même temps
                 self.visual_effects['projectiles'].append(
                     Projectile(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               (200, 180, 100), 40, "arrow", cs))
+                               (200, 180, 100), 40, "arrow", cs,
+                               delay=_FX_RNG.randint(0, 14)))
             elif t == 'reach':
                 self.visual_effects['attack_lines'].append(
                     AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
@@ -834,7 +841,7 @@ class Battle:
                     continue
                 
                 gx, gy = best_gate
-                is_artillery = (unit.vitesse <= 0)
+                is_artillery = getattr(unit, 'is_artillery', False)
                 
                 total_dmg = 0
                 for arme in unit.armes:
@@ -842,11 +849,14 @@ class Battle:
                         continue
                     if arme.porte >= 4 and best_gate_dist > arme.porte:
                         continue
-                    # Arbalétriers/archers mobiles: priorité ennemis
-                    # Artillerie (vitesse 0): tire sur portes même s'il y a des ennemis
+                    # Arbalétriers/archers mobiles: priorité aux ennemis VISIBLES.
+                    # Si les défenseurs sont cachés derrière la porte (pas de
+                    # ligne de vue), autant tirer sur la porte.
                     if arme.porte >= 4 and not is_artillery:
                         enemies_in_range = any(
-                            e.is_alive and self.battlefield.manhattan_distance((ux, uy), e.position) <= arme.porte
+                            e.is_alive
+                            and self.battlefield.manhattan_distance((ux, uy), e.position) <= arme.porte
+                            and self.battlefield.has_line_of_fire(unit, e)
                             for e in self.army2
                         )
                         if enemies_in_range:
@@ -875,42 +885,50 @@ class Battle:
         
         # Attaques normales (unités qui n'ont pas tapé une porte)
         from ai_commander import select_tactical_target
+        bf_atk = self.battlefield
         for unit in act_order:
             if unit.is_alive and id(unit) not in _units_attacked_gate:
                 target = select_tactical_target(unit, self, self.battlefield)
                 ux, uy = unit.position
                 is_ranged = unit._max_range >= 4
 
-                # Si la cible tactique est hors de portée, chercher un ennemi à portée
-                if target:
-                    td = abs(ux - target.position[0]) + abs(uy - target.position[1])
-                    if td > unit._max_range:
-                        enemies = self.get_enemies(unit)
-                        in_range = [e for e in enemies if e.is_alive and
-                                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
-                        if in_range:
-                            if is_ranged:
-                                # Unités à distance: préférer les ennemis NON engagés en mêlée
-                                # avec un allié (tir plus utile sur ennemis libres)
-                                allies = self.get_allies(unit)
-                                not_engaged = [
-                                    e for e in in_range
-                                    if not any(
-                                        abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
-                                        for a in allies if a.is_alive and a._max_range < 4
-                                    )
-                                ]
-                                pool = not_engaged if not_engaged else in_range
-                                target = min(pool, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                                   abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                            else:
-                                target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                                       abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                else:
-                    # Pas de cible tactique: chercher l'ennemi le plus proche à portée
+                def _can_hit(e):
+                    """À portée ET (pour les tirs) avec ligne de vue."""
+                    if abs(ux - e.position[0]) + abs(uy - e.position[1]) > unit._max_range:
+                        return False
+                    if is_ranged and not bf_atk.has_line_of_fire(unit, e):
+                        return False
+                    return True
+
+                # Si la cible tactique est hors d'atteinte (portée ou LOS),
+                # chercher un autre ennemi atteignable
+                if target and not _can_hit(target):
                     enemies = self.get_enemies(unit)
-                    in_range = [e for e in enemies if e.is_alive and
-                                abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
+                    in_range = [e for e in enemies if e.is_alive and _can_hit(e)]
+                    if in_range:
+                        if is_ranged:
+                            # Unités à distance: préférer les ennemis NON engagés en mêlée
+                            # avec un allié (tir plus utile sur ennemis libres)
+                            allies = self.get_allies(unit)
+                            not_engaged = [
+                                e for e in in_range
+                                if not any(
+                                    abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
+                                    for a in allies if a.is_alive and a._max_range < 4
+                                )
+                            ]
+                            pool = not_engaged if not_engaged else in_range
+                            target = min(pool, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                               abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                        else:
+                            target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                                   abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                    else:
+                        target = None  # Rien d'atteignable: ne pas tirer dans le vide
+                elif target is None:
+                    # Pas de cible tactique: chercher l'ennemi atteignable le plus proche
+                    enemies = self.get_enemies(unit)
+                    in_range = [e for e in enemies if e.is_alive and _can_hit(e)]
                     if in_range:
                         if is_ranged:
                             allies = self.get_allies(unit)
@@ -955,11 +973,20 @@ class Battle:
                     remaining.append((wx, wy, dur - 1, original))
             self.battlefield._temp_walls = remaining
         
-        # Nettoyer les unités mortes de la grille
+        # Nettoyer les unités mortes de la grille (+ effet de mort en fondu)
+        self._refresh_army_sets()
+        cs_fx = self.cell_size
         dead_units_seen = set()
         for pos, unit in list(self.battlefield.units.items()):
             if not unit.is_alive and unit.down_timer <= 0 and id(unit) not in dead_units_seen:
                 dead_units_seen.add(id(unit))
+                # Effet visuel: croix qui s'estompe + poussière à l'endroit du décès
+                w_u, h_u = self.battlefield.get_unit_dims(unit)
+                px_fx = unit.position[0] * cs_fx + (w_u * cs_fx) // 2
+                py_fx = unit.position[1] * cs_fx + (h_u * cs_fx) // 2
+                team_c = (60, 120, 220) if id(unit) in self._army1_ids else (220, 60, 60)
+                self.visual_effects.setdefault('death_fades', []).append(
+                    DeathFade((px_fx, py_fx), max(4, cs_fx // 2 - 3), team_c))
                 self.battlefield.remove_unit(unit)
         
         # Fuyards qui atteignent le bord → quittent la map
