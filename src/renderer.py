@@ -13,11 +13,35 @@ TARGET_CELL_SIZE = 28
 MIN_CELL_SIZE = 12
 MAX_CELL_SIZE = 64
 
+# Libellés FR des postures du commandant IA (affichés dans le HUD)
+POSTURE_LABELS = {
+    "balanced":   ("Équilibré",        (180, 180, 180)),
+    "rush":       ("Charge générale",  (255, 150, 60)),
+    "hold_line":  ("Ligne de tir",     (90, 180, 255)),
+    "hold_walls": ("Défense des murs", (170, 170, 200)),
+    "sortie":     ("SORTIE !",         (255, 210, 70)),
+    "recall":     ("Repli",            (150, 200, 255)),
+}
+
 # Dossier des tokens (à côté des fichiers .py)
 TOKENS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
 
 # Cache des images de tokens: {(token_name, size): Surface ou None}
 _token_cache = {}
+
+# Cache des ombres d'unités: {(w, h): Surface} — évite une allocation
+# de Surface par unité et par frame
+_shadow_cache = {}
+
+
+def get_shadow(sh_w, sh_h):
+    key = (sh_w, sh_h)
+    s = _shadow_cache.get(key)
+    if s is None:
+        s = pygame.Surface((sh_w, sh_h), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (0, 0, 0, 70), (0, 0, sh_w, sh_h))
+        _shadow_cache[key] = s
+    return s
 
 
 def load_token(token_name, size):
@@ -44,6 +68,7 @@ def load_token(token_name, size):
 def clear_token_cache():
     """Vide le cache (utile après resize)."""
     _token_cache.clear()
+    _shadow_cache.clear()
 
 
 
@@ -67,6 +92,23 @@ def compute_grid_from_screen(target_cell=TARGET_CELL_SIZE):
     return grid_w, grid_h, cell_size
 
 
+def _ground_color(bg, x, y):
+    """Variation de sol déterministe (pseudo-bruit, pas de random pour ne
+    pas perturber la RNG de la bataille)."""
+    n = (x * 374761393 + y * 668265263) & 0xFFFFFFFF
+    n = (n ^ (n >> 13)) * 1274126177 & 0xFFFFFFFF
+    v = (n >> 24) % 9 - 4  # -4..+4
+    return (max(0, min(255, bg[0] + v)),
+            max(0, min(255, bg[1] + v)),
+            max(0, min(255, bg[2] + v)))
+
+
+def _detail_seed(x, y):
+    """Valeur déterministe 0..255 pour décider des petits détails de sol."""
+    n = (x * 2654435761 + y * 40503) & 0xFFFFFFFF
+    return (n >> 16) & 0xFF
+
+
 def build_grid_surface(battle, cell_size):
     """Pré-rend la surface de la grille avec le thème de la map."""
     from maps import get_map_info
@@ -83,6 +125,10 @@ def build_grid_surface(battle, cell_size):
     wall_color = theme.get("wall_color", (100, 100, 110))
     gate_color = theme.get("gate_color", (140, 100, 50))
     
+    # Couleur de grille très discrète (proche du fond) — l'ancienne grille
+    # par case donnait un aspect "tableur"
+    subtle_grid = (max(0, bg[0] - 6), max(0, bg[1] - 6), max(0, bg[2] - 6))
+    
     for x in range(bf.width):
         for y in range(bf.height):
             r = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
@@ -90,75 +136,157 @@ def build_grid_surface(battle, cell_size):
             
             if cell == 2:  # Mur
                 pygame.draw.rect(grid_surface, wall_color, r)
-                # Crénelage
-                pygame.draw.rect(grid_surface, (120, 120, 130), r, 2)
+                # Pierres: joints horizontaux décalés une rangée sur deux
+                stone_c = (max(0, wall_color[0] - 18), max(0, wall_color[1] - 18), max(0, wall_color[2] - 14))
+                hi_c = (min(255, wall_color[0] + 20), min(255, wall_color[1] + 20), min(255, wall_color[2] + 22))
+                mid_y = y * cell_size + cell_size // 2
+                pygame.draw.line(grid_surface, stone_c,
+                                 (x * cell_size, mid_y), (x * cell_size + cell_size, mid_y), 1)
+                off = (cell_size // 2) if (y % 2 == 0) else 0
+                pygame.draw.line(grid_surface, stone_c,
+                                 (x * cell_size + off, y * cell_size),
+                                 (x * cell_size + off, mid_y), 1)
+                off2 = 0 if (y % 2 == 0) else (cell_size // 2)
+                pygame.draw.line(grid_surface, stone_c,
+                                 (x * cell_size + off2, mid_y),
+                                 (x * cell_size + off2, y * cell_size + cell_size), 1)
+                # Liseré clair en haut (lumière)
+                pygame.draw.line(grid_surface, hi_c,
+                                 (x * cell_size, y * cell_size),
+                                 (x * cell_size + cell_size, y * cell_size), 1)
             elif cell == 3:  # Porte
                 hp = bf.gate_hp.get((x, y), 0)
-                if hp > 0:
+                gates_open = getattr(bf, 'gates_open', False)
+                if hp > 0 and not gates_open:
+                    # Porte fermée: planches verticales + clous
                     pygame.draw.rect(grid_surface, gate_color, r)
-                    # Barres de PV de porte
+                    plank_c = (max(0, gate_color[0] - 25), max(0, gate_color[1] - 20), max(0, gate_color[2] - 12))
+                    n_planks = max(2, cell_size // 8)
+                    for p in range(1, n_planks):
+                        px_line = x * cell_size + p * cell_size // n_planks
+                        pygame.draw.line(grid_surface, plank_c,
+                                         (px_line, y * cell_size), (px_line, y * cell_size + cell_size), 1)
+                    # Renfort horizontal + clous
+                    band_y = y * cell_size + cell_size // 2
+                    pygame.draw.line(grid_surface, (90, 90, 100),
+                                     (x * cell_size + 1, band_y), (x * cell_size + cell_size - 1, band_y), 2)
+                    if cell_size >= 16:
+                        pygame.draw.circle(grid_surface, (180, 180, 190),
+                                           (x * cell_size + 4, band_y), 1)
+                        pygame.draw.circle(grid_surface, (180, 180, 190),
+                                           (x * cell_size + cell_size - 4, band_y), 1)
+                    # Barre de PV de porte
                     bar_w = cell_size - 4
                     pct = hp / 10
                     pygame.draw.rect(grid_surface, (60, 40, 20),
                                      (x * cell_size + 2, y * cell_size + cell_size - 5, bar_w, 3))
                     pygame.draw.rect(grid_surface, (200, 150, 50),
                                      (x * cell_size + 2, y * cell_size + cell_size - 5, int(bar_w * pct), 3))
+                elif hp > 0 and gates_open:
+                    # Porte OUVERTE (intacte): sol de passage + battants repliés
+                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
+                    pygame.draw.rect(grid_surface, gate_color,
+                                     (x * cell_size, y * cell_size, 3, cell_size))
+                    pygame.draw.rect(grid_surface, gate_color,
+                                     (x * cell_size + cell_size - 3, y * cell_size, 3, cell_size))
                 else:
-                    # Porte détruite — sol visible
-                    v = ((x + y) % 3) * 3
-                    col = (bg[0] + v, bg[1] + v, bg[2] + v)
-                    pygame.draw.rect(grid_surface, col, r)
-                    # Débris
+                    # Porte détruite — sol + débris
+                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
                     pygame.draw.line(grid_surface, (90, 70, 40),
                                      (x * cell_size + 2, y * cell_size + 2),
                                      (x * cell_size + cell_size - 2, y * cell_size + cell_size - 2), 1)
+                    pygame.draw.line(grid_surface, (70, 55, 30),
+                                     (x * cell_size + cell_size - 3, y * cell_size + 3),
+                                     (x * cell_size + 3, y * cell_size + cell_size - 3), 1)
             elif cell == 1:  # Obstacle
                 if bf.map_name == "Forêt":
-                    pygame.draw.rect(grid_surface, (25, 50, 20), r)
+                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
                     cx = x * cell_size + cell_size // 2
                     cy_tree = y * cell_size + cell_size // 2
                     tr = max(2, cell_size // 3)
+                    # Ombre + feuillage en deux tons + tronc
+                    pygame.draw.circle(grid_surface, (15, 35, 12), (cx + 1, cy_tree + 2), tr + 1)
                     pygame.draw.circle(grid_surface, (30, 80, 25), (cx, cy_tree), tr)
+                    pygame.draw.circle(grid_surface, (45, 100, 35),
+                                       (cx - tr // 3, cy_tree - tr // 3), max(1, tr // 2))
                     pygame.draw.circle(grid_surface, (20, 60, 15), (cx, cy_tree), tr, 1)
                 elif bf.map_name == "Village":
+                    # Bâtiment: murs + toit deux pans
                     pygame.draw.rect(grid_surface, obs_color, r)
-                    pygame.draw.rect(grid_surface, (70, 55, 35), r, 2)
-                    pygame.draw.line(grid_surface, (110, 80, 50),
-                                     (x * cell_size, y * cell_size),
-                                     (x * cell_size + cell_size, y * cell_size), 2)
+                    roof_c = (110, 80, 50)
+                    roof_dark = (90, 62, 38)
+                    pygame.draw.polygon(grid_surface, roof_c, [
+                        (x * cell_size, y * cell_size + cell_size // 2),
+                        (x * cell_size + cell_size // 2, y * cell_size),
+                        (x * cell_size + cell_size, y * cell_size + cell_size // 2)])
+                    pygame.draw.polygon(grid_surface, roof_dark, [
+                        (x * cell_size + cell_size // 2, y * cell_size),
+                        (x * cell_size + cell_size, y * cell_size + cell_size // 2),
+                        (x * cell_size + cell_size // 2, y * cell_size + cell_size // 2)])
+                    pygame.draw.rect(grid_surface, (70, 55, 35), r, 1)
                 elif bf.map_name == "Défilé":
                     # Rochers gris-brun stratifiés
                     pygame.draw.rect(grid_surface, (75, 68, 58), r)
                     pygame.draw.rect(grid_surface, (95, 88, 75), r, 1)
                     if cell_size >= 16:
-                        # Stries horizontales pour simuler les strates
                         mid = y * cell_size + cell_size // 2
                         pygame.draw.line(grid_surface, (100, 92, 80),
                                          (x * cell_size + 2, mid),
                                          (x * cell_size + cell_size - 2, mid), 1)
+                        pygame.draw.line(grid_surface, (60, 54, 46),
+                                         (x * cell_size + 3, mid + cell_size // 4),
+                                         (x * cell_size + cell_size - 4, mid + cell_size // 4), 1)
                 else:
-                    pygame.draw.rect(grid_surface, obs_color, r)
+                    # Rocher générique avec relief
+                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
+                    cx = x * cell_size + cell_size // 2
+                    cyo = y * cell_size + cell_size // 2
+                    rr = max(2, cell_size // 2 - 2)
+                    dark = (max(0, obs_color[0] - 15), max(0, obs_color[1] - 15), max(0, obs_color[2] - 15))
+                    light = (min(255, obs_color[0] + 18), min(255, obs_color[1] + 18), min(255, obs_color[2] + 18))
+                    pygame.draw.circle(grid_surface, dark, (cx + 1, cyo + 2), rr)
+                    pygame.draw.circle(grid_surface, obs_color, (cx, cyo), rr)
+                    pygame.draw.circle(grid_surface, light, (cx - rr // 3, cyo - rr // 3), max(1, rr // 3))
             elif cell == 4:  # Rempart marchable
-                # Sol plus clair que le mur, avec bordure
-                ramp_color = (85, 85, 95)
+                ramp_color = (88, 88, 98)
                 pygame.draw.rect(grid_surface, ramp_color, r)
-                pygame.draw.rect(grid_surface, (100, 100, 110), r, 1)
+                # Dallage en damier discret
+                if (x + y) % 2 == 0:
+                    pygame.draw.rect(grid_surface, (94, 94, 104),
+                                     (x * cell_size + 1, y * cell_size + 1, cell_size - 2, cell_size - 2))
+                pygame.draw.rect(grid_surface, (104, 104, 116), r, 1)
             elif cell == 5:  # Escalier
                 stair_color = (75, 70, 60)
                 pygame.draw.rect(grid_surface, stair_color, r)
-                # Lignes horizontales pour figurer les marches
                 step_h = max(2, cell_size // 4)
                 for sy in range(y * cell_size + 2, (y + 1) * cell_size - 1, step_h):
                     pygame.draw.line(grid_surface, (95, 85, 70),
                                      (x * cell_size + 2, sy),
                                      (x * cell_size + cell_size - 2, sy), 1)
+                    pygame.draw.line(grid_surface, (55, 50, 42),
+                                     (x * cell_size + 2, sy + 1),
+                                     (x * cell_size + cell_size - 2, sy + 1), 1)
             else:
-                # Sol
-                v = ((x + y) % 3) * 3
-                col = (bg[0] + v, bg[1] + v, bg[2] + v)
-                pygame.draw.rect(grid_surface, col, r)
+                # Sol avec pseudo-bruit + petits détails épars
+                pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
+                if cell_size >= 14:
+                    seed = _detail_seed(x, y)
+                    if seed < 14:  # ~5% des cases: touffe d'herbe / caillou
+                        dx = 2 + (seed % max(1, cell_size - 6))
+                        dy = 2 + ((seed * 7) % max(1, cell_size - 6))
+                        px_d = x * cell_size + dx
+                        py_d = y * cell_size + dy
+                        if bf.map_name in ("Prairie", "Forêt"):
+                            gc = (min(255, bg[0] + 14), min(255, bg[1] + 22), min(255, bg[2] + 10))
+                            pygame.draw.line(grid_surface, gc, (px_d, py_d + 3), (px_d, py_d), 1)
+                            pygame.draw.line(grid_surface, gc, (px_d + 2, py_d + 3), (px_d + 3, py_d + 1), 1)
+                        else:
+                            sc = (min(255, bg[0] + 16), min(255, bg[1] + 14), min(255, bg[2] + 12))
+                            pygame.draw.circle(grid_surface, sc, (px_d, py_d), 1)
             
-            pygame.draw.rect(grid_surface, grid_color, r, 1)
+            # Grille discrète uniquement sur le sol (pas sur murs/obstacles)
+            if cell == 0:
+                pygame.draw.rect(grid_surface, subtle_grid, r, 1)
     
     return grid_surface
 
@@ -348,6 +476,8 @@ def run_visual(battle, cell_size):
     font_tiny_size = max(7, cell_size // 4)
     small_font = pygame.font.SysFont("arial", font_small_size)
     tiny_font = pygame.font.SysFont("arial", font_tiny_size)
+    banner_font = pygame.font.SysFont("arial", 22, bold=True)
+    pause_font = pygame.font.SysFont("arial", 30, bold=True)
     
     battle.cell_size = cell_size
     grid_surface = build_grid_surface(battle, cell_size)
@@ -384,6 +514,13 @@ def run_visual(battle, cell_size):
     winner = None
     battle_report = None
     show_lines = True
+    
+    # Bannières d'événements dramatiques (sortie, portes, charges...)
+    event_banners = []  # [texte, couleur, timer_frames]
+    prev_gates_open = getattr(battle.battlefield, 'gates_open', False)
+    prev_intact_gates = sum(1 for h in battle.battlefield.gate_hp.values() if h > 0)
+    prev_postures = [getattr(battle.commander1, 'posture', 'balanced'),
+                     getattr(battle.commander2, 'posture', 'balanced')]
     
     # Animation: progression d'interpolation du déplacement
     move_anim_progress = 1.0  # 0.0 = début mouvement, 1.0 = arrivé
@@ -451,6 +588,11 @@ def run_visual(battle, cell_size):
                     battle_report = None
                     move_anim_progress = 1.0
                     round_ready = True
+                    event_banners = []
+                    prev_gates_open = getattr(battle.battlefield, 'gates_open', False)
+                    prev_intact_gates = sum(1 for h in battle.battlefield.gate_hp.values() if h > 0)
+                    prev_postures = [getattr(battle.commander1, 'posture', 'balanced'),
+                                     getattr(battle.commander2, 'posture', 'balanced')]
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
                 elif event.key == pygame.K_b:
@@ -500,6 +642,33 @@ def run_visual(battle, cell_size):
                 # Rafraîchir la grille si siège (portes détruites)
                 if battle.map_name == "Siège":
                     grid_surface = build_grid_surface(battle, cell_size)
+                
+                # ─── Détection d'événements → bannières ───
+                bfb = battle.battlefield
+                ng = getattr(bfb, 'gates_open', False)
+                if ng != prev_gates_open:
+                    if ng:
+                        event_banners.append(["LES PORTES S'OUVRENT — SORTIE !", (255, 210, 70), 180])
+                    else:
+                        event_banners.append(["LES PORTES SE REFERMENT", (150, 200, 255), 150])
+                    prev_gates_open = ng
+                n_intact = sum(1 for h in bfb.gate_hp.values() if h > 0)
+                if n_intact < prev_intact_gates and not ng:
+                    if n_intact == 0:
+                        event_banners.append(["LA PORTE EST ENFONCÉE !", (255, 120, 60), 180])
+                    prev_intact_gates = n_intact
+                for ci, cmd in enumerate((battle.commander1, battle.commander2)):
+                    p = getattr(cmd, 'posture', 'balanced')
+                    if p != prev_postures[ci]:
+                        prev_postures[ci] = p
+                        side = f"Armée {ci + 1}"
+                        if p == "rush":
+                            event_banners.append([f"{side} : CHARGE GÉNÉRALE !", (255, 150, 60), 150])
+                        elif p == "hold_line":
+                            event_banners.append([f"{side} tient la ligne de tir", (90, 180, 255), 120])
+                        elif p == "recall":
+                            event_banners.append([f"{side} : repli derrière les murs", (150, 200, 255), 150])
+                
                 result = battle.is_battle_over()
                 if result:
                     winner = result
@@ -744,6 +913,11 @@ def run_visual(battle, cell_size):
             team_color = (60, 120, 220) if is_army1 else (220, 60, 60)
             
             if u.is_alive:
+                # Ombre portée (profondeur) — surface mise en cache
+                sh_w = max(4, ur * 2)
+                sh_h = max(2, ur // 2 + 2)
+                screen.blit(get_shadow(sh_w, sh_h), (cx - sh_w // 2, cy + ur - sh_h // 2))
+                
                 if u.fleeing:
                     pygame.draw.circle(screen, (255, 140, 0), (cx, cy), ur)
                 else:
@@ -759,28 +933,62 @@ def run_visual(battle, cell_size):
                 ring_r = ur + 2
                 ring_w = max(2, cell_size // 8)
                 pygame.draw.circle(screen, team_color, (cx, cy), ring_r, ring_w)
+                
+                # Flash de dégâts (cercle rouge translucide qui s'estompe)
+                hit_flash = getattr(u, '_hit_flash', 0)
+                if hit_flash > 0:
+                    u._hit_flash = hit_flash - 1
+                    fa = int(150 * (hit_flash / 12))
+                    fr = ur + 3
+                    fsurf = pygame.Surface((fr * 2 + 2, fr * 2 + 2), pygame.SRCALPHA)
+                    pygame.draw.circle(fsurf, (255, 40, 40, fa), (fr + 1, fr + 1), fr)
+                    screen.blit(fsurf, (cx - fr - 1, cy - fr - 1))
             else:
-                pygame.draw.circle(screen, (60, 60, 60), (cx, cy), max(1, ur - 2), 2)
-                ring_w = max(2, cell_size // 8)
-                pygame.draw.circle(screen, team_color, (cx, cy), ur + 2, ring_w)
+                # Cadavre: croix grise discrète au sol (moins de bruit visuel
+                # que l'ancien double cercle)
+                gh = max(2, ur - 2)
+                corpse_c = (70, 70, 70)
+                pygame.draw.line(screen, corpse_c, (cx - gh, cy - gh), (cx + gh, cy + gh), 2)
+                pygame.draw.line(screen, corpse_c, (cx + gh, cy - gh), (cx - gh, cy + gh), 2)
+                tc_dim = (team_color[0] // 3, team_color[1] // 3, team_color[2] // 3)
+                pygame.draw.circle(screen, tc_dim, (cx, cy), gh + 3, 1)
             
-            # Barre HP (largeur adaptée à la taille)
-            bw = max(4, uw * cell_size - 8)
-            hp_r = max(0, u.hp / u.max_hp) if u.max_hp > 0 else 0
-            by = cy - ur - 5
-            pygame.draw.rect(screen, (140, 30, 30), (cx - bw // 2, by, bw, 3))
-            pygame.draw.rect(screen, (30, 140, 30), (cx - bw // 2, by, int(bw * hp_r), 3))
+            # Barre HP (couleur selon l'état: vert → jaune → rouge)
+            if u.is_alive:
+                bw = max(4, uw * cell_size - 8)
+                hp_r = max(0, u.hp / u.max_hp) if u.max_hp > 0 else 0
+                by = cy - ur - 5
+                if hp_r > 0.6:
+                    hp_c = (50, 190, 50)
+                elif hp_r > 0.3:
+                    hp_c = (220, 190, 40)
+                else:
+                    hp_c = (230, 70, 50)
+                pygame.draw.rect(screen, (15, 15, 15), (cx - bw // 2 - 1, by - 1, bw + 2, 5))
+                pygame.draw.rect(screen, (90, 25, 25), (cx - bw // 2, by, bw, 3))
+                pygame.draw.rect(screen, hp_c, (cx - bw // 2, by, int(bw * hp_r), 3))
             
             # Nom et moral
-            if cell_size >= 20:
+            if cell_size >= 20 and u.is_alive:
                 name_txt = tiny_font.render(u.name[:5], True, (220, 220, 220))
+                # Ombre du texte pour la lisibilité sur tout terrain
+                name_sh = tiny_font.render(u.name[:5], True, (10, 10, 10))
+                screen.blit(name_sh, (cx - name_txt.get_width() // 2 + 1, cy + ur + 3))
                 screen.blit(name_txt, (cx - name_txt.get_width() // 2, cy + ur + 2))
                 
-                if u.is_alive:
-                    effective_morale = u.get_effective_morale()
-                    moral_color = (100, 255, 100) if effective_morale >= 3 else (255, 255, 100) if effective_morale >= 2 else (255, 100, 100)
-                    moral_txt = tiny_font.render(f"M:{effective_morale}", True, moral_color)
-                    screen.blit(moral_txt, (cx - moral_txt.get_width() // 2, cy + ur + 12))
+                # Moral en pastilles (plus lisible que "M:3")
+                effective_morale = u.get_effective_morale()
+                n_pips = max(0, min(6, effective_morale))
+                pip_r = max(1, cell_size // 14)
+                pip_gap = pip_r * 2 + 2
+                total_w = n_pips * pip_gap - 2 if n_pips > 0 else 0
+                pip_y = cy + ur + 13
+                moral_color = ((100, 255, 100) if effective_morale >= 3
+                               else (255, 230, 90) if effective_morale >= 2
+                               else (255, 100, 100))
+                for pi in range(n_pips):
+                    pygame.draw.circle(screen, moral_color,
+                                       (cx - total_w // 2 + pi * pip_gap + pip_r, pip_y), pip_r)
             
             # Statut
             if u.status_text and cell_size >= 16:
@@ -801,19 +1009,94 @@ def run_visual(battle, cell_size):
                     screen.blit(ts, (cx - ts.get_width() // 2, cy + ft_oy - ft.age // 4))
                     ft_oy -= 10
         
-        # HUD (position fixe en bas de l'écran)
-        screen.set_clip(None)  # Retirer le clip pour le HUD
-        view_h = SCREEN_H - HUD_HEIGHT
-        pygame.draw.rect(screen, (20, 25, 30), (0, view_h, SCREEN_W, HUD_HEIGHT))
-        hy = view_h + 5
+        # ═══ BANDEAU SUPÉRIEUR: rapport de forces + postures IA ═══
+        screen.set_clip(None)
         a1c = sum(1 for u in battle.army1 if u.is_alive)
         a2c = sum(1 for u in battle.army2 if u.is_alive)
         a1f = len(battle.army1_fled) + sum(1 for u in battle.army1 if u.fleeing and u.is_alive)
         a2f = len(battle.army2_fled) + sum(1 for u in battle.army2 if u.fleeing and u.is_alive)
         
-        status = "VICTOIRE: " + winner if winner else ("PAUSE" if pause else ("RAPIDE" if simulation_speed == "fast" else "NORMAL"))
-        color = (255, 215, 0) if winner else ((255, 100, 100) if pause else ((255, 220, 80) if simulation_speed == "fast" else (100, 220, 100)))
-        hud = small_font.render(f"Round {battle.round - 1} | {status} | A1: {a1c} vivants {a1f} fuyants | A2: {a2c} vivants {a2f} fuyants", True, color)
+        top_h = 30
+        top_surf = pygame.Surface((SCREEN_W, top_h), pygame.SRCALPHA)
+        top_surf.fill((12, 16, 20, 195))
+        screen.blit(top_surf, (0, 0))
+        pygame.draw.line(screen, (60, 70, 85), (0, top_h), (SCREEN_W, top_h), 1)
+        
+        # Barre "bras de fer" centrale (proportion des forces vivantes)
+        bar_w_total = min(420, SCREEN_W // 3)
+        bar_x = (SCREEN_W - bar_w_total) // 2
+        bar_y = 8
+        bar_h = 14
+        total_alive = max(1, a1c + a2c)
+        a1_w = int(bar_w_total * a1c / total_alive)
+        pygame.draw.rect(screen, (25, 30, 38), (bar_x - 1, bar_y - 1, bar_w_total + 2, bar_h + 2))
+        pygame.draw.rect(screen, (60, 120, 220), (bar_x, bar_y, a1_w, bar_h))
+        pygame.draw.rect(screen, (220, 60, 60), (bar_x + a1_w, bar_y, bar_w_total - a1_w, bar_h))
+        pygame.draw.line(screen, (240, 240, 240), (bar_x + a1_w, bar_y), (bar_x + a1_w, bar_y + bar_h), 2)
+        
+        # Effectifs de part et d'autre de la barre
+        c1 = small_font.render(f"{a1c}", True, (140, 190, 255))
+        c2 = small_font.render(f"{a2c}", True, (255, 150, 150))
+        screen.blit(c1, (bar_x - c1.get_width() - 8, bar_y))
+        screen.blit(c2, (bar_x + bar_w_total + 8, bar_y))
+        
+        # Round au centre de la barre
+        rt = tiny_font.render(f"Round {battle.round - 1}", True, (230, 220, 180))
+        screen.blit(rt, ((SCREEN_W - rt.get_width()) // 2, bar_y + bar_h + 1))
+        
+        # Postures IA aux extrémités
+        p1 = getattr(battle.commander1, 'posture', 'balanced')
+        p2 = getattr(battle.commander2, 'posture', 'balanced')
+        l1, pc1 = POSTURE_LABELS.get(p1, (p1, (180, 180, 180)))
+        l2, pc2 = POSTURE_LABELS.get(p2, (p2, (180, 180, 180)))
+        t1 = small_font.render(f"Armée 1 — {l1}", True, pc1)
+        t2 = small_font.render(f"{l2} — Armée 2", True, pc2)
+        screen.blit(t1, (12, 8))
+        screen.blit(t2, (SCREEN_W - t2.get_width() - 12, 8))
+        
+        # ═══ BANNIÈRES D'ÉVÉNEMENTS (centre haut, fondu) ═══
+        banner_y = top_h + 14
+        for eb in event_banners[:]:
+            eb[2] -= 1
+            if eb[2] <= 0:
+                event_banners.remove(eb)
+                continue
+            fade = min(1.0, eb[2] / 40)
+            txt = banner_font.render(eb[0], True, eb[1])
+            bw_b = txt.get_width() + 30
+            bh_b = txt.get_height() + 10
+            bsurf = pygame.Surface((bw_b, bh_b), pygame.SRCALPHA)
+            bsurf.fill((10, 12, 16, int(190 * fade)))
+            pygame.draw.rect(bsurf, (*eb[1], int(200 * fade)), (0, 0, bw_b, bh_b), 2)
+            txt.set_alpha(int(255 * fade))
+            bsurf.blit(txt, (15, 5))
+            screen.blit(bsurf, ((SCREEN_W - bw_b) // 2, banner_y))
+            banner_y += bh_b + 6
+        
+        # ═══ OVERLAY PAUSE ═══
+        if pause and winner is None and not battle_report:
+            pt = pause_font.render("PAUSE", True, (255, 220, 120))
+            ps = pygame.Surface((pt.get_width() + 50, pt.get_height() + 18), pygame.SRCALPHA)
+            ps.fill((10, 12, 16, 170))
+            pygame.draw.rect(ps, (255, 220, 120, 160), ps.get_rect(), 2)
+            ps.blit(pt, (25, 9))
+            screen.blit(ps, ((SCREEN_W - ps.get_width()) // 2,
+                             (SCREEN_H - HUD_HEIGHT - ps.get_height()) // 2))
+            hint = small_font.render("ESPACE pour reprendre", True, (200, 200, 200))
+            screen.blit(hint, ((SCREEN_W - hint.get_width()) // 2,
+                               (SCREEN_H - HUD_HEIGHT) // 2 + 35))
+        
+        # ═══ HUD BAS ═══
+        view_h = SCREEN_H - HUD_HEIGHT
+        pygame.draw.rect(screen, (16, 20, 26), (0, view_h, SCREEN_W, HUD_HEIGHT))
+        pygame.draw.line(screen, (70, 85, 105), (0, view_h), (SCREEN_W, view_h), 2)
+        hy = view_h + 6
+        
+        status = "VICTOIRE: " + winner if winner else ("PAUSE" if pause else (">> RAPIDE" if simulation_speed == "fast" else "> NORMAL"))
+        color = (255, 215, 0) if winner else ((255, 130, 100) if pause else ((255, 220, 80) if simulation_speed == "fast" else (110, 220, 110)))
+        hud = small_font.render(
+            f"{status}   |   Armée 1: {a1c} vivants, {a1f} fuyants   |   Armée 2: {a2c} vivants, {a2f} fuyants",
+            True, color)
         screen.blit(hud, (10, hy))
         
         # Rapport de bataille (overlay)

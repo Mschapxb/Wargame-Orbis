@@ -179,6 +179,35 @@ def run_army_menu(screen_w=None, screen_h=None):
     states = [ArmyState(0), ArmyState(1)]
     selected_map = "Prairie"
     
+    # ─── Fond dégradé pré-rendu (une seule fois) ───
+    bg_surface = pygame.Surface((screen_w, screen_h))
+    for yy in range(screen_h):
+        t = yy / max(1, screen_h)
+        c = (int(BG[0] + 8 * (1 - t)), int(BG[1] + 10 * (1 - t)), int(BG[2] + 14 * (1 - t)))
+        pygame.draw.line(bg_surface, c, (0, yy), (screen_w, yy))
+    
+    def army_summary(state):
+        """Compte CaC / Tir / Cavalerie / Sorts de la composition."""
+        melee = ranged = cav = mages = 0
+        for (army_name, uname), count in state.composition.items():
+            if count <= 0:
+                continue
+            army_data = db.get(army_name, {})
+            udef = next((u for u in army_data.get("units", []) if u["nom"] == uname), None)
+            if udef is None:
+                continue
+            is_ranged = any(a[1] >= 4 for a in udef.get("armes", []))
+            has_spells = bool(udef.get("sorts"))
+            if has_spells:
+                mages += count
+            elif is_ranged:
+                ranged += count
+            else:
+                melee += count
+            if udef.get("deplacement", 0) >= 6:
+                cav += count
+        return melee, ranged, mages, cav
+    
     running = True
     
     while running:
@@ -210,11 +239,14 @@ def run_army_menu(screen_w=None, screen_h=None):
                         a2 = states[1].build()
                         return a1, a2, selected_map
         
-        screen.fill(BG)
+        screen.blit(bg_surface, (0, 0))
         
         # ─── TITRE ───
-        title = title_font.render("COMPOSITION DES ARMÉES", True, GOLD)
-        screen.blit(title, ((screen_w - title.get_width()) // 2, 12))
+        title = title_font.render("— COMPOSITION DES ARMÉES —", True, GOLD)
+        tx0 = (screen_w - title.get_width()) // 2
+        screen.blit(title, (tx0, 10))
+        pygame.draw.line(screen, (140, 120, 40),
+                         (tx0, 40), (tx0 + title.get_width(), 40), 1)
         
         # ─── DEUX PANNEAUX CÔTE À CÔTE ───
         panel_margin = 15
@@ -227,6 +259,11 @@ def run_army_menu(screen_w=None, screen_h=None):
             py = panel_top
             
             panel_rect = pygame.Rect(px, py, panel_w, panel_h)
+            # Ombre portée du panneau
+            shadow_rect = pygame.Rect(px + 4, py + 4, panel_w, panel_h)
+            sh = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+            sh.fill((0, 0, 0, 70))
+            screen.blit(sh, shadow_rect.topleft)
             pygame.draw.rect(screen, PANEL_BG, panel_rect, border_radius=6)
             team_border = HIGHLIGHT if i == 0 else HIGHLIGHT2
             pygame.draw.rect(screen, team_border, panel_rect, 2, border_radius=6)
@@ -248,7 +285,7 @@ def run_army_menu(screen_w=None, screen_h=None):
             units_area_h = panel_h - (cy - py) - 120 - bonus_extra
             
             if panel_rect.collidepoint(mouse_pos) and scroll_delta != 0:
-                state.scroll_offset = max(0, state.scroll_offset + scroll_delta)
+                state.scroll_offset = max(0, state.scroll_offset + scroll_delta * 3)
             
             clip_rect = pygame.Rect(px, units_area_top, panel_w, units_area_h)
             screen.set_clip(clip_rect)
@@ -337,6 +374,20 @@ def run_army_menu(screen_w=None, screen_h=None):
                         if draw_button(screen, b4, "+5", small_font, mouse_pos, GREEN, (100, 220, 100)):
                             if clicked:
                                 state.add_unit(army_name, uname, 5)
+                        
+                        # Clic direct sur la ligne (hors boutons):
+                        # gauche = +1, droit = -1 — ajout/retrait rapide
+                        buttons_zone = pygame.Rect(btn_set_x, btn_y, 140, btn_h)
+                        if row_rect.collidepoint(mouse_pos):
+                            if clicked and not buttons_zone.collidepoint(mouse_pos):
+                                state.add_unit(army_name, uname, 1)
+                            elif right_clicked:
+                                state.remove_unit(army_name, uname, 1)
+                        
+                        # Surlignage des lignes avec unités sélectionnées
+                        if count > 0:
+                            pygame.draw.rect(screen, (GREEN[0] // 2, GREEN[1] // 2, GREEN[2] // 2),
+                                             row_rect, 1, border_radius=3)
                     
                     draw_y += rh
                     total_content_h += rh
@@ -364,11 +415,32 @@ def run_army_menu(screen_w=None, screen_h=None):
             draw_text(screen, total_txt, body_font, (cx, compo_y),
                       GREEN if state.total_units > 0 else TEXT_DIM)
             
+            # Résumé tactique de l'armée (aide à équilibrer la compo)
+            if state.total_units > 0:
+                n_melee, n_ranged, n_mages, n_cav = army_summary(state)
+                parts = []
+                if n_melee: parts.append(f"{n_melee} CaC")
+                if n_ranged: parts.append(f"{n_ranged} Tir")
+                if n_mages: parts.append(f"{n_mages} Mage")
+                if n_cav: parts.append(f"{n_cav} Cav")
+                summary_txt = "  ·  ".join(parts)
+                st = stat_font.render(summary_txt, True, (160, 180, 200))
+                screen.blit(st, (cx + 170, compo_y + 3))
+            
             clear_btn = pygame.Rect(px + panel_w - 70, compo_y - 2, 60, 22)
             if draw_button(screen, clear_btn, "Vider", small_font, mouse_pos,
                            BTN_DANGER, (220, 70, 70)):
                 if clicked:
                     state.clear()
+            
+            # Bouton miroir: copier cette composition vers l'autre armée
+            mirror_btn = pygame.Rect(px + panel_w - 212, compo_y - 2, 64, 22)
+            mirror_label = "Copier →" if i == 0 else "← Copier"
+            if draw_button(screen, mirror_btn, mirror_label, small_font, mouse_pos):
+                if clicked and state.total_units > 0:
+                    other = states[1 - i]
+                    other.composition = dict(state.composition)
+                    other.bonuses = dict(state.bonuses)
             
             # Bouton toggle bonus
             bonus_toggle_btn = pygame.Rect(px + panel_w - 140, compo_y - 2, 64, 22)
@@ -462,13 +534,17 @@ def run_army_menu(screen_w=None, screen_h=None):
         for midx, mname in enumerate(map_names):
             minfo = get_map_info(mname)
             is_selected = (mname == selected_map)
-            mbtn = pygame.Rect(btn_x, map_y, 90, 26)
+            label_w = small_font.size(mname)[0]
+            mbtn = pygame.Rect(btn_x, map_y, max(70, label_w + 20), 26)
             btn_color = BTN_ACTIVE if is_selected else BTN_NORMAL
             hover_c = (100, 180, 255) if is_selected else BTN_HOVER
-            if draw_button(screen, mbtn, mname, small_font, mouse_pos, btn_color, hover_c):
+            if draw_button(screen, mbtn, mname, small_font, mouse_pos, btn_color, hover_c,
+                           TEXT_BRIGHT if is_selected else TEXT):
                 if clicked:
                     selected_map = mname
-            btn_x += 96
+            if is_selected:
+                pygame.draw.rect(screen, GOLD, mbtn, 2, border_radius=4)
+            btn_x += mbtn.w + 6
         
         # Description de la map
         map_desc = get_map_info(selected_map).get("description", "")
@@ -516,7 +592,7 @@ def run_army_menu(screen_w=None, screen_h=None):
                         body_font, mouse_pos, (40, 45, 50), (40, 45, 50), TEXT_DIM)
         
         # Aide
-        help_txt = small_font.render("Clic gauche = ajouter/retirer  |  Molette = défiler  |  ENTRÉE = lancer  |  ÉCHAP = quitter", True, TEXT_DIM)
+        help_txt = small_font.render("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  ENTRÉE = lancer  |  ÉCHAP = quitter", True, TEXT_DIM)
         screen.blit(help_txt, ((screen_w - help_txt.get_width()) // 2, screen_h - 16))
         
         pygame.display.flip()

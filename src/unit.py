@@ -26,6 +26,7 @@ class Unit:
         self._prev_position = (0, 0)  # Position au round précédent
         self._lunge_target = None     # Position pixel de la cible pour lunge CaC
         self._lunge_timer = 0         # Timer du lunge (frames restantes)
+        self._hit_flash = 0           # Frames restantes de flash de dégâts
         self.color = color
         self.afraid = False
         self.fleeing = False
@@ -98,6 +99,7 @@ class Unit:
                 return
         
         self.pv -= dmg
+        self._hit_flash = 12  # Frames de flash rouge (rendu visuel)
         self.floating_texts.append(FloatingText(f"-{dmg}", (220, 40, 40)))
         
         if self.pv <= 0:
