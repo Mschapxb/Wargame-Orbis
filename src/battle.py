@@ -305,11 +305,11 @@ class Battle:
                         if placed:
                             break
             
-            # Ouvrir les portes si l'armée 2 n'a aucune unité à distance
-            has_ranged = any(u._max_range >= 4 for u in self.army2 if u.is_alive)
-            if not has_ranged:
-                for pos in bf.gate_hp:
-                    bf.gate_hp[pos] = 0
+            # NOTE: l'ouverture des portes n'est plus décidée ici de façon
+            # statique. Le CommanderAI (posture "sortie") ouvre dynamiquement
+            # les portes en cours de bataille si les défenseurs se font
+            # canarder sans pouvoir répliquer — y compris si leurs tireurs
+            # meurent en cours de partie.
         else:
             a2_front = mid_x + gap
             a2_mid   = a2_front + 1
@@ -422,7 +422,8 @@ class Battle:
         # --- 0b) Siège: défenseurs derrière le mur intact → +1 bravoure ---
         if self.map_name == "Siège":
             wall_x = self.battlefield.siege_data.get('wall_x', 0)
-            has_intact_gates = any(hp > 0 for hp in self.battlefield.gate_hp.values())
+            has_intact_gates = (any(hp > 0 for hp in self.battlefield.gate_hp.values())
+                                and not self.battlefield.gates_open)
             if has_intact_gates:
                 for unit in self.army2:
                     if unit.is_alive and not unit.fleeing and unit.position[0] >= wall_x:
@@ -628,6 +629,12 @@ class Battle:
         
         alive = self.get_all_alive()
         
+        # Mélanger l'ordre de traitement du mouvement: les tris des passes
+        # sont stables, donc à distance égale c'était toujours l'armée 1
+        # qui réservait ses cases en premier (avantage cumulatif).
+        _move_pool = list(alive)
+        random.shuffle(_move_pool)
+        
         # === MOUVEMENT COHÉSIF EN 3 PASSES ===
         # Pass 1: fuyards et artillerie (statiques)
         # Pass 2: unités engagées (déjà au contact) — micro-ajustent
@@ -641,7 +648,7 @@ class Battle:
         engaged = []        # Au contact (distance ≤ portée+1)
         approaching = []    # En approche (pas encore au contact)
         
-        for u in alive:
+        for u in _move_pool:
             if u.fleeing or u.vitesse <= 0:
                 static_units.append(u)
                 continue
@@ -725,9 +732,11 @@ class Battle:
                 my_dist = 999
             
             # Si l'unité est > 6 cases en avance de la médiane, elle ralentit
+            # — SAUF en posture rush/sortie (chaque round d'approche coûte
+            # des pertes sous le feu ennemi: on fonce)
             orig_speed = unit.vitesse
             advance_gap = median_dist - my_dist
-            if advance_gap > 6 and unit._max_range < 4:
+            if advance_gap > 6 and unit._max_range < 4 and not getattr(unit, '_rush', False):
                 # Unité très en avance: ralentir (vitesse min 1)
                 unit.vitesse = max(1, orig_speed - 1)
             
@@ -786,10 +795,15 @@ class Battle:
                     break  # Un seul bonus suffit
         
         # Phase de Charge (avant les attaques normales)
-        self._charge_phase(alive)
+        # ORDRE D'INITIATIVE: mélangé chaque round pour qu'aucune armée
+        # n'ait l'avantage systématique d'agir en premier (sinon l'armée 1
+        # frappe toujours avant l'armée 2 et le biais se cumule).
+        act_order = list(alive)
+        random.shuffle(act_order)
+        self._charge_phase(act_order)
         
         # Sorts
-        for unit in alive:
+        for unit in act_order:
             if unit.spells and unit.is_alive:
                 self._apply_combat_events(unit.cast_random_spell(self))
         
@@ -797,7 +811,9 @@ class Battle:
         _units_attacked_gate = set()
         
         # Phase de siège: attaque des portes (AVANT attaques normales)
-        if self.battlefield.gate_hp and any(h > 0 for h in self.battlefield.gate_hp.values()):
+        # Inutile si les portes sont OUVERTES: on passe au travers
+        if (self.battlefield.gate_hp and not self.battlefield.gates_open
+                and any(h > 0 for h in self.battlefield.gate_hp.values())):
             gate_save = self.battlefield.gate_save
             for unit in self.army1:
                 if not unit.is_alive or unit.fleeing:
@@ -859,7 +875,7 @@ class Battle:
         
         # Attaques normales (unités qui n'ont pas tapé une porte)
         from ai_commander import select_tactical_target
-        for unit in alive:
+        for unit in act_order:
             if unit.is_alive and id(unit) not in _units_attacked_gate:
                 target = select_tactical_target(unit, self, self.battlefield)
                 ux, uy = unit.position

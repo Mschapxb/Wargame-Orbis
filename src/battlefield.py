@@ -16,6 +16,9 @@ class Battlefield:
         self.walls = set(tuple(w) for w in self.siege_data.get('walls', []))
         self.ramparts = set(tuple(r) for r in self.siege_data.get('ramparts', []))
         self.stairs = set(tuple(s) for s in self.siege_data.get('stairs', []))
+        # Portes ouvertes volontairement par les défenseurs (sortie).
+        # Une porte ouverte est traversable par TOUT le monde (risque assumé).
+        self.gates_open = False
         
         if grid is not None:
             self.grid = grid
@@ -58,9 +61,22 @@ class Battlefield:
             return True
         if cell == 5:  # Escalier: marchable
             return True
-        if cell == 3:  # Porte: traversable si détruite (hp <= 0)
-            return self.gate_hp.get((x, y), 0) <= 0
+        if cell == 3:  # Porte: traversable si détruite (hp <= 0) ou ouverte
+            return self.gates_open or self.gate_hp.get((x, y), 0) <= 0
         return False  # 1=obstacle, 2=mur
+
+    def open_gates(self):
+        """Les défenseurs ouvrent les portes (sortie). Tout le monde passe."""
+        self.gates_open = True
+
+    def close_gates(self):
+        """Referme les portes — seulement si aucune unité ne se trouve
+        sur une case porte (on ne broie personne dans les battants)."""
+        for pos in self.gate_hp:
+            if pos in self.units:
+                return False
+        self.gates_open = False
+        return True
     
     def is_wall(self, x, y):
         """Retourne True si la case est un mur."""
@@ -175,6 +191,7 @@ class Battlefield:
         width = self.width
         height = self.height
         gate_hp = self.gate_hp
+        gates_open = self.gates_open
         reserved = reserved_positions
         
         open_set = []
@@ -221,7 +238,7 @@ class Battlefield:
                 cell = grid[nx][ny]
                 if cell == 1 or cell == 2:
                     continue
-                if cell == 3 and gate_hp.get((nx, ny), 0) > 0:
+                if cell == 3 and not gates_open and gate_hp.get((nx, ny), 0) > 0:
                     continue
                 
                 neighbor = (nx, ny)
@@ -266,7 +283,8 @@ class Battlefield:
         # Siège: ne pas viser derrière le mur si portes intactes
         wall_x = self.siege_data.get('wall_x') if self.siege_data else None
         unit_is_attacker = wall_x is not None and unit_pos[0] < wall_x
-        all_gates_open = wall_x is not None and all(hp <= 0 for hp in self.gate_hp.values()) if self.gate_hp else True
+        all_gates_open = (self.gates_open or
+                          (wall_x is not None and all(hp <= 0 for hp in self.gate_hp.values()))) if self.gate_hp else True
         
         # Lane de l'unité pour l'étalement
         from ai_commander import get_lane_offset
@@ -301,7 +319,7 @@ class Battlefield:
                 cell = grid[px][py]
                 if cell == 1 or cell == 2:
                     continue
-                if cell == 3 and gate_hp_dict.get((px, py), 0) > 0:
+                if cell == 3 and not self.gates_open and gate_hp_dict.get((px, py), 0) > 0:
                     continue
                 pos = (px, py)
                 if pos in reserved_positions:
@@ -408,6 +426,9 @@ class Battlefield:
         
         # === COMBAT COLLANT: si un ennemi est au contact (dist ≤ portée), ===
         # === l'unité reste et le combat, elle ne se déplace PAS ===
+        # Exception: ordre "kite" (tireur qui recule en tirant)
+        _order = getattr(unit, '_tactical_order', None)
+        _is_kiting = _order is not None and _order.order_type == "kite"
         ux, uy = unit.position
         closest_dist = 999
         closest_enemy = None
@@ -417,15 +438,18 @@ class Battlefield:
                 closest_dist = d
                 closest_enemy = e
         
-        if closest_dist <= unit._max_range and not unit.fleeing:
+        if closest_dist <= unit._max_range and not unit.fleeing and not _is_kiting:
             # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
             in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
             # Priorité: le plus blessé en proportion, puis le plus proche
             best_target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
             
-            # Exception siège: CaC côté attaquant vs cible derrière le mur
+            # Exception siège: CaC séparé de sa cible par le mur (dans un sens
+            # comme dans l'autre) → la distance Manhattan ment, continuer le pathfinding
             wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
-            if wall_x_s and unit._max_range < 4 and ux < wall_x_s and best_target.position[0] >= wall_x_s:
+            if (wall_x_s and unit._max_range < 4
+                    and ((ux < wall_x_s) != (best_target.position[0] < wall_x_s))
+                    and not self.gates_open):
                 pass  # Continue vers le pathfinding normal
             else:
                 return None, best_target
@@ -474,8 +498,8 @@ class Battlefield:
             if unit._max_range >= 4 or bool(unit.spells):
                 # Tireur/mage sur rempart: ne jamais bouger
                 return None, target
-            # CaC sur rempart: rester tant que portes intactes
-            intact_gates = any(hp > 0 for hp in self.gate_hp.values())
+            # CaC sur rempart: rester tant que portes intactes ET fermées
+            intact_gates = any(hp > 0 for hp in self.gate_hp.values()) and not self.gates_open
             if intact_gates:
                 return None, target
         
@@ -510,8 +534,11 @@ class Battlefield:
             
             # Unité côté attaquant (à gauche du mur)?
             if ux < wall_x:
-                # Chercher une porte détruite pour passer à travers
-                destroyed_gates = [pos for pos, hp in self.gate_hp.items() if hp <= 0]
+                # Chercher une porte franchissable (détruite OU ouverte)
+                if self.gates_open:
+                    destroyed_gates = list(self.gate_hp.keys())
+                else:
+                    destroyed_gates = [pos for pos, hp in self.gate_hp.items() if hp <= 0]
                 if destroyed_gates:
                     # Aller vers la porte détruite la plus proche (traversable)
                     nearest = min(destroyed_gates, key=lambda g: self.manhattan_distance(unit.position, g))
