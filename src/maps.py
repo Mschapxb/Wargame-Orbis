@@ -495,6 +495,134 @@ def generate_defile(width, height):
 #                    FONCTION PRINCIPALE
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+#                 DÉCOR (purement visuel)
+# ═══════════════════════════════════════════════════════════════
+# Ces objets n'ont AUCUN effet de jeu: ils ne bloquent rien, ne coupent
+# aucune ligne de vue, n'entrent pas dans la grille. Ils existent pour que
+# le champ de bataille ressemble à un lieu plutôt qu'à un damier.
+#
+# Règle de lisibilité: les gros objets (arbres, charrettes, troncs) ne se
+# posent que sur les marges et autour des couverts existants — jamais en
+# plein milieu du champ où se joue le combat, sinon ils masquent les
+# unités.
+
+# (nature, poids) par carte — "petit" = herbes, fleurs, cailloux…
+_DECOR_TABLES = {
+    "Prairie": {
+        'density': 0.13,
+        'small': [("herbe", 5), ("fleurs", 2), ("caillou", 2), ("herbe_haute", 2)],
+        'big':   [("buisson", 4), ("arbre_rond", 2), ("souche", 1), ("rocher", 2)],
+    },
+    "Forêt": {
+        'density': 0.20,
+        'small': [("herbe", 4), ("fougere", 4), ("champignon", 2), ("caillou", 1)],
+        'big':   [("buisson", 4), ("arbre_pin", 3), ("arbre_rond", 3), ("souche", 2),
+                  ("tronc", 2)],
+    },
+    "Village": {
+        'density': 0.10,
+        'small': [("herbe", 3), ("caillou", 2), ("seau", 1), ("paves", 3)],
+        'big':   [("caisse", 3), ("tonneau", 3), ("botte_foin", 2), ("charrette", 1),
+                  ("buisson", 2)],
+    },
+    "Siège": {
+        'density': 0.09,
+        'small': [("caillou", 3), ("gravats", 3), ("herbe", 1)],
+        'big':   [("gravats_tas", 3), ("caisse", 2), ("tonneau", 2), ("brasero", 1),
+                  ("pieux", 2)],
+    },
+    "Défilé": {
+        'density': 0.15,
+        'small': [("caillou", 5), ("gravats", 2), ("herbe", 1)],
+        'big':   [("rocher", 4), ("buisson_sec", 3), ("souche", 1)],
+    },
+}
+
+
+def _weighted_pick(rng, table):
+    total = sum(w for _, w in table)
+    r = rng.uniform(0, total)
+    acc = 0.0
+    for kind, w in table:
+        acc += w
+        if r <= acc:
+            return kind
+    return table[-1][0]
+
+
+def generate_decor(map_name, grid, width, height):
+    """Sème le décor sur les cases libres. Retourne [(x, y, kind, seed)].
+
+    Utilise sa propre RNG (une seule ponction sur le flux global) pour ne
+    pas décaler les dés de la bataille.
+    """
+    table = _DECOR_TABLES.get(map_name, _DECOR_TABLES["Prairie"])
+    rng = random.Random(random.randrange(1 << 30))
+
+    density = table['density']
+    margin_top = height // 4          # au-delà: zone de manœuvre, on allège
+    margin_bottom = height - height // 4
+    props = []
+    occupied = set()
+
+    for x in range(1, width - 1):
+        for y in range(1, height - 1):
+            if grid[x][y] != 0:
+                continue
+            if rng.random() > density:
+                continue
+            # Un gros objet n'a droit de cité que sur les marges ou en
+            # lisière d'un couvert existant.
+            near_cover = any(
+                0 <= x + dx < width and 0 <= y + dy < height
+                and grid[x + dx][y + dy] in (1, 2)
+                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+            on_margin = y < margin_top or y > margin_bottom
+            if (on_margin or near_cover) and rng.random() < 0.55:
+                kind = _weighted_pick(rng, table['big'])
+                # Les gros objets ne se collent pas les uns aux autres
+                if any((x + dx, y + dy) in occupied
+                       for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                    continue
+                occupied.add((x, y))
+            else:
+                kind = _weighted_pick(rng, table['small'])
+            props.append((x, y, kind, rng.randrange(1 << 16)))
+
+    return props
+
+
+def generate_ground_patches(map_name, width, height):
+    """Grandes taches de sol (terre battue, herbe rase, mousse, gravier).
+
+    Le bruit calculé par case produit forcément des carrés alignés sur la
+    grille. Ces ellipses, elles, ignorent la grille: c'est ce qui enlève
+    l'aspect « tableur » du terrain.
+    """
+    rng = random.Random(random.randrange(1 << 30))
+    n = max(12, (width * height) // 55)
+    # (teinte RGB relative au fond, opacité)
+    palettes = {
+        "Prairie": [((-16, -10, -8), 70), ((14, 26, -10), 60), ((30, 10, -16), 48)],
+        "Forêt":   [((-18, -14, -10), 74), ((4, 28, 2), 54), ((26, 12, -12), 44)],
+        "Village": [((26, 16, -6), 60), ((-22, -18, -14), 62), ((10, 14, 18), 42)],
+        "Siège":   [((-20, -20, -16), 60), ((22, 18, 14), 46), ((26, 10, -8), 38)],
+        "Défilé":  [((26, 18, 2), 56), ((-24, -22, -18), 58), ((14, 14, 18), 40)],
+    }
+    pal = palettes.get(map_name, palettes["Prairie"])
+
+    patches = []
+    for _ in range(n):
+        fx = rng.uniform(1, width - 1)
+        fy = rng.uniform(1, height - 1)
+        rw = rng.uniform(1.8, 5.5)
+        rh = rw * rng.uniform(0.45, 0.85)
+        tint, alpha = pal[rng.randrange(len(pal))]
+        patches.append((fx, fy, rw, rh, tint, alpha))
+    return patches
+
+
 def generate_map(map_name, width, height):
     """Génère la grille et les données spéciales pour un type de map.
 
@@ -511,4 +639,8 @@ def generate_map(map_name, width, height):
     }
 
     gen = generators.get(map_name, generate_prairie)
-    return gen(width, height)
+    grid, map_data = gen(width, height)
+    map_data = dict(map_data or {})
+    map_data['decor'] = generate_decor(map_name, grid, width, height)
+    map_data['ground_patches'] = generate_ground_patches(map_name, width, height)
+    return grid, map_data

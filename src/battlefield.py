@@ -9,8 +9,16 @@ class Battlefield:
         self.map_name = map_name
         self.units = {}
         
+        # Décor purement visuel: extrait AVANT tout le reste. Il ne doit
+        # surtout pas rester dans siege_data — `bool(siege_data)` sert à
+        # détecter une carte de siège, et un simple buisson suffirait à
+        # faire croire à l'IA qu'elle défend une forteresse.
+        _raw = dict(map_data or {})
+        self.decor = list(_raw.pop('decor', []))
+        self.ground_patches = list(_raw.pop('ground_patches', []))
+
         # Données de siège
-        self.siege_data = map_data or {}
+        self.siege_data = _raw
         self.gate_hp = dict(self.siege_data.get('gates', {}))  # {(x,y): hp}
         self.gate_save = self.siege_data.get('gate_save', 7)   # Sauvegarde des portes
         self.walls = set(tuple(w) for w in self.siege_data.get('walls', []))
@@ -492,7 +500,10 @@ class Battlefield:
         # === l'unité reste et le combat, elle ne se déplace PAS ===
         # Exception: ordre "kite" (tireur qui recule en tirant)
         _order = getattr(unit, '_tactical_order', None)
-        _is_kiting = _order is not None and _order.order_type == "kite"
+        # "kite" (tireur qui recule en tirant) et "withdraw" (unité à
+        # l'agonie qui décroche) rompent volontairement le contact.
+        _is_kiting = (_order is not None
+                      and _order.order_type in ("kite", "withdraw"))
         # Repli urgent: tireur en ordre "support" loin de son poste (très
         # exposé devant la ligne) → ne pas rester collé, rejoindre l'arrière
         _is_repositioning = (
@@ -642,8 +653,9 @@ class Battlefield:
                 else:
                     destroyed_gates = [pos for pos, hp in self.gate_hp.items() if hp <= 0]
                 if destroyed_gates:
-                    # Aller vers la porte détruite la plus proche (traversable)
-                    nearest = min(destroyed_gates, key=lambda g: self.manhattan_distance(unit.position, g))
+                    # Aller vers la porte désignée par le commandant (axe
+                    # d'assaut choisi), à défaut la plus proche
+                    nearest = self._preferred_gate(unit, destroyed_gates)
                     gpath = self.a_star_path(unit.position, nearest, unit, battle, reserved_positions)
                     if gpath:
                         steps = min(unit.vitesse, len(gpath))
@@ -655,7 +667,7 @@ class Battlefield:
                 # Sinon aller adjacent à la porte intacte la plus proche (pour la détruire au CaC)
                 intact_gates = [pos for pos, hp in self.gate_hp.items() if hp > 0]
                 if intact_gates:
-                    nearest_gate = min(intact_gates, key=lambda g: self.manhattan_distance(unit.position, g))
+                    nearest_gate = self._preferred_gate(unit, intact_gates)
                     gate_goal = self._find_adjacent_free(nearest_gate, unit, reserved_positions, side="left", wall_x=wall_x)
                     if gate_goal:
                         gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
@@ -698,6 +710,14 @@ class Battlefield:
         
         return self.fallback_move(unit, target, reserved_positions), target
     
+    def _preferred_gate(self, unit, gates):
+        """Porte visée: celle que le commandant a désignée pour l'assaut si
+        elle est encore utilisable, sinon la plus proche."""
+        wanted = getattr(unit, '_assault_gate', None)
+        if wanted is not None and wanted in gates:
+            return wanted
+        return min(gates, key=lambda g: self.manhattan_distance(unit.position, g))
+
     def _find_adjacent_free(self, pos, unit, reserved, side=None, wall_x=None):
         """Trouve une case libre adjacente à pos. side='left' = côté attaquant seulement."""
         px, py = pos

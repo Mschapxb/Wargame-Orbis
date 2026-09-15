@@ -87,9 +87,19 @@ def run_army_menu(screen_w=None, screen_h=None):
     
     # État pour les deux armées
     class ArmyState:
+        """Composition d'un camp.
+
+        Un camp est UNE armée, mais elle peut être articulée en plusieurs
+        GROUPES (corps, divisions, contingents alliés…). Chaque groupe est
+        déployé séparément sur le terrain, garde sa cohésion au combat et
+        reçoit son propre bilan dans le rapport de bataille.
+        """
+        MAX_GROUPS = 4
+
         def __init__(self, side):
             self.side = side  # 0 = gauche, 1 = droite
-            self.composition = {}  # {(army_name, unit_name): count}
+            self.groups = [{}]   # [{(faction, unité): nombre}, ...]
+            self.active = 0      # groupe en cours d'édition
             self.scroll_offset = 0
             self.show_bonuses = False  # Toggle affichage des bonus
             # Bonus globaux appliqués à toutes les unités de cette armée
@@ -103,25 +113,70 @@ def run_army_menu(screen_w=None, screen_h=None):
                 "perforation": 0,
                 "degats": 0,
             }
-        
+
+        # ── Accès ──
+        @property
+        def current(self):
+            return self.groups[self.active]
+
+        @property
+        def composition(self):
+            """Vue fusionnée de tous les groupes (totaux, résumé tactique)."""
+            merged = {}
+            for g in self.groups:
+                for k, v in g.items():
+                    if v > 0:
+                        merged[k] = merged.get(k, 0) + v
+            return merged
+
         @property
         def total_units(self):
-            return sum(self.composition.values())
-        
+            return sum(sum(g.values()) for g in self.groups)
+
+        def group_size(self, i):
+            return sum(self.groups[i].values())
+
+        def group_factions(self, i):
+            return sorted({an for (an, _), c in self.groups[i].items() if c > 0})
+
+        def group_label(self, i):
+            """Nom porté par le groupe dans le rapport de bataille."""
+            facs = self.group_factions(i)
+            single = len(self.groups) == 1
+            if not facs:
+                return f"Groupe {i + 1}"
+            if len(facs) == 1:
+                return facs[0] if single else f"G{i + 1} · {facs[0]}"
+            return facs[0] + " +" if single else f"Groupe {i + 1}"
+
+        # ── Édition ──
         def add_unit(self, army_name, unit_name, amount=1):
             key = (army_name, unit_name)
-            self.composition[key] = self.composition.get(key, 0) + amount
-        
+            g = self.current
+            g[key] = g.get(key, 0) + amount
+
         def remove_unit(self, army_name, unit_name, amount=1):
             key = (army_name, unit_name)
-            if key in self.composition:
-                self.composition[key] = max(0, self.composition[key] - amount)
-                if self.composition[key] <= 0:
-                    del self.composition[key]
-        
+            g = self.current
+            if key in g:
+                g[key] = max(0, g[key] - amount)
+                if g[key] <= 0:
+                    del g[key]
+
         def clear(self):
-            self.composition.clear()
-        
+            self.groups = [{}]
+            self.active = 0
+
+        def add_group(self):
+            if len(self.groups) < self.MAX_GROUPS:
+                self.groups.append({})
+                self.active = len(self.groups) - 1
+
+        def remove_group(self, i):
+            if len(self.groups) > 1:
+                del self.groups[i]
+                self.active = min(self.active, len(self.groups) - 1)
+
         def get_all_units_flat(self):
             """Retourne [(army_name, unit_def), ...] pour toutes les factions."""
             result = []
@@ -130,22 +185,31 @@ def run_army_menu(screen_w=None, screen_h=None):
                 for unit_def in army_data.get("units", []):
                     result.append((army_name, unit_def))
             return result
-        
+
         def build(self):
-            """Construit la liste d'unités avec bonus appliqués."""
+            """Construit la liste d'unités, groupe par groupe.
+
+            Chaque unité porte le nom de son groupe (`contingent`): c'est ce
+            qui permet au moteur de déployer les groupes à part et au
+            rapport de les compter séparément.
+            """
             from unit_library import build_army as _build
             all_units = []
-            # Grouper par faction
-            by_faction = {}
-            for (army_name, unit_name), count in self.composition.items():
-                if count <= 0:
+            for gi, comp in enumerate(self.groups):
+                by_faction = {}
+                for (army_name, unit_name), count in comp.items():
+                    if count <= 0:
+                        continue
+                    by_faction.setdefault(army_name, []).append((unit_name, count))
+                if not by_faction:
                     continue
-                if army_name not in by_faction:
-                    by_faction[army_name] = []
-                by_faction[army_name].append((unit_name, count))
-            for army_name, comp in by_faction.items():
-                all_units.extend(_build(army_name, comp))
-            
+                label = self.group_label(gi)
+                for army_name, pairs in by_faction.items():
+                    units = _build(army_name, pairs)
+                    for u in units:
+                        u.contingent = label
+                    all_units.extend(units)
+
             # Appliquer les bonus globaux
             b = self.bonuses
             for u in all_units:
@@ -173,9 +237,9 @@ def run_army_menu(screen_w=None, screen_h=None):
                             arme.perforation = arme.perforation + b["perforation"]
                         if b["degats"] != 0:
                             arme._bonus = arme._bonus + b["degats"]
-            
+
             return all_units
-    
+
     states = [ArmyState(0), ArmyState(1)]
     selected_map = "Prairie"
     
@@ -274,8 +338,45 @@ def run_army_menu(screen_w=None, screen_h=None):
             # ─── Titre armée ───
             label = f"Armée {i+1}"
             draw_text(screen, label, header_font, (cx, cy), team_border)
+            n_units_hdr = state.total_units
+            if n_units_hdr:
+                draw_text(screen, f"{n_units_hdr} unités", small_font,
+                          (cx + 90, cy + 4), TEXT_DIM)
             cy += 24
-            
+
+            # ─── Groupes: une armée peut être articulée en plusieurs corps ───
+            # Les unités ajoutées vont dans le groupe SÉLECTIONNÉ; chaque
+            # groupe est déployé à part sur le terrain.
+            draw_text(screen, "Groupes:", small_font, (cx, cy + 3), TEXT_DIM)
+            tab_x = cx + 56
+            for gi in range(len(state.groups)):
+                n_g = state.group_size(gi)
+                tab_w = 46
+                tab_rect = pygame.Rect(tab_x, cy, tab_w, 19)
+                is_act = (gi == state.active)
+                base_c = team_border if is_act else (58, 62, 72)
+                if draw_button(screen, tab_rect, f"G{gi+1} ({n_g})", stat_font,
+                               mouse_pos, base_c, (110, 120, 140)):
+                    if clicked:
+                        state.active = gi
+                if is_act:
+                    pygame.draw.rect(screen, GOLD, tab_rect, 1)
+                tab_x += tab_w + 3
+            if len(state.groups) < state.MAX_GROUPS:
+                add_rect = pygame.Rect(tab_x, cy, 22, 19)
+                if draw_button(screen, add_rect, "+", small_font, mouse_pos,
+                               GREEN, (100, 220, 100)):
+                    if clicked:
+                        state.add_group()
+                tab_x += 25
+            if len(state.groups) > 1:
+                del_rect = pygame.Rect(tab_x, cy, 22, 19)
+                if draw_button(screen, del_rect, "x", small_font, mouse_pos,
+                               BTN_DANGER, (220, 70, 70)):
+                    if clicked:
+                        state.remove_group(state.active)
+            cy += 23
+
             pygame.draw.line(screen, BORDER, (cx, cy), (px + panel_w - 10, cy), 1)
             cy += 6
             
@@ -341,7 +442,8 @@ def run_army_menu(screen_w=None, screen_h=None):
                         
                         # Boutons
                         key = (army_name, uname)
-                        count = state.composition.get(key, 0)
+                        count = state.current.get(key, 0)
+                        count_all = state.composition.get(key, 0)
                         
                         btn_y = draw_y + 8
                         btn_h = 20
@@ -359,9 +461,13 @@ def run_army_menu(screen_w=None, screen_h=None):
                             if clicked:
                                 state.remove_unit(army_name, uname, 1)
                         
-                        # Compteur
+                        # Compteur du GROUPE actif (c'est lui que +/- modifie);
+                        # le total tous groupes confondus est rappelé dessous.
                         count_text = body_font.render(str(count), True, GREEN if count > 0 else TEXT_DIM)
                         screen.blit(count_text, (btn_set_x + 60 - count_text.get_width() // 2, btn_y))
+                        if count_all != count:
+                            tot_t = stat_font.render(f"/{count_all}", True, TEXT_DIM)
+                            screen.blit(tot_t, (btn_set_x + 60 - tot_t.get_width() // 2, btn_y + 15))
                         
                         # +1
                         b3 = pygame.Rect(btn_set_x + 82, btn_y, 26, btn_h)
@@ -411,9 +517,16 @@ def run_army_menu(screen_w=None, screen_h=None):
             pygame.draw.line(screen, BORDER, (cx, compo_y), (px + panel_w - 10, compo_y), 1)
             compo_y += 6
             
+            n_groups = sum(1 for gi in range(len(state.groups)) if state.group_size(gi) > 0)
             total_txt = f"Composition: {state.total_units} unités"
+            if n_groups > 1:
+                total_txt += f"  —  {n_groups} groupes"
             draw_text(screen, total_txt, body_font, (cx, compo_y),
                       GREEN if state.total_units > 0 else TEXT_DIM)
+            if n_groups > 1:
+                draw_text(screen, "(chaque groupe est déployé et compté à part)",
+                          stat_font, (cx, compo_y + 15), TEXT_DIM)
+                compo_y += 14
             
             # Résumé tactique de l'armée (aide à équilibrer la compo)
             if state.total_units > 0:
@@ -505,22 +618,34 @@ def run_army_menu(screen_w=None, screen_h=None):
                 
                 compo_y += (len(bonus_keys) + 1) // 2 * 22 + 4
             
-            # Liste compacte de la compo (groupée par faction)
-            last_faction = None
-            for (army_name, uname), count in sorted(state.composition.items()):
-                if count <= 0:
-                    continue
-                if army_name != last_faction:
-                    fc = db.get(army_name, {}).get("color", TEXT_DIM)
-                    draw_text(screen, f" {army_name}:", small_font, (cx, compo_y), fc)
-                    compo_y += 13
-                    last_faction = army_name
-                txt = f"   {uname} x{count}"
-                draw_text(screen, txt, small_font, (cx, compo_y), TEXT)
-                compo_y += 13
-                if compo_y > py + panel_h - 10:
-                    draw_text(screen, "  ...", small_font, (cx, compo_y), TEXT_DIM)
+            # Liste compacte: groupe par groupe, puis faction
+            stop = False
+            for gi, comp_g in enumerate(state.groups):
+                if stop:
                     break
+                if not any(c > 0 for c in comp_g.values()):
+                    continue
+                if len(state.groups) > 1:
+                    gc = GOLD if gi == state.active else TEXT_DIM
+                    draw_text(screen, f"▸ {state.group_label(gi)}", small_font,
+                              (cx, compo_y), gc)
+                    compo_y += 13
+                last_faction = None
+                for (army_name, uname), count in sorted(comp_g.items()):
+                    if count <= 0:
+                        continue
+                    if army_name != last_faction:
+                        fc = db.get(army_name, {}).get("color", TEXT_DIM)
+                        draw_text(screen, f" {army_name}:", small_font, (cx + 6, compo_y), fc)
+                        compo_y += 13
+                        last_faction = army_name
+                    draw_text(screen, f"   {uname} x{count}", small_font,
+                              (cx + 6, compo_y), TEXT)
+                    compo_y += 13
+                    if compo_y > py + panel_h - 10:
+                        draw_text(screen, "  ...", small_font, (cx, compo_y), TEXT_DIM)
+                        stop = True
+                        break
         
         # ─── SÉLECTION DE MAP ───
         from maps import get_map_names, get_map_info

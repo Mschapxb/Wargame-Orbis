@@ -559,6 +559,7 @@ def build_army(army_name, composition):
             u = create_unit(u_def, color)
             short = unit_name[:6]
             u.name = f"{short}{i + 1}" if count > 1 else short
+            u.contingent = army_name
             result.append(u)
     
     return result

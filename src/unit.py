@@ -1,7 +1,7 @@
 import random
 from collections import deque
 
-from effects import FloatingText
+from effects import FloatingText, FX_CLOCK
 
 
 class Unit:
@@ -19,6 +19,9 @@ class Unit:
         self.spells = spells or []
         self.special = special or {}
         self.role = role
+        # Contingent d'appartenance: une même équipe peut aligner plusieurs
+        # armées de factions différentes, déployées et comptées séparément.
+        self.contingent = ""
         self.position = (0, 0)
         self.is_alive = True
         
@@ -56,6 +59,22 @@ class Unit:
         self.has_charged = False    # A déjà chargé ce round
         self._phalange_bonus_active = False
         self._on_wall = False  # Sur un mur (siège)
+
+        # ─── État de réaction / rythme de combat (réinitialisé chaque round) ───
+        self._opportunity_used = False   # A déjà porté une attaque d'opportunité
+        self._momentum_used = False      # A déjà enchaîné après un kill (élan)
+        self._acted_this_round = False   # A déjà résolu son attaque du round
+        self._damage_taken_round = 0     # Dégâts encaissés ce round
+        self._shock = 0                  # Coups violents encaissés (ébranlement)
+        self._suppression = 0            # Sous le feu (tirs reçus récemment)
+        self._kills = 0                  # Ennemis abattus (sert à l'élan/moral)
+        self._last_attacker = None
+        self._reaction_text = ""         # Libellé de la dernière réaction
+        self._hit_flash_delay = 0        # Estampille du flash de dégâts
+        self._lunge_delay = 0            # Estampille du bond de mêlée
+        self._threatened_by = 0          # Ennemis au contact (calculé par battle)
+        self._witnessed_deaths = 0       # Camarades tombés juste à côté
+        self._under_fire = 0             # Traits reçus (touchés ou non)
         
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
@@ -84,24 +103,36 @@ class Unit:
         else:
             self.attack_type = "melee"
 
-    def take_damage(self, dmg, is_magic=False, attacker=None):
+    def take_damage(self, dmg, is_magic=False, attacker=None, ranged=False):
+        """Encaisse des dégâts. Retourne True si le coup a abattu l'unité
+        (le moteur s'en sert pour enchaîner: élan du tueur, choc des
+        témoins, moral de l'unité voisine...)."""
         if is_magic:
             dmg = max(0, dmg - random.randint(0, self.sauvegarde))
         if dmg <= 0:
-            return
-        
+            return False
+
         if self.blood_vengeance > 0 and attacker:
             penalty = self.blood_vengeance
             mr_roll = random.randint(1, 20) + attacker.sauvegarde - penalty
             if mr_roll < 10 + penalty:
                 attacker.take_damage(dmg)
                 attacker.floating_texts.append(FloatingText("VENGEANCE!", (220, 0, 220), 90))
-                return
-        
+                return False
+
         self.pv -= dmg
         self._hit_flash = 12  # Frames de flash rouge (rendu visuel)
+        self._hit_flash_delay = FX_CLOCK.current_delay
+        self._damage_taken_round += dmg
+        if attacker is not None:
+            self._last_attacker = attacker
+        # Choc: un coup qui emporte une grosse part des PV ébranle l'unité
+        if dmg >= max(2, self.max_pv * 0.3):
+            self._shock += 1
+        if ranged:
+            self._suppression += 1
         self.floating_texts.append(FloatingText(f"-{dmg}", (220, 40, 40)))
-        
+
         if self.pv <= 0:
             if self.pv > -(self.max_pv // 2) and self.regeneration > 0:
                 self.is_alive = False
@@ -110,6 +141,30 @@ class Unit:
             else:
                 self.is_alive = False
                 self.status_text = "MORT!"
+            return True
+        return False
+
+    def start_round(self):
+        """Réinitialise l'état de réaction en début de round."""
+        self._opportunity_used = False
+        self._momentum_used = False
+        self._acted_this_round = False
+        self._damage_taken_round = 0
+        self._reaction_text = ""
+        # Les effets visuels horodatés du round précédent sont périmés:
+        # leur estampille se lit par rapport au DÉBUT du round courant.
+        self._hit_flash = 0
+        self._hit_flash_delay = 0
+        self._lunge_timer = 0
+        self._lunge_delay = 0
+        # Le choc et la pression du feu s'estompent, mais pas d'un coup:
+        # une unité pilonnée deux rounds de suite reste ébranlée.
+        self._suppression = max(0, self._suppression - 1)
+        self._shock = max(0, self._shock - 1)
+        self._witnessed_deaths = max(0, self._witnessed_deaths - 1)
+        # Être pris sous un feu nourri pèse même quand les traits manquent:
+        # on se met à couvert, on baisse la tête, on ne combat plus pareil.
+        self._under_fire //= 2
 
     def regenerate(self):
         if not self.is_alive:
@@ -162,9 +217,22 @@ class Unit:
             return "afraid"
         return None
 
-    def perform_attacks(self, target, battlefield):
+    def perform_attacks(self, target, battlefield, battle=None, weapons=None,
+                        kind="normal"):
+        """Résout les attaques de cette unité sur une cible.
+
+        kind: "normal" | "charge" | "opportunity" (attaque de rupture de
+        contact) | "momentum" (enchaînement après un kill) | "reaction"
+        (tir de réaction pendant le mouvement adverse).
+        """
         events = []
+        self._last_attack_killed = False
+        # Estampille de l'action: tous les effets de cette attaque sont
+        # positionnés dans le temps par rapport à elle (départ du tir,
+        # temps de vol du projectile, impact...).
+        base_t = FX_CLOCK.current_delay
         dist = battlefield.manhattan_distance(self.position, target.position)
+        armes = self.armes if weapons is None else weapons
 
         if dist > self._max_range or self.fleeing:
             self.current_target = None
@@ -193,6 +261,7 @@ class Unit:
         if dist <= 2 and self._max_range <= 2:
             self._lunge_target = target.position  # grid coords
             self._lunge_timer = 20  # 20 frames de lunge
+            self._lunge_delay = FX_CLOCK.current_delay
 
         # Bonus anti-type
         anti_toucher = 0
@@ -204,40 +273,76 @@ class Unit:
             anti_toucher = -1
             anti_blesser = -1
 
+        # ─── Tir d'arrêt: on lâche la volée à la hâte, sur une cible qui
+        # débouche. Le gain de tempo se paie d'un peu de précision. ───
+        snap_toucher = 1 if kind == "reaction" else 0
+
+        # ─── Prise à revers: une cible déjà accrochée par un camarade se
+        # défend moins bien. C'est ce qui rend le débordement PAYANT et
+        # récompense la concentration des efforts. ───
+        flank_toucher = 0
+        if battle is not None and dist <= 2 and self._max_range <= 2:
+            tx_f, ty_f = target.position
+            engaged_allies = 0
+            for a in battle.get_allies(self):
+                if a is self or not a.is_alive or a.fleeing:
+                    continue
+                if abs(a.position[0] - tx_f) + abs(a.position[1] - ty_f) <= 1:
+                    engaged_allies += 1
+                    break
+            if engaged_allies >= 1:
+                flank_toucher = -1
+                if kind == "normal":
+                    self.floating_texts.append(
+                        FloatingText("À revers!", (255, 200, 120), 45))
+
+
         # Bonus de charge (appliqué si has_charged ce round)
-        # Nerfé: bonus modérés, la charge reste utile pour le déplacement
         charge_toucher = 0
         charge_blesser = 0
         charge_perf = 0
         charge_degats = 0
         if self.has_charged:
             if self.charge_montee:
-                # Cavalerie: seulement +1 dégâts (plus de bonus blesser/perf)
                 charge_degats = 1
             elif self.charge_aida:
-                # Infanterie: seulement -1 blesser (plus de bonus toucher)
                 charge_blesser = -1
             self.has_charged = False  # Reset après application
 
-        for arme in self.armes:
+        for arme in armes:
             if dist > arme.porte:
                 continue
             # Ligne de vue: un mur ou une porte fermée bloque les tirs
-            # (les unités sur rempart tirent par-dessus — géré dans la LOS)
             if arme.porte >= 4 and not battlefield.has_line_of_fire(self, target):
                 continue
 
+            is_ranged_weapon = arme.porte >= 4
+            # Temps de vol: le tir part maintenant, il touche plus tard.
+            # Les textes (Raté!/-3) sont donc décalés à l'ARRIVÉE.
+            flight = 16 if is_ranged_weapon else 0
+            FX_CLOCK.at(base_t + flight)
+
             for _ in range(arme.nb_attaque):
-                # Événement visuel selon le type d'arme
-                if arme.porte >= 4:
-                    events.append({'type': 'arrow', 'from_grid': self.position, 'to_grid': target.position})
+                if is_ranged_weapon:
+                    target._under_fire += 1
+                # Événement visuel selon le type d'arme / le type d'action
+                if is_ranged_weapon:
+                    events.append({'type': 'arrow', 'from_grid': self.position,
+                                   'to_grid': target.position, 'kind': kind,
+                                   'at': 0})
                 elif arme.porte >= 2:
-                    events.append({'type': 'reach', 'from_grid': self.position, 'to_grid': target.position})
+                    events.append({'type': 'reach', 'from_grid': self.position,
+                                   'to_grid': target.position, 'kind': kind,
+                                   'at': 0})
                 else:
-                    events.append({'type': 'melee', 'from_grid': self.position, 'to_grid': target.position})
+                    events.append({'type': 'melee', 'from_grid': self.position,
+                                   'to_grid': target.position, 'kind': kind,
+                                   'at': 0})
 
                 # Résolution combat avec bonus
-                toucher_final = arme.toucher + (1 if self.afraid else 0) + anti_toucher + charge_toucher + wall_toucher_bonus
+                toucher_final = (arme.toucher + (1 if self.afraid else 0)
+                                 + anti_toucher + charge_toucher + wall_toucher_bonus
+                                 + flank_toucher + snap_toucher)
                 blesser_final = arme.blesser + anti_blesser + charge_blesser
                 perf_final = arme.perforation + charge_perf
 
@@ -255,8 +360,7 @@ class Unit:
                     target.floating_texts.append(FloatingText("Pas blessé!", (255, 200, 120)))
                     continue
 
-                # Sauvegarde (mur donne -2 au seuil = plus facile de sauver)
-                # Perforation négative = monte le seuil = plus dur de sauver
+                # Sauvegarde
                 save_modifie = min(7, target.sauvegarde - perf_final - wall_save_bonus)
                 if random.randint(1, 6) >= save_modifie:
                     target.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
@@ -264,8 +368,28 @@ class Unit:
 
                 # Dégâts
                 dmg = arme.lancer_degats() + charge_degats
-                target.take_damage(dmg, False, self)
+                killed = target.take_damage(dmg, False, self, ranged=is_ranged_weapon)
+                events.append({
+                    'type': 'impact',
+                    'at_grid': target.position,
+                    'from_grid': self.position,
+                    'power': min(2.5, dmg / max(1.0, target.max_pv * 0.25)),
+                    'ranged': is_ranged_weapon,
+                    'at': flight + (0 if is_ranged_weapon else 2),
+                })
+                if killed:
+                    self._kills += 1
+                    self._last_attack_killed = True
+                    if not target.is_alive and target.down_timer <= 0:
+                        events.append({'type': 'shockwave', 'at_grid': target.position,
+                                       'unit_size': target.size,
+                                       'at': flight + 4})
+                    break  # Cible abattue: inutile de continuer à la frapper
 
+            if not target.is_alive:
+                break
+
+        FX_CLOCK.at(base_t)
         return events
 
     def cast_random_spell(self, battle):
@@ -281,7 +405,7 @@ class Unit:
         # Sorts prêts
         ready = [s for s in self.spells if s.is_ready()]
         if not ready:
-            return
+            return events
 
         # Nombre de sorts lançables ce round (trait "Sort de bataille[N]")
         max_casts = getattr(self, 'spells_per_round', 1)
@@ -377,14 +501,20 @@ class Unit:
         if not target:
             return False
 
+        base_t = FX_CLOCK.current_delay
+        FLIGHT = 22
         events.append({
             'type': 'fireball',
             'from_grid': self.position,
             'to_grid': target.position,
             'aoe_size': spell.aoe_size,
+            'at': 0,
         })
 
         self.floating_texts.append(FloatingText("Boule de feu!", (255, 120, 0), 70))
+
+        # Les dégâts (et leurs textes) tombent à l'impact, pas au départ
+        FX_CLOCK.at(base_t + FLIGHT)
 
         # Dégâts sur zone
         tx, ty = target.position
@@ -403,8 +533,15 @@ class Unit:
                 if random.randint(1, 6) >= save_mod:
                     enemy.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
                     continue
-                enemy.take_damage(spell.lancer_degats(), False, self)
+                dmg_f = spell.lancer_degats()
+                if enemy.take_damage(dmg_f, False, self):
+                    self._kills += 1
+                events.append({'type': 'impact', 'at_grid': enemy.position,
+                               'from_grid': target.position,
+                               'power': min(2.5, dmg_f / max(1.0, enemy.max_pv * 0.25)),
+                               'ranged': True, 'at': FLIGHT + 2})
 
+        FX_CLOCK.at(base_t)
         return True
 
     def _cast_heal(self, spell, battle, events):
@@ -468,18 +605,31 @@ class Unit:
         if dist > spell.porte:
             return False
 
-        events.append({'type': 'magic_projectile', 'from_grid': self.position, 'to_grid': target.position})
+        base_t = FX_CLOCK.current_delay
+        FLIGHT = 16
+        events.append({'type': 'magic_projectile', 'from_grid': self.position,
+                       'to_grid': target.position, 'at': 0})
 
         self.floating_texts.append(FloatingText("Projectile!", (180, 80, 255), 60))
+        FX_CLOCK.at(base_t + FLIGHT)
 
         if random.randint(1, 6) < spell.toucher:
             target.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
+            FX_CLOCK.at(base_t)
             return True
         if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
             target.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
+            FX_CLOCK.at(base_t)
             return True
 
-        target.take_damage(spell.lancer_degats(), False, self)
+        dmg_p = spell.lancer_degats()
+        if target.take_damage(dmg_p, False, self):
+            self._kills += 1
+        events.append({'type': 'impact', 'at_grid': target.position,
+                       'from_grid': self.position,
+                       'power': min(2.5, dmg_p / max(1.0, target.max_pv * 0.25)),
+                       'ranged': True, 'at': FLIGHT + 2})
+        FX_CLOCK.at(base_t)
         return True
 
     def _cast_wall(self, spell, battle, events):

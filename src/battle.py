@@ -1,14 +1,35 @@
 import copy
+import math
 import random
+
+import tactics
 
 from battlefield import Battlefield
 from effects import (FloatingText, AttackLine, Projectile,
-                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect, DeathFade)
+                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect, DeathFade,
+                     ImpactBurst, ShockWave, FX_CLOCK)
 from ai_commander import CommanderAI
 
 # RNG dédiée aux effets visuels (délais de volée, dispersion...)
 # — flux séparé pour ne JAMAIS influencer les dés de la simulation
 _FX_RNG = random.Random(20260610)
+
+# Couleur du trait d'attaque selon la nature du coup: l'oeil distingue
+# instantanement un echange ordinaire d'une reaction ou d'un enchainement.
+_KIND_COLORS = {
+    'normal': (255, 100, 100),
+    'charge': (255, 200, 50),
+    'opportunity': (255, 240, 150),
+    'momentum': (255, 140, 255),
+    'reaction': (120, 210, 255),
+}
+
+# Decoupage temporel d'un round (fractions): mouvement, puis choc des
+# charges, puis l'echange general. Les fenetres se CHEVAUCHENT - c'est ce
+# chevauchement qui donne l'impression de temps reel.
+T_MOVE_START, T_MOVE_END = 0.02, 0.46
+T_CHARGE = 0.26
+T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
 
 class Battle:
@@ -50,112 +71,104 @@ class Battle:
         # Taille de cellule en pixels (définie par le renderer avant le premier round)
         self.cell_size = 32
 
+        # Duree d'un round en frames d'affichage (le renderer la synchronise
+        # avec la vitesse de simulation). Sert a repartir les actions dans
+        # le temps: sans elle, tout se produirait au meme instant.
+        self.fx_frames_per_round = 48
+        # Fil d'evenements notables du round (reactions, ruptures, exploits)
+        self.round_events = []
+
         # Initialiser les positions d'animation (pas de transition au premier frame)
         for u in self.army1 + self.army2:
             u._prev_position = u.position
 
-    def _apply_combat_events(self, events):
-        """Convertit les événements grid-coords produits par unit.py en effets visuels pixels."""
+    # ─── Rythme du round: chaque action est estampillée dans le temps ───
+
+    def _set_action_time(self, t01):
+        """Positionne l'horloge d'effets: t01 ∈ [0,1] = instant de l'action
+        dans le round. Tous les effets créés ensuite (textes, traits, tirs,
+        impacts) hériteront de cette estampille → le round se joue comme un
+        échange continu au lieu d'un flash simultané."""
+        FX_CLOCK.at(max(0.0, min(1.05, t01)) * self.fx_frames_per_round)
+
+    def _apply_combat_events(self, events, base_delay=None):
+        """Convertit les événements grid-coords produits par unit.py en
+        effets visuels pixels, à l'instant prévu par l'horloge d'action."""
+        if not events:
+            return
         cs = self.cell_size
+        base = FX_CLOCK.current_delay if base_delay is None else int(base_delay)
 
         def to_px(gpos):
             return (gpos[0] * cs + cs // 2, gpos[1] * cs + cs // 2)
 
         for evt in events:
             t = evt['type']
+            d = base + int(evt.get('at', 0))
+            kind = evt.get('kind', 'normal')
+
             if t == 'arrow':
-                # Délai aléatoire (visuel): les volées partent en cascade
-                # au lieu de toutes en même temps
+                # Petite dispersion: les volées partent en cascade
                 self.visual_effects['projectiles'].append(
                     Projectile(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               (200, 180, 100), 40, "arrow", cs,
-                               delay=_FX_RNG.randint(0, 14)))
+                               (200, 180, 100), 34, "arrow", cs,
+                               delay=d + _FX_RNG.randint(0, 6)))
             elif t == 'reach':
                 self.visual_effects['attack_lines'].append(
                     AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               (255, 180, 50), 25))
+                               _KIND_COLORS.get(kind, (255, 180, 50)), 22, delay=d))
             elif t == 'melee':
                 self.visual_effects['attack_lines'].append(
                     AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               (255, 100, 100), 25))
+                               _KIND_COLORS.get(kind, (255, 100, 100)), 22, delay=d))
+            elif t == 'impact':
+                px = to_px(evt['at_grid'])
+                fx_from = to_px(evt.get('from_grid', evt['at_grid']))
+                ang = math.atan2(px[1] - fx_from[1], px[0] - fx_from[0])
+                col = (255, 200, 120) if evt.get('ranged') else (255, 120, 70)
+                self.visual_effects.setdefault('impacts', []).append(
+                    ImpactBurst(px, col, evt.get('power', 1.0), ang, 18, delay=d))
+            elif t == 'shockwave':
+                px = to_px(evt['at_grid'])
+                self.visual_effects.setdefault('shockwaves', []).append(
+                    ShockWave(px, cs * (1 + int(evt.get('unit_size', 1))),
+                              (255, 190, 120), 26, delay=d))
             elif t == 'fireball':
                 fp = to_px(evt['from_grid'])
                 tp = to_px(evt['to_grid'])
                 self.visual_effects['projectiles'].append(
-                    Projectile(fp, tp, (255, 100, 0), 35, "fireball", cs))
+                    Projectile(fp, tp, (255, 100, 0), 32, "fireball", cs, delay=d))
                 aoe_r = (evt['aoe_size'] // 2) * cs + cs // 2
                 self.visual_effects.setdefault('aoe_explosions', []).append(
-                    AoeExplosion(tp, aoe_r, (255, 120, 0), 35))
+                    AoeExplosion(tp, aoe_r, (255, 120, 0), 35, delay=d + 22))
             elif t == 'heal':
                 self.visual_effects.setdefault('heal_beams', []).append(
-                    HealBeam(to_px(evt['from_grid']), to_px(evt['to_grid']), 30))
+                    HealBeam(to_px(evt['from_grid']), to_px(evt['to_grid']), 30, delay=d))
             elif t == 'armor':
                 px = to_px(evt['at_grid'])
                 ur = max(3, cs // 2 - 4) * max(1, evt['unit_size'])
                 self.visual_effects.setdefault('armor_shimmers', []).append(
-                    ArmorShimmer(px, ur, 40))
+                    ArmorShimmer(px, ur, 40, delay=d))
             elif t == 'magic_projectile':
                 sp = to_px(evt['from_grid'])
                 ep = to_px(evt['to_grid'])
-                import random as _rng
                 for i in range(3):
-                    off = (_rng.randint(-8, 8), _rng.randint(-8, 8))
+                    off = (_FX_RNG.randint(-8, 8), _FX_RNG.randint(-8, 8))
                     ep_off = (ep[0] + off[0], ep[1] + off[1])
                     self.visual_effects['projectiles'].append(
-                        Projectile(sp, ep_off, (180, 80, 255), 25 + i * 5, "magic", cs))
+                        Projectile(sp, ep_off, (180, 80, 255), 24, "magic", cs,
+                                   delay=d + i * 3))
             elif t == 'wall':
                 self.visual_effects.setdefault('wall_effects', []).append(
-                    WallEffect(evt['positions'], cs, 25))
+                    WallEffect(evt['positions'], cs, 25, delay=d))
+
+    def log_event(self, text, color=(230, 220, 180), importance=1):
+        """Fil d'événements du round (le HUD y puise ses bandeaux)."""
+        self.round_events.append((text, color, importance))
 
     def _place_armies(self, center_y):
         bf = self.battlefield
-        usable_height = bf.height - 2
-        max_per_col = max(1, usable_height)
-        
-        def place_role_units(units, base_x, center_y, step_x, min_x=0):
-            if not units:
-                return
-            columns = []
-            remaining = list(units)
-            while remaining:
-                chunk = remaining[:max_per_col]
-                remaining = remaining[max_per_col:]
-                columns.append(chunk)
-            for col_idx, col_units in enumerate(columns):
-                x_col = base_x + col_idx * step_x
-                x_col = max(min_x, min(bf.width - 1, x_col))
-                self._place_column(col_units, x_col, center_y, bf, min_x=min_x)
-        
-        def place_back_spread(units, base_x, center_y, step_x, min_x=0):
-            """Place les unités back en les étalant sur toute la hauteur.
-            Les unités large (size >= 2) sont espacées uniformément."""
-            if not units:
-                return
-            # Séparer large et normal
-            large = [u for u in units if u.size >= 2]
-            normal = [u for u in units if u.size < 2]
-            
-            # Étaler les large uniformément sur la hauteur
-            if large:
-                usable = bf.height - 4
-                spacing = max(4, usable // (len(large) + 1))
-                for i, u in enumerate(large):
-                    target_y = 2 + spacing * (i + 1)
-                    target_y = max(2, min(bf.height - 3 - bf.get_unit_dims(u)[1], target_y))
-                    pos = (base_x, target_y)
-                    if not bf.can_place_unit(*pos, u):
-                        pos = self._find_free_near_unit(base_x, target_y, u, bf, min_x=min_x)
-                    if pos is not None:
-                        u.position = pos
-                        bf.place_unit(u)
-            
-            # Placer le reste normalement
-            if normal:
-                self._place_column(normal, base_x, center_y, bf, min_x=min_x)
-        
-        army1_roles = {'front': [], 'mid': [], 'back': []}
-        army2_roles = {'front': [], 'mid': [], 'back': []}
-        
+
         def _effective_role(u):
             """Les unités fragiles (tireurs, mages) sont TOUJOURS placées
             à l'arrière, protégées par la mêlée — quel que soit leur rôle
@@ -163,29 +176,165 @@ class Battle:
             if u._max_range >= 4 or u.spells:
                 return 'back'
             return u.role
-        
-        for u in self.army1:
-            army1_roles[_effective_role(u)].append(u)
+
+        def place_rank(units, x_start, step_x, band_top, band_h, min_x=0):
+            """Range des unités en RANGS dans la bande qui leur est allouée.
+
+            Une colonne ne dépasse jamais la hauteur de bande: au-delà, on
+            ouvre une colonne supplémentaire en arrière. Sans cela, une
+            armée nombreuse formait une file unique plus haute que la carte,
+            et tout le monde finissait tassé contre le bord inférieur.
+
+            Retourne le nombre de colonnes occupées (pour décaler la suite).
+            """
+            if not units:
+                return 0
+            units = sorted(units, key=lambda u: -u.size)
+            band_h = max(1, band_h)
+
+            columns = []
+            cur, cur_h = [], 0
+            for u in units:
+                uh = bf.get_unit_dims(u)[1]
+                if cur and cur_h + uh > band_h:
+                    columns.append((cur, cur_h))
+                    cur, cur_h = [], 0
+                cur.append(u)
+                cur_h += uh
+            if cur:
+                columns.append((cur, cur_h))
+
+            for ci, (col_units, col_h) in enumerate(columns):
+                x_col = max(min_x, min(bf.width - 1, x_start + ci * step_x))
+                y = band_top + max(0, (band_h - col_h) // 2)
+                for u in col_units:
+                    w, h = bf.get_unit_dims(u)
+                    ty = max(1, min(bf.height - 1 - h, y))
+                    pos = (x_col, ty)
+                    if not bf.can_place_unit(*pos, u):
+                        pos = self._find_free_near_unit(x_col, ty, u, bf, min_x=min_x)
+                    if pos is not None:
+                        u.position = pos
+                        bf.place_unit(u)
+                    y += h
+            return len(columns)
+
+        def place_support(units, x_start, step_x, band_top, band_h, min_x=0):
+            """Arrière du groupe: tireurs et machines de guerre.
+
+            Les pièces volumineuses (balistes, catapultes) sont espacées
+            dans la bande — elles ont besoin d'angle de tir — le reste
+            s'aligne en rangs derrière la mêlée.
+            """
+            if not units:
+                return 0
+            large = [u for u in units if u.size >= 2]
+            normal = [u for u in units if u.size < 2]
+            used = 0
+            if large:
+                spacing = max(2, band_h // (len(large) + 1))
+                for i, u in enumerate(large):
+                    w, h = bf.get_unit_dims(u)
+                    ty = band_top + spacing * (i + 1) - h // 2
+                    ty = max(1, min(bf.height - 1 - h, ty))
+                    pos = (max(min_x, x_start), ty)
+                    if not bf.can_place_unit(*pos, u):
+                        pos = self._find_free_near_unit(pos[0], ty, u, bf, min_x=min_x)
+                    if pos is not None:
+                        u.position = pos
+                        bf.place_unit(u)
+                used = 1
+            if normal:
+                used = max(used, place_rank(normal, x_start, step_x,
+                                            band_top, band_h, min_x))
+            return max(1, used)
+
+        def deploy_contingents(units, base_x, step_x, min_x=0):
+            """Déploie une armée GROUPE PAR GROUPE, en rangs.
+
+            Une armée peut être articulée en plusieurs groupes: chacun forme
+            un corps distinct (sa ligne de front, son centre, ses tireurs),
+            occupe une bande de terrain proportionnelle à son effectif, et
+            reste séparé du voisin par un intervalle. L'ensemble est centré
+            sur la carte et ne peut plus déborder: si les effectifs ne
+            tiennent pas sur une seule ligne, les rangs s'épaississent au
+            lieu de s'entasser contre un bord.
+            """
+            if not units:
+                return
+            order, groups = [], {}
+            for u in units:
+                key = u.contingent or ""
+                if key not in groups:
+                    groups[key] = {'front': [], 'mid': [], 'back': []}
+                    order.append(key)
+                groups[key][_effective_role(u)].append(u)
+
+            import random as _rng
+            for key in order:
+                for role_list in groups[key].values():
+                    _rng.shuffle(role_list)
+
+            top_margin = 1
+            usable = max(4, bf.height - 2)
+            gap = 2 if len(order) > 1 else 0
+            avail = max(len(order) * 3, usable - gap * (len(order) - 1))
+
+            # Hauteur "naturelle" d'un groupe = sa colonne de rôle la plus fournie
+            weights = []
+            for key in order:
+                g = groups[key]
+                weights.append(max(1, max(
+                    sum(bf.get_unit_dims(u)[1] for u in g['front']),
+                    sum(bf.get_unit_dims(u)[1] for u in g['mid']),
+                    sum(bf.get_unit_dims(u)[1] for u in g['back']))))
+            total_w = sum(weights)
+
+            if total_w <= avail:
+                bands = weights          # tout tient: une colonne par rôle
+            else:
+                # Trop d'hommes pour la hauteur disponible: on répartit au
+                # prorata et les rangs s'épaississent d'eux-mêmes.
+                bands = [max(3, int(avail * w / total_w)) for w in weights]
+                over = sum(bands) - avail
+                i = 0
+                while over > 0 and any(b > 3 for b in bands):
+                    j = i % len(bands)
+                    if bands[j] > 3:
+                        bands[j] -= 1
+                        over -= 1
+                    i += 1
+
+            total_h = sum(bands) + gap * (len(order) - 1)
+            cur_y = top_margin + max(0, (usable - total_h) // 2)
+
+            for key, band_h in zip(order, bands):
+                g = groups[key]
+                x_cursor = base_x
+                # Un rôle vide ne consomme pas de colonne: sans cela, un
+                # groupe sans unité de « front » laissait un trou béant
+                # dans la ligne, son centre planté un rang en arrière.
+                x_cursor += place_rank(g['front'], x_cursor, step_x,
+                                       cur_y, band_h, min_x) * step_x
+                x_cursor += place_rank(g['mid'], x_cursor, step_x,
+                                       cur_y, band_h, min_x) * step_x
+                place_support(g['back'], x_cursor, step_x, cur_y, band_h, min_x)
+                cur_y += band_h + gap
+
+        army2_roles = {'front': [], 'mid': [], 'back': []}
         for u in self.army2:
             army2_roles[_effective_role(u)].append(u)
-        
         import random as _rng
-        for roles in (army1_roles, army2_roles):
-            for role_list in roles.values():
-                _rng.shuffle(role_list)
-        
+        for role_list in army2_roles.values():
+            _rng.shuffle(role_list)
+
         # Placement attaquant (armée 1) — à gauche du centre
         # Lignes resserrées pour que l'armée avance de manière cohésive
         mid_x = bf.width // 2
         gap = 12  # demi-écart: 12 cases de chaque côté = 24-25 cases entre fronts
-        
+
         a1_front = mid_x - gap
-        a1_mid   = a1_front - 1   # mid juste derrière front (1 case)
-        a1_back  = a1_front - 2   # back 2 cases derrière (au lieu de 4)
-        
-        place_role_units(army1_roles['front'], a1_front, center_y, -1)
-        place_role_units(army1_roles['mid'],   a1_mid,   center_y, -1)
-        place_back_spread(army1_roles['back'],  a1_back,  center_y, -1)
+        deploy_contingents(self.army1, a1_front, -1)
         
         if self.map_name == "Siège":
             wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
@@ -327,12 +476,7 @@ class Battle:
             # meurent en cours de partie.
         else:
             a2_front = mid_x + gap
-            a2_mid   = a2_front + 1
-            a2_back  = a2_front + 2
-            
-            place_role_units(army2_roles['front'], a2_front, center_y, +1)
-            place_role_units(army2_roles['mid'],   a2_mid,   center_y, +1)
-            place_back_spread(army2_roles['back'],  a2_back,  center_y, +1)
+            deploy_contingents(self.army2, a2_front, +1)
     
     def _place_column(self, units, x_col, center_y, bf, min_x=0):
         if not units:
@@ -410,6 +554,136 @@ class Battle:
             return self.army1_initial_size
         return self.army2_initial_size
 
+    # ═══════════════════════════════════════════════════════════════
+    #   TENUE AU FEU — qui rompt, et qui se reprend
+    # ═══════════════════════════════════════════════════════════════
+
+    def _force_ratio(self, unit):
+        """Rapport de forces vu par cette unité (>1 = son camp domine)."""
+        mine = sum(tactics.remaining_value(u) for u in self.get_allies(unit)
+                   if u.is_alive and not u.fleeing)
+        theirs = sum(tactics.remaining_value(e) for e in self.get_enemies(unit)
+                     if e.is_alive and not e.fleeing)
+        if theirs <= 0.01:
+            return 99.0
+        return mine / max(0.01, theirs)
+
+    def _resolve_bonus(self, unit):
+        """Ascendant moral: une troupe qui domine ne tourne pas les talons.
+
+        C'est ce qui manquait le plus: avec une bravoure de base de 1, le
+        moindre échec de test faisait rompre une armée pourtant deux fois
+        supérieure en nombre. On tient compte du rapport de forces et de
+        l'expérience acquise dans le round (une unité qui vient d'abattre
+        un adversaire est galvanisée, pas terrorisée).
+        """
+        r = self._force_ratio(unit)
+        bonus = 0
+        if r >= 1.6:
+            bonus += 2
+        elif r >= 1.15:
+            bonus += 1
+        if getattr(unit, '_kills', 0) >= 2:
+            bonus += 1
+        return bonus
+
+    def _can_rout(self, unit):
+        """Une unité rompt-elle VRAIMENT, ou se contente-t-elle d'être
+        ébranlée ?
+
+        Se faire canarder de loin alors qu'on est en surnombre n'a jamais
+        fait fuir une troupe: elle serre les dents et marche au canon. On
+        exige donc un danger immédiat (l'ennemi au contact) ou une
+        infériorité réelle. Sinon l'unité reste, secouée mais au combat.
+        """
+        enemies = [e for e in self.get_enemies(unit) if e.is_alive]
+        if not enemies:
+            return False
+        ux, uy = unit.position
+        d_min = min(abs(ux - e.position[0]) + abs(uy - e.position[1]) for e in enemies)
+        if d_min <= 2:
+            return True                       # acculée: la panique est permise
+        if unit.hp <= max(1, unit.max_hp // 3) and self._force_ratio(unit) < 1.2:
+            return True                       # exsangue et sans ascendant
+        if getattr(unit, '_under_fire', 0) >= 6 and unit.hp < unit.max_hp:
+            return True                       # clouée sous un feu nourri
+        if (getattr(unit, '_witnessed_deaths', 0) >= 2
+                and (unit.hp < unit.max_hp or d_min <= 6)):
+            return True                       # la ligne se vide autour d'elle
+        return self._force_ratio(unit) < 0.85
+
+    def _break_unit(self, unit, label, color=(255, 50, 50)):
+        """Applique (ou refuse) la rupture d'une unité au moral épuisé."""
+        if self._can_rout(unit):
+            unit.fleeing = True
+            unit.status_text = "FUITE!"
+            unit.floating_texts.append(FloatingText(label, color, 100))
+            return True
+        # Moral à zéro mais rien qui justifie de rompre: on tient le terrain
+        unit.afraid = True
+        unit.status_text = "ÉBRANLÉ"
+        unit.floating_texts.append(FloatingText("Tient bon!", (255, 190, 90), 70))
+        return False
+
+    def _rally_phase(self):
+        """Ralliement: une troupe qui a décroché peut se reprendre.
+
+        Sans cela, la moindre panique était définitive et les batailles se
+        terminaient par une évaporation générale. On ne se rallie pas sous
+        le fer: il faut du champ, et de préférence un officier.
+        """
+        for unit in list(self.army1) + list(self.army2):
+            if not unit.is_alive or not unit.fleeing or unit.fled:
+                continue
+            if getattr(unit, '_flee_rounds', 0) < 1:
+                continue
+            ux, uy = unit.position
+            enemies = [e for e in self.get_enemies(unit) if e.is_alive]
+            if not enemies:
+                continue
+            if min(abs(ux - e.position[0]) + abs(uy - e.position[1]) for e in enemies) <= 3:
+                continue  # on ne se rallie pas le fer dans les reins
+
+            bonus = self._resolve_bonus(unit)
+            for a in self.get_allies(unit):
+                if (a.is_alive and not a.fleeing and a.encouragement_range > 0
+                        and self.battlefield.manhattan_distance(unit.position, a.position)
+                        <= max(6, a.encouragement_range)):
+                    bonus += 2      # la voix du chef porte
+                    break
+
+            seuil = max(1, unit.base_morale + bonus)
+            if random.randint(1, 6) <= seuil:
+                unit.fleeing = False
+                unit.afraid = True
+                unit.morale_malus = max(0, unit.morale_malus - 1)
+                unit._flee_rounds = 0
+                unit.status_text = "RALLIÉ"
+                unit.floating_texts.append(FloatingText("RALLIÉ!", (120, 255, 160), 90))
+                self.log_event(f"{unit.name} se rallie !", (120, 255, 160), 2)
+
+    def _steady_nerves(self):
+        """Récupération: loin du danger et sans pertes, les nerfs se
+        remettent. Un malus de moral n'est plus une condamnation."""
+        for unit in self.get_all_alive():
+            if unit.fleeing or unit.morale_malus <= 0:
+                continue
+            if unit._damage_taken_round > 0:
+                unit._calm_rounds = 0
+                continue
+            ux, uy = unit.position
+            enemies = [e for e in self.get_enemies(unit) if e.is_alive]
+            if enemies and min(abs(ux - e.position[0]) + abs(uy - e.position[1])
+                               for e in enemies) <= 4:
+                unit._calm_rounds = 0
+                continue
+            unit._calm_rounds = getattr(unit, '_calm_rounds', 0) + 1
+            if unit._calm_rounds >= 2:
+                unit._calm_rounds = 0
+                unit.morale_malus -= 1
+                unit.floating_texts.append(
+                    FloatingText("+1 Moral", (150, 220, 255), 60))
+
     def morale_phase(self):
         """Phase de moral complète.
         
@@ -434,6 +708,10 @@ class Battle:
                         continue
                     ally.morale_bonus = max(ally.morale_bonus, 1)  # +1, non cumulable
         
+        # --- 0a) Ascendant: le rapport de forces pèse sur les nerfs ---
+        for unit in self.get_all_alive():
+            unit.morale_bonus += self._resolve_bonus(unit)
+
         # --- 0b) Siège: défenseurs derrière le mur intact → +1 bravoure ---
         if self.map_name == "Siège":
             wall_x = self.battlefield.siege_data.get('wall_x', 0)
@@ -462,12 +740,9 @@ class Battle:
                         unit.morale_malus += 1
                         unit.floating_texts.append(
                             FloatingText("-1 Moral (Pertes!)", (255, 100, 60), 90))
-                        
+
                         if unit.get_effective_morale() <= 0:
-                            unit.fleeing = True
-                            unit.status_text = "FUITE!"
-                            unit.floating_texts.append(
-                                FloatingText("FUITE!", (255, 50, 50), 100))
+                            self._break_unit(unit, "FUITE!")
                         else:
                             unit.afraid = True
                             unit.status_text = "PEUR"
@@ -485,10 +760,14 @@ class Battle:
                         unit.morale_malus += 1
                         unit.floating_texts.append(
                             FloatingText("-1 Moral (Déroute!)", (255, 50, 50), 90))
-                        
+
                         if unit.get_effective_morale() <= 0:
+                            # Pertes critiques: à ce stade l'armée est
+                            # brisée, il n'y a plus d'ascendant qui tienne.
+                            # C'est le seul cas où l'on rompt sans avoir
+                            # l'ennemi sur le dos.
                             unit.fleeing = True
-                            unit.status_text = "FUITE!"
+                            unit.status_text = "DÉROUTE"
                             unit.floating_texts.append(
                                 FloatingText("DÉROUTE!", (255, 30, 30), 100))
                         else:
@@ -516,12 +795,49 @@ class Battle:
                     under_fear = True
             
             if under_fear:
-                unit.apply_fear_effect(max_aura, min_dist)
+                if unit.apply_fear_effect(max_aura, min_dist) == "flee":
+                    # La terreur a fait tomber le moral à zéro: reste à
+                    # savoir si la troupe a une raison de rompre.
+                    unit.fleeing = False
+                    self._break_unit(unit, "TERREUR!", (255, 60, 120))
             else:
                 if unit.afraid and not unit.fleeing:
                     unit.afraid = False
                     unit.status_text = ""
         
+        # --- 2b) Choc et feu nourri: encaisser pèse sur les nerfs ---
+        # Un coup qui emporte le tiers des PV ou une volée bien ajustée
+        # ébranlent une troupe: elle ne se bat plus aussi bien au round
+        # suivant. C'est ce qui donne du poids aux salves et aux gros coups.
+        for unit in self.get_all_alive():
+            if unit.fleeing or unit.afraid or not unit.is_alive:
+                continue
+            pressure = unit._shock + (1 if getattr(unit, '_under_fire', 0) >= 6 else 0)
+            if pressure >= 2 and not unit.morale_check():
+                unit.afraid = True
+                unit.status_text = "ÉBRANLÉ"
+                unit.floating_texts.append(
+                    FloatingText("Ébranlé!", (255, 150, 60), 60))
+
+        # --- 2b bis) Camarades tombés au coude à coude ---
+        # Une volée qui fauche le voisin fait plus pour briser une ligne
+        # que dix salves tombées dans le vide.
+        for unit in self.get_all_alive():
+            if unit.fleeing or not unit.is_alive:
+                continue
+            if getattr(unit, '_witnessed_deaths', 0) <= 0:
+                continue
+            if not unit.morale_check():
+                unit.morale_malus += 1
+                unit.floating_texts.append(
+                    FloatingText("-1 Moral (Camarade!)", (255, 120, 80), 80))
+                if unit.get_effective_morale() <= 0:
+                    self._break_unit(unit, "FUITE!")
+
+        # --- 2c) Ralliement et retour au calme ---
+        self._rally_phase()
+        self._steady_nerves()
+
         # --- 3) Test de moral au combat (chaque round en mêlée) ---
         for unit in self.get_all_alive():
             if unit.fleeing or unit.afraid or not unit.is_alive:
@@ -541,37 +857,190 @@ class Battle:
                                 unit.floating_texts.append(
                                     FloatingText("Peur!", (255, 180, 60), 60))
 
+    # ═══════════════════════════════════════════════════════════════
+    #   RÉACTIONS — ce qui rend un tour-par-tour vivant
+    # ═══════════════════════════════════════════════════════════════
+
+    def _opportunity_attacks(self, mover, new_pos, t01):
+        """Rupture de contact: qui se dérobe au corps à corps s'expose à un
+        coup gratuit. Reculer, kiter ou fuir a désormais un prix, et la
+        mêlée « mord » au lieu de laisser les unités se décoller sans
+        réaction. Retourne False si le fuyard a été abattu sur place."""
+        ox, oy = mover.position
+        nx, ny = new_pos
+        for e in self.get_enemies(mover):
+            if not e.is_alive or e.fleeing or e._opportunity_used:
+                continue
+            if e._max_range >= 4:
+                continue  # un tireur ne retient personne au contact
+            reach = min(2, e._max_range)
+            d_old = abs(e.position[0] - ox) + abs(e.position[1] - oy)
+            d_new = abs(e.position[0] - nx) + abs(e.position[1] - ny)
+            if d_old > reach or d_new <= d_old:
+                continue
+            melee = [a for a in e.armes if a.porte <= 2]
+            if not melee:
+                continue
+            e._opportunity_used = True
+            self._set_action_time(t01)
+            e.floating_texts.append(FloatingText("Opportunité!", (255, 240, 150), 55))
+            self._apply_combat_events(
+                e.perform_attacks(mover, self.battlefield, self,
+                                  weapons=[melee[0]], kind="opportunity"))
+            if not mover.is_alive:
+                return False
+        return True
+
+    def _reaction_fire(self, movers, t01):
+        """Tir de réaction: un tireur qui tient sa position lâche sa volée à
+        la seconde où un ennemi débouche dans sa zone de feu — pendant le
+        mouvement adverse, pas trois phases plus tard."""
+        bf = self.battlefield
+        for shooter in list(self.get_all_alive()):
+            if (not shooter.is_alive or shooter.fleeing
+                    or shooter._acted_this_round or shooter.spells):
+                continue
+            if shooter._max_range < 4:
+                continue
+            if id(shooter) in movers:
+                continue  # il s'est déplacé: pas de tir d'arrêt
+            sx, sy = shooter.position
+            mr = shooter._max_range
+            best, best_d = None, 999
+            for e in self.get_enemies(shooter):
+                info = movers.get(id(e))
+                if info is None or not e.is_alive:
+                    continue
+                old_pos, new_pos = info
+                d_old = abs(sx - old_pos[0]) + abs(sy - old_pos[1])
+                d_new = abs(sx - new_pos[0]) + abs(sy - new_pos[1])
+                if d_old <= mr or d_new > mr:
+                    continue  # il était déjà sous le feu, ou toujours hors portée
+                if not bf.has_line_of_fire(shooter, e):
+                    continue
+                if d_new < best_d:
+                    best, best_d = e, d_new
+            if best is None:
+                continue
+            shooter._acted_this_round = True
+            self._set_action_time(t01)
+            shooter.floating_texts.append(
+                FloatingText("Tir de réaction!", (120, 210, 255), 55))
+            self._apply_combat_events(
+                shooter.perform_attacks(best, bf, self, kind="reaction"))
+
+    def _momentum_followup(self, unit, t01):
+        """Élan: une unité qui abat son adversaire enchaîne aussitôt sur la
+        cible suivante à portée. Les percées se propagent au lieu de
+        s'arrêter net à chaque mort."""
+        if unit._momentum_used or not unit.is_alive or unit.fleeing:
+            return
+        if not getattr(unit, '_last_attack_killed', False):
+            return
+        if unit._max_range >= 4:
+            return  # l'élan est une affaire de mêlée: on ne « perce » pas au tir
+        bf = self.battlefield
+        ux, uy = unit.position
+        mr = unit._max_range
+        cands = [e for e in self.get_enemies(unit)
+                 if e.is_alive
+                 and abs(e.position[0] - ux) + abs(e.position[1] - uy) <= mr]
+        if mr >= 4:
+            cands = [e for e in cands if bf.has_line_of_fire(unit, e)]
+        if not cands:
+            return
+        target = min(cands, key=lambda e: (e.hp,
+                                           abs(e.position[0] - ux) + abs(e.position[1] - uy)))
+        d = abs(target.position[0] - ux) + abs(target.position[1] - uy)
+        weapon = next((a for a in unit.armes if d <= a.porte), None)
+        if weapon is None:
+            return
+        unit._momentum_used = True
+        self._set_action_time(t01)
+        unit.floating_texts.append(FloatingText("ÉLAN!", (255, 180, 255), 65))
+        if unit._kills >= 3:
+            self.log_event(f"{unit.name} taille dans le tas !", (255, 180, 255), 2)
+        self._apply_combat_events(
+            unit.perform_attacks(target, bf, self, weapons=[weapon], kind="momentum"))
+
+    def _initiative_order(self, units):
+        """Ordre d'action du round. Qui frappe en premier compte: un mort
+        ne riposte pas. Vitesse, charge et allonge donnent le tempo; une
+        part d'aléa empêche toute séquence figée d'un round à l'autre."""
+        scored = []
+        for u in units:
+            score = u.vitesse * 1.15
+            if getattr(u, '_charged_this_round', False):
+                score += 7.0      # le choc d'une charge précède tout
+            if u._max_range >= 4:
+                score -= 1.5      # on ajuste avant de lâcher
+            if getattr(u, 'is_artillery', False):
+                score -= 4.0      # les machines sont longues à servir
+            if u.spells:
+                score += 1.0
+            if u._suppression >= 3:
+                score -= 2.0      # sous le feu, on réagit mal
+            if u.afraid:
+                score -= 1.5
+            if u.encouragement_range > 0:
+                score += 1.0      # l'officier donne le signal
+            score += random.random() * 3.0
+            scored.append((-score, id(u), u))
+        scored.sort()
+        return [u for _, _, u in scored]
+
+
     def _charge_phase(self, alive):
-        """Phase de charge: les unités avec charge se ruent sur un ennemi à distance de charge.
-        
-        Nerfé: portée réduite (vitesse à 1.5x au lieu de 2x), nécessite un chemin libre,
-        et seule la PREMIÈRE arme est utilisée lors de l'attaque de charge.
+        """Phase de charge: les unités dotées d'une charge se ruent sur une
+        proie à distance d'élan.
+
+        La cible n'est plus « la plus proche » mais la plus PAYANTE: une
+        machine de guerre, un tireur ou un blessé valent mieux qu'un mur de
+        boucliers. Le choc est horodaté tôt dans le round — visuellement,
+        la cavalerie percute avant que l'échange général ne commence.
         """
-        for unit in alive:
+        import tactics
+        chargers = [u for u in alive
+                    if u.is_alive and not u.fleeing
+                    and (u.charge_montee or u.charge_aida)]
+        if not chargers:
+            return
+
+        for ci, unit in enumerate(chargers):
             if not unit.is_alive or unit.fleeing:
                 continue
-            if not unit.charge_montee and not unit.charge_aida:
-                continue
-            
-            # Distance de charge réduite: entre vitesse et 1.5x vitesse (au lieu de 2x)
+
             min_dist = unit.vitesse
             max_dist = int(unit.vitesse * 1.5)
-            
-            # Trouver un ennemi dans la zone de charge
+
+            # ── Choix de la proie: valeur de la cible / résistance attendue ──
             best_target = None
-            best_dist = 999
-            for enemy in self.get_enemies(unit):
+            best_score = -1e9
+            enemies_all = self.get_enemies(unit)
+            for enemy in enemies_all:
                 if not enemy.is_alive:
                     continue
                 d = self.battlefield.manhattan_distance(unit.position, enemy.position)
-                if min_dist <= d <= max_dist and d < best_dist:
+                if not (min_dist <= d <= max_dist):
+                    continue
+                dmg = tactics.expected_damage(unit, enemy, 1, self.battlefield)
+                score = dmg * 2.0 + tactics.remaining_value(enemy) * 0.25
+                if enemy._max_range >= 4 or getattr(enemy, 'is_artillery', False):
+                    score += 12.0          # briser le tir ennemi: priorité absolue
+                if enemy.spells:
+                    score += 10.0
+                if enemy.hp < enemy.max_hp * 0.45:
+                    score += 6.0           # achever plutôt qu'entamer
+                if tactics.is_isolated(enemy, enemies_all, 4):
+                    score += 5.0           # proie sans soutien
+                score -= d * 0.4           # à valeur égale, le plus proche
+                if score > best_score:
+                    best_score = score
                     best_target = enemy
-                    best_dist = d
-            
+
             if not best_target:
                 continue
-            
-            # Trouver une case adjacente à la cible pour charger
+
             tx, ty = best_target.position
             charge_pos = None
             charge_dist = 999
@@ -585,49 +1054,186 @@ class Battle:
                         if d < charge_dist:
                             charge_pos = (nx, ny)
                             charge_dist = d
-            
+
             if not charge_pos:
                 continue
-            
-            # Vérifier qu'il y a un chemin libre (pas de téléportation à travers les alliés)
+
             path = self.battlefield.a_star_path(unit.position, charge_pos, unit, self)
             if not path or len(path) > max_dist:
                 continue
-            
-            # Déplacer l'unité vers la cible (charge!)
+
+            start_pos = unit.position
             self.battlefield.move_unit(unit, charge_pos)
             unit.has_charged = True
-            
-            # Effet visuel: ligne de charge
+            unit._charged_this_round = True
+
+            # Les charges percutent dans une fenêtre serrée, légèrement
+            # décalées les unes des autres.
+            t_charge = T_CHARGE + 0.012 * ci
+            self._set_action_time(t_charge)
+
             cs = self.cell_size
-            start_px = (unit.position[0] * cs + cs // 2,
-                        unit.position[1] * cs + cs // 2)
+            start_px = (start_pos[0] * cs + cs // 2, start_pos[1] * cs + cs // 2)
             end_px = (best_target.position[0] * cs + cs // 2,
                       best_target.position[1] * cs + cs // 2)
 
             charge_color = (255, 200, 50) if unit.charge_montee else (100, 200, 255)
             self.visual_effects['attack_lines'].append(
-                AttackLine(start_px, end_px, charge_color, 35)
-            )
+                AttackLine(start_px, end_px, charge_color, 30,
+                           delay=FX_CLOCK.current_delay))
+            self.visual_effects.setdefault('shockwaves', []).append(
+                ShockWave(end_px, cs * 2, charge_color, 24,
+                          delay=FX_CLOCK.current_delay + 4))
 
             label = "CHARGE!" if unit.charge_montee else "CHARGE D'AÏDA!"
             unit.floating_texts.append(FloatingText(label, charge_color, 70))
 
-            # Attaque de charge: seulement la première arme CaC (pas toutes les armes)
-            if unit.armes:
-                melee_armes = [a for a in unit.armes if a.porte <= 2]
-                if melee_armes:
-                    saved_armes = unit.armes
-                    unit.armes = [melee_armes[0]]
-                    self._apply_combat_events(unit.perform_attacks(best_target, self.battlefield))
-                    unit.armes = saved_armes
-                else:
-                    self._apply_combat_events(unit.perform_attacks(best_target, self.battlefield))
+            melee_armes = [a for a in unit.armes if a.porte <= 2]
+            weapons = [melee_armes[0]] if melee_armes else None
+            self._apply_combat_events(
+                unit.perform_attacks(best_target, self.battlefield, self,
+                                     weapons=weapons, kind="charge"))
+            self._momentum_followup(unit, t_charge + 0.05)
+
+    def _attack_gate(self, unit):
+        """Siège: l'unité consacre-t-elle son action à enfoncer une porte ?
+        Retourne True si elle a frappé (ou tenté de frapper) la porte."""
+        bf = self.battlefield
+        if not bf.gate_hp or bf.gates_open:
+            return False
+        if not any(h > 0 for h in bf.gate_hp.values()):
+            return False
+        if not unit.is_alive or unit.fleeing:
+            return False
+        if id(unit) not in self._army1_ids:
+            return False
+
+        ux, uy = unit.position
+        best_gate, best_gate_dist = None, 999
+        for gpos, ghp in bf.gate_hp.items():
+            if ghp <= 0:
+                continue
+            d = bf.manhattan_distance((ux, uy), gpos)
+            if d < best_gate_dist:
+                best_gate, best_gate_dist = gpos, d
+        if best_gate is None:
+            return False
+
+        gx, gy = best_gate
+        is_artillery = getattr(unit, 'is_artillery', False)
+        gate_save = bf.gate_save
+        total_dmg = 0
+        for arme in unit.armes:
+            if arme.porte < 4 and best_gate_dist > 1:
+                continue
+            if arme.porte >= 4 and best_gate_dist > arme.porte:
+                continue
+            # Archers mobiles: priorité aux ennemis VISIBLES; s'il n'y en a
+            # pas, autant marteler la porte.
+            if arme.porte >= 4 and not is_artillery:
+                if any(e.is_alive
+                       and bf.manhattan_distance((ux, uy), e.position) <= arme.porte
+                       and bf.has_line_of_fire(unit, e)
+                       for e in self.army2):
+                    continue
+            for _ in range(arme.nb_attaque):
+                gate_save_mod = min(7, gate_save - arme.perforation)
+                if random.randint(1, 6) >= gate_save_mod:
+                    continue
+                total_dmg += max(1, arme.lancer_degats())
+
+        if total_dmg > 0:
+            destroyed = bf.damage_gate(gx, gy, total_dmg)
+            hp_left = bf.gate_hp.get((gx, gy), 0)
+            unit.floating_texts.append(
+                FloatingText(f"-{total_dmg} Porte ({hp_left})", (200, 150, 50), 40))
+            cs = self.cell_size
+            self.visual_effects.setdefault('impacts', []).append(
+                ImpactBurst((gx * cs + cs // 2, gy * cs + cs // 2),
+                            (220, 170, 90), 1.4,
+                            math.atan2(gy - uy, gx - ux), 18,
+                            delay=FX_CLOCK.current_delay + 2))
+            if destroyed:
+                unit.floating_texts.append(
+                    FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
+                self.log_event("La porte cède !", (255, 160, 60), 3)
+            return True
+        if best_gate_dist <= 1 and unit._max_range < 4:
+            unit.floating_texts.append(
+                FloatingText("Porte résiste!", (150, 130, 80), 30))
+            return True
+        return False
+
+
+    def _choose_attack_target(self, unit):
+        """Choix de la cible de l'action d'attaque.
+
+        L'ordre du commandant pèse lourd, mais une occasion de TUER
+        maintenant prime toujours: achever un ennemi vaut mieux qu'entamer
+        un adversaire intact, et un tireur n'arrose pas une mêlée déjà
+        tenue par les siens.
+        """
+        from ai_commander import select_tactical_target
+        import tactics
+        bf = self.battlefield
+        ux, uy = unit.position
+        mr = unit._max_range
+        is_ranged = mr >= 4
+
+        def can_hit(e):
+            if abs(ux - e.position[0]) + abs(uy - e.position[1]) > mr:
+                return False
+            if is_ranged and not bf.has_line_of_fire(unit, e):
+                return False
+            return True
+
+        reachable = [e for e in self.get_enemies(unit) if e.is_alive and can_hit(e)]
+        if not reachable:
+            return None
+        if len(reachable) == 1:
+            return reachable[0]
+
+        ordered = select_tactical_target(unit, self, bf)
+        allies = self.get_allies(unit)
+
+        best, best_score = None, -1e9
+        for e in reachable:
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            dmg = tactics.expected_damage(unit, e, d, bf)
+            score = dmg
+            score += tactics.kill_chance(dmg, e) * 14.0   # finir le travail
+            score += tactics.remaining_value(e) * 0.12
+            if e is ordered:
+                score += 8.0                              # ordre du commandant
+            if e._max_range >= 4 or e.spells:
+                score += 3.0
+            if e.encouragement_range > 0:
+                score += 2.5
+            if is_ranged and any(
+                    a.is_alive and a._max_range < 4
+                    and abs(a.position[0] - e.position[0])
+                    + abs(a.position[1] - e.position[1]) <= 1
+                    for a in allies):
+                score -= 4.0                              # tir fratricide évité
+            score -= d * 0.15
+            if score > best_score:
+                best, best_score = e, score
+        return best
+
 
     def simulate_round(self):
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
-        
+        self.round_events = []
+
+        # Horloge du round: toutes les actions vont s'y positionner
+        FX_CLOCK.frames_per_round = self.fx_frames_per_round
+        FX_CLOCK.at(0)
+
+        for u in self.army1 + self.army2:
+            u.start_round()
+            u._charged_this_round = False
+
         # Déroute: si une armée n'a plus de combattants, tous les restants fuient
         for army in [self.army1, self.army2]:
             fighters = sum(1 for u in army if u.is_alive and not u.fleeing)
@@ -637,32 +1243,31 @@ class Battle:
                         u.fleeing = True
                         u.status_text = "DÉROUTE"
                         u.floating_texts.append(FloatingText("Déroute!", (255, 100, 50), 80))
-        
+                        self.log_event("Une armée rompt le combat !", (255, 100, 50), 3)
+
+        # Appartenance d'armée (O(1)) — recalculée explicitement chaque round
+        self._army1_ids = {id(u) for u in self.army1}
+        self._army2_ids = {id(u) for u in self.army2}
+
         # === PHASE DE COMMANDEMENT: les IA assignent les ordres ===
         self.commander1.issue_orders(self)
         self.commander2.issue_orders(self)
-        
+
         alive = self.get_all_alive()
-        
+
         # Mélanger l'ordre de traitement du mouvement: les tris des passes
         # sont stables, donc à distance égale c'était toujours l'armée 1
         # qui réservait ses cases en premier (avantage cumulatif).
         _move_pool = list(alive)
         random.shuffle(_move_pool)
-        
+
         # === MOUVEMENT COHÉSIF EN 3 PASSES ===
-        # Pass 1: fuyards et artillerie (statiques)
-        # Pass 2: unités engagées (déjà au contact) — micro-ajustent
-        # Pass 3: unités en approche — avancent en formation avec étalement
-        #   - Triées du FOND vers l'AVANT pour que les arrières ne soient pas
-        #     bloqués par les unités de front qui réservent tout devant elles
-        
         bf = self.battlefield
-        
+
         static_units = []   # Fuyards, artillerie
         engaged = []        # Au contact (distance ≤ portée+1)
         approaching = []    # En approche (pas encore au contact)
-        
+
         for u in _move_pool:
             if u.fleeing or u.vitesse <= 0:
                 static_units.append(u)
@@ -681,11 +1286,11 @@ class Battle:
                     approaching.append(u)
             else:
                 static_units.append(u)
-        
+
         # === Pass 1: statiques — réservent leur position ===
         reserved = set()
         moves = {}
-        
+
         for unit in static_units:
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
@@ -696,12 +1301,12 @@ class Battle:
                 reserved.update(bf._get_reserved_cells(unit, new_pos))
             elif unit.position:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
-        
+
         # === Pass 2: engagées — se déplacent, triées par proximité ===
         engaged.sort(key=lambda u: min(
             (bf.manhattan_distance(u.position, e.position)
              for e in self.get_enemies(u) if e.is_alive), default=999))
-        
+
         for unit in engaged:
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
@@ -712,18 +1317,15 @@ class Battle:
                 reserved.update(bf._get_reserved_cells(unit, new_pos))
             elif unit.position:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
-        
+
         # === Pass 3: en approche — avance cohésive ===
         # Trier les approchants du PLUS LOIN au PLUS PROCHE de l'ennemi
-        # Ainsi les unités de derrière réservent d'abord leur destination
-        # et les unités de devant s'adaptent (au lieu de tout bloquer)
         approaching.sort(key=lambda u: min(
             (bf.manhattan_distance(u.position, e.position)
              for e in self.get_enemies(u) if e.is_alive), default=999),
             reverse=True)
-        
-        # Calculer la distance min de l'ennemi parmi les approchants
-        # pour limiter la vitesse des plus rapides (cohésion)
+
+        median_dist = 999
         if approaching:
             approach_dists = []
             for u in approaching:
@@ -733,28 +1335,21 @@ class Battle:
                         min(bf.manhattan_distance(u.position, e.position) for e in ae))
             if approach_dists:
                 median_dist = sorted(approach_dists)[len(approach_dists) // 2]
-            else:
-                median_dist = 999
-        
+
         for unit in approaching:
             # Cohésion: les unités très en avance ralentissent pour ne pas
-            # se retrouver isolées. On limite la vitesse effective si l'unité
-            # est significativement plus proche que la médiane de son armée.
+            # se retrouver isolées — sauf ordre de foncer.
             ae = [e for e in self.get_enemies(unit) if e.is_alive]
             if ae:
                 my_dist = min(bf.manhattan_distance(unit.position, e.position) for e in ae)
             else:
                 my_dist = 999
-            
-            # Si l'unité est > 6 cases en avance de la médiane, elle ralentit
-            # — SAUF en posture rush/sortie (chaque round d'approche coûte
-            # des pertes sous le feu ennemi: on fonce)
+
             orig_speed = unit.vitesse
             advance_gap = median_dist - my_dist
             if advance_gap > 6 and unit._max_range < 4 and not getattr(unit, '_rush', False):
-                # Unité très en avance: ralentir (vitesse min 1)
                 unit.vitesse = max(1, orig_speed - 1)
-            
+
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
             if target:
@@ -763,8 +1358,7 @@ class Battle:
                 moves[unit] = new_pos
                 reserved.update(bf._get_reserved_cells(unit, new_pos))
             elif unit.position:
-                # Bloqué: essayer un mouvement latéral SEULEMENT si pas d'ennemi au contact
-                # (sinon on risque de s'éloigner d'un ennemi qu'on devrait combattre)
+                # Bloqué: mouvement latéral seulement si aucun ennemi au contact
                 ux, uy = unit.position
                 enemy_in_range = any(
                     abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range
@@ -779,20 +1373,37 @@ class Battle:
                         reserved.update(bf._get_reserved_cells(unit, unit.position))
                 else:
                     reserved.update(bf._get_reserved_cells(unit, unit.position))
-            
-            # Restaurer la vitesse originale
+
             unit.vitesse = orig_speed
-        
-        for unit, new_pos in moves.items():
+
+        # === APPLICATION DU MOUVEMENT + RÉACTIONS ===
+        # Les déplacements sont échelonnés dans le temps et peuvent
+        # DÉCLENCHER des réactions adverses (coups d'opportunité sur rupture
+        # de contact, tirs d'arrêt quand on débouche dans une zone de feu).
+        movers = {}
+        ordered_moves = sorted(
+            moves.items(),
+            key=lambda kv: (-kv[0].vitesse, id(kv[0])))
+        n_mv = max(1, len(ordered_moves))
+        for i, (unit, new_pos) in enumerate(ordered_moves):
+            if not unit.is_alive:
+                continue
+            t01 = T_MOVE_START + (T_MOVE_END - T_MOVE_START) * (i / n_mv)
+            old_pos = unit.position
+            if not self._opportunity_attacks(unit, new_pos, t01 + 0.03):
+                continue  # abattu en se dérobant: il ne part pas
             bf.move_unit(unit, new_pos)
-        
+            movers[id(unit)] = (old_pos, new_pos)
+
+        self._reaction_fire(movers, T_MOVE_END - 0.06)
+
         # Phase de moral (pertes lourdes + auras + stress au combat)
         self.morale_phase()
-        
+
         # Phase Rempart: mettre à jour _on_wall dynamiquement
         for unit in alive:
             unit._on_wall = self.battlefield.is_rampart(*unit.position)
-        
+
         # Phase Phalange: +1 sauvegarde si adjacent à un allié phalange
         for unit in alive:
             unit._phalange_bonus_active = False
@@ -802,170 +1413,68 @@ class Battle:
             for ally in self.get_allies(unit):
                 if not ally.is_alive or not ally.phalange or ally == unit:
                     continue
-                dist = self.battlefield.manhattan_distance(unit.position, ally.position)
-                if dist <= 1:
+                if self.battlefield.manhattan_distance(unit.position, ally.position) <= 1:
                     if not unit._phalange_bonus_active:
                         unit._phalange_bonus_active = True
                         unit.sauvegarde = max(1, unit.sauvegarde - 1)
-                    break  # Un seul bonus suffit
-        
-        # Phase de Charge (avant les attaques normales)
-        # ORDRE D'INITIATIVE: mélangé chaque round pour qu'aucune armée
-        # n'ait l'avantage systématique d'agir en premier (sinon l'armée 1
-        # frappe toujours avant l'armée 2 et le biais se cumule).
-        act_order = list(alive)
-        random.shuffle(act_order)
-        self._charge_phase(act_order)
-        
-        # Sorts
-        for unit in act_order:
-            if unit.spells and unit.is_alive:
+                    break
+
+        # === Phase de Charge (avant l'échange général) ===
+        charge_pool = [u for u in self.get_all_alive() if u.is_alive]
+        random.shuffle(charge_pool)
+        self._charge_phase(charge_pool)
+
+        # ═══════════════════════════════════════════════════════════
+        #   ÉCHANGE GÉNÉRAL — résolu dans l'ORDRE D'INITIATIVE
+        # ═══════════════════════════════════════════════════════════
+        # Qui frappe en premier compte (un mort ne riposte pas) et chaque
+        # action est horodatée: à l'écran, les coups s'enchaînent au lieu
+        # de tomber tous ensemble.
+        self._alive_cache['dirty'] = True
+        act_order = self._initiative_order(
+            [u for u in self.get_all_alive() if u.is_alive])
+        n_act = max(1, len(act_order))
+        span = T_ACTION_END - T_ACTION_START
+
+        for idx, unit in enumerate(act_order):
+            if not unit.is_alive:
+                continue
+            t01 = T_ACTION_START + span * (idx / n_act)
+            self._set_action_time(t01)
+
+            # Sorts (le lanceur agit à son tour d'initiative)
+            if unit.spells:
                 self._apply_combat_events(unit.cast_random_spell(self))
-        
-        # Attaques
-        _units_attacked_gate = set()
-        
-        # Phase de siège: attaque des portes (AVANT attaques normales)
-        # Inutile si les portes sont OUVERTES: on passe au travers
-        if (self.battlefield.gate_hp and not self.battlefield.gates_open
-                and any(h > 0 for h in self.battlefield.gate_hp.values())):
-            gate_save = self.battlefield.gate_save
-            for unit in self.army1:
-                if not unit.is_alive or unit.fleeing:
-                    continue
-                ux, uy = unit.position
-                
-                best_gate = None
-                best_gate_dist = 999
-                for gpos, ghp in self.battlefield.gate_hp.items():
-                    if ghp <= 0:
-                        continue
-                    d = self.battlefield.manhattan_distance((ux, uy), gpos)
-                    if d < best_gate_dist:
-                        best_gate = gpos
-                        best_gate_dist = d
-                
-                if best_gate is None:
-                    continue
-                
-                gx, gy = best_gate
-                is_artillery = getattr(unit, 'is_artillery', False)
-                
-                total_dmg = 0
-                for arme in unit.armes:
-                    if arme.porte < 4 and best_gate_dist > 1:
-                        continue
-                    if arme.porte >= 4 and best_gate_dist > arme.porte:
-                        continue
-                    # Arbalétriers/archers mobiles: priorité aux ennemis VISIBLES.
-                    # Si les défenseurs sont cachés derrière la porte (pas de
-                    # ligne de vue), autant tirer sur la porte.
-                    if arme.porte >= 4 and not is_artillery:
-                        enemies_in_range = any(
-                            e.is_alive
-                            and self.battlefield.manhattan_distance((ux, uy), e.position) <= arme.porte
-                            and self.battlefield.has_line_of_fire(unit, e)
-                            for e in self.army2
-                        )
-                        if enemies_in_range:
-                            continue
-                    
-                    for _ in range(arme.nb_attaque):
-                        gate_save_mod = min(7, gate_save - arme.perforation)
-                        save_roll = random.randint(1, 6)
-                        if save_roll >= gate_save_mod:
-                            continue
-                        total_dmg += max(1, arme.lancer_degats())
-                
-                if total_dmg > 0:
-                    destroyed = self.battlefield.damage_gate(gx, gy, total_dmg)
-                    hp_left = self.battlefield.gate_hp.get((gx, gy), 0)
-                    unit.floating_texts.append(
-                        FloatingText(f"-{total_dmg} Porte ({hp_left})", (200, 150, 50), 40))
-                    _units_attacked_gate.add(id(unit))
-                    if destroyed:
-                        unit.floating_texts.append(
-                            FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
-                elif best_gate_dist <= 1 and unit._max_range < 4:
-                    unit.floating_texts.append(
-                        FloatingText("Porte résiste!", (150, 130, 80), 30))
-                    _units_attacked_gate.add(id(unit))
-        
-        # Attaques normales (unités qui n'ont pas tapé une porte)
-        from ai_commander import select_tactical_target
-        bf_atk = self.battlefield
-        for unit in act_order:
-            if unit.is_alive and id(unit) not in _units_attacked_gate:
-                target = select_tactical_target(unit, self, self.battlefield)
-                ux, uy = unit.position
-                is_ranged = unit._max_range >= 4
+                self._set_action_time(t01)
 
-                def _can_hit(e):
-                    """À portée ET (pour les tirs) avec ligne de vue."""
-                    if abs(ux - e.position[0]) + abs(uy - e.position[1]) > unit._max_range:
-                        return False
-                    if is_ranged and not bf_atk.has_line_of_fire(unit, e):
-                        return False
-                    return True
+            if unit._acted_this_round:
+                continue  # a déjà tiré en réaction pendant le mouvement
 
-                # Si la cible tactique est hors d'atteinte (portée ou LOS),
-                # chercher un autre ennemi atteignable
-                if target and not _can_hit(target):
-                    enemies = self.get_enemies(unit)
-                    in_range = [e for e in enemies if e.is_alive and _can_hit(e)]
-                    if in_range:
-                        if is_ranged:
-                            # Unités à distance: préférer les ennemis NON engagés en mêlée
-                            # avec un allié (tir plus utile sur ennemis libres)
-                            allies = self.get_allies(unit)
-                            not_engaged = [
-                                e for e in in_range
-                                if not any(
-                                    abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
-                                    for a in allies if a.is_alive and a._max_range < 4
-                                )
-                            ]
-                            pool = not_engaged if not_engaged else in_range
-                            target = min(pool, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                               abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                        else:
-                            target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                                   abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                    else:
-                        target = None  # Rien d'atteignable: ne pas tirer dans le vide
-                elif target is None:
-                    # Pas de cible tactique: chercher l'ennemi atteignable le plus proche
-                    enemies = self.get_enemies(unit)
-                    in_range = [e for e in enemies if e.is_alive and _can_hit(e)]
-                    if in_range:
-                        if is_ranged:
-                            allies = self.get_allies(unit)
-                            not_engaged = [
-                                e for e in in_range
-                                if not any(
-                                    abs(e.position[0] - a.position[0]) + abs(e.position[1] - a.position[1]) <= 1
-                                    for a in allies if a.is_alive and a._max_range < 4
-                                )
-                            ]
-                            pool = not_engaged if not_engaged else in_range
-                            target = min(pool, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
-                        else:
-                            target = min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+            # Siège: enfoncer la porte compte comme action du round
+            if self._attack_gate(unit):
+                unit._acted_this_round = True
+                continue
 
-                if target:
-                    self._apply_combat_events(unit.perform_attacks(target, self.battlefield))
-        
+            target = self._choose_attack_target(unit)
+            if target:
+                self._apply_combat_events(
+                    unit.perform_attacks(target, self.battlefield, self))
+                unit._acted_this_round = True
+                self._momentum_followup(unit, t01 + 0.05)
+
         # Reset phalange bonus en fin de round
         for unit in alive:
             if unit._phalange_bonus_active:
                 unit.sauvegarde += 1
                 unit._phalange_bonus_active = False
-        
+
         # Régénération + tick buffs
+        FX_CLOCK.at(int(self.fx_frames_per_round * 0.9))
         for unit in self.army1 + self.army2:
             unit.regenerate()
             unit.tick_armor_buff()
-        
+        FX_CLOCK.at(0)
+
         # Murs temporaires: décrémenter et retirer
         if hasattr(self.battlefield, '_temp_walls'):
             remaining = []
@@ -976,11 +1485,11 @@ class Battle:
                     wx, wy, dur = entry
                     original = 0
                 if dur <= 1:
-                    self.battlefield.grid[wx][wy] = original  # Restaurer la case originale
+                    self.battlefield.grid[wx][wy] = original
                 else:
                     remaining.append((wx, wy, dur - 1, original))
             self.battlefield._temp_walls = remaining
-        
+
         # Nettoyer les unités mortes de la grille (+ effet de mort en fondu)
         self._refresh_army_sets()
         cs_fx = self.cell_size
@@ -988,17 +1497,23 @@ class Battle:
         for pos, unit in list(self.battlefield.units.items()):
             if not unit.is_alive and unit.down_timer <= 0 and id(unit) not in dead_units_seen:
                 dead_units_seen.add(id(unit))
-                # Effet visuel: croix qui s'estompe + poussière à l'endroit du décès
+                # Voir tomber le camarade d'à côté est ce qui ébranle
+                # vraiment une troupe — bien plus qu'un tir lointain.
+                dx_d, dy_d = unit.position
+                for a_w in self.get_allies(unit):
+                    if (a_w.is_alive and a_w is not unit
+                            and abs(a_w.position[0] - dx_d) + abs(a_w.position[1] - dy_d) <= 2):
+                        a_w._witnessed_deaths += 1
                 w_u, h_u = self.battlefield.get_unit_dims(unit)
                 px_fx = unit.position[0] * cs_fx + (w_u * cs_fx) // 2
                 py_fx = unit.position[1] * cs_fx + (h_u * cs_fx) // 2
                 team_c = (60, 120, 220) if id(unit) in self._army1_ids else (220, 60, 60)
                 self.visual_effects.setdefault('death_fades', []).append(
-                    DeathFade((px_fx, py_fx), max(4, cs_fx // 2 - 3), team_c))
+                    DeathFade((px_fx, py_fx), max(4, cs_fx // 2 - 3), team_c,
+                              delay=getattr(unit, '_hit_flash_delay', 0)))
                 self.battlefield.remove_unit(unit)
-        
+
         # Fuyards qui atteignent le bord → quittent la map
-        bf = self.battlefield
         for army_list, fled_list in [(self.army1, self.army1_fled), (self.army2, self.army2_fled)]:
             for unit in army_list[:]:
                 if unit.fleeing and unit.is_alive:
@@ -1013,11 +1528,12 @@ class Battle:
                         bf.remove_unit(unit)
                         fled_list.append(unit)
                         army_list.remove(unit)
-        
+
         self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
         self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
         self.round += 1
         self._alive_cache['dirty'] = True
+        FX_CLOCK.at(0)
 
     def is_battle_over(self):
         """La bataille est finie quand une armée n'a plus personne sur la map."""
@@ -1053,7 +1569,7 @@ class Battle:
             for u in roster:
                 if u.fleeing and u.is_alive and not u.fled:
                     all_fled_off.append(u)
-            
+
             if is_winner:
                 # Gagnant: vivants = ceux qui ne fuient pas, fuyants = ceux qui fuient
                 alive = [u for u in all_alive if not u.fleeing]
@@ -1062,7 +1578,27 @@ class Battle:
                 # Perdant: tous les survivants sont des fuyants
                 alive = []
                 fled = all_alive + all_fled_off
-            
+
+            # ── Détail par contingent ──
+            # Une équipe peut aligner plusieurs armées alliées: on rend des
+            # comptes séparés, sinon impossible de savoir quel corps a tenu
+            # et lequel s'est effondré.
+            order, per = [], {}
+
+            def _bucket(unit_list, key_name):
+                for u in unit_list:
+                    k = u.contingent or name
+                    if k not in per:
+                        per[k] = {'name': k, 'total': 0, 'alive_count': 0,
+                                  'dead_count': 0, 'fled_count': 0}
+                        order.append(k)
+                    per[k][key_name] += 1
+                    per[k]['total'] += 1
+
+            _bucket(alive, 'alive_count')
+            _bucket(fled, 'fled_count')
+            _bucket(all_dead, 'dead_count')
+
             return {
                 'name': name,
                 'total': len(roster),
@@ -1072,8 +1608,9 @@ class Battle:
                 'dead_count': len(all_dead),
                 'fled': count_by_name(fled),
                 'fled_count': len(fled),
+                'contingents': [per[k] for k in order],
             }
-        
+
         w1 = (winner == "Armée 1")
         w2 = (winner == "Armée 2")
         
