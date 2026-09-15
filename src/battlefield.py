@@ -493,6 +493,13 @@ class Battlefield:
         # Exception: ordre "kite" (tireur qui recule en tirant)
         _order = getattr(unit, '_tactical_order', None)
         _is_kiting = _order is not None and _order.order_type == "kite"
+        # Repli urgent: tireur en ordre "support" loin de son poste (très
+        # exposé devant la ligne) → ne pas rester collé, rejoindre l'arrière
+        _is_repositioning = (
+            _order is not None and _order.order_type == "support"
+            and _order.target_pos is not None and unit._max_range >= 4
+            and abs(unit.position[0] - _order.target_pos[0])
+            + abs(unit.position[1] - _order.target_pos[1]) > 3)
         ux, uy = unit.position
         closest_dist = 999
         closest_enemy = None
@@ -502,7 +509,8 @@ class Battlefield:
                 closest_dist = d
                 closest_enemy = e
         
-        if closest_dist <= unit._max_range and not unit.fleeing and not _is_kiting:
+        if (closest_dist <= unit._max_range and not unit.fleeing
+                and not _is_kiting and not _is_repositioning):
             # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
             in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
             # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
@@ -525,6 +533,31 @@ class Battlefield:
         
         # Utiliser le ciblage tactique de l'IA si disponible
         from ai_commander import select_tactical_target, select_tactical_move_target
+        
+        # === Ordres SUPPORT/GUARD au poste: tenir la position ===
+        # (sans ce bloc, A* vers sa propre case + fallback_move feraient
+        # dériver l'unité vers l'ennemi)
+        if (_order is not None and _order.order_type in ("support", "guard")
+                and _order.target_pos is not None):
+            _post = _order.target_pos
+            _d_post = abs(ux - _post[0]) + abs(uy - _post[1])
+            if _d_post <= 1:
+                _guard_busy = False
+                if _order.order_type == "guard":
+                    _guard_busy = any(
+                        abs(e.position[0] - _post[0]) + abs(e.position[1] - _post[1]) <= 6
+                        for e in enemies)
+                if not _guard_busy:
+                    # Au poste: ne pas bouger; tirer si quelque chose est
+                    # atteignable ET visible, sinon pas de visée
+                    mr = unit._max_range
+                    in_r = [e for e in enemies
+                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr
+                            and (mr < 4 or self.has_line_of_fire(unit, e))]
+                    if in_r:
+                        return None, min(in_r, key=lambda e: (e.hp / max(1, e.max_hp),
+                                                              abs(ux - e.position[0]) + abs(uy - e.position[1])))
+                    return None, None
         
         target_unit, move_pos = select_tactical_move_target(unit, battle, self)
         

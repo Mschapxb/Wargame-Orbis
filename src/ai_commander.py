@@ -71,6 +71,11 @@ class CommanderAI:
         self.committed_sortie = False   # Une sortie engagée ne s'annule pas à la légère
         self.focus_target = None
         self.style = "balanced"
+        self.maneuver = None            # Manoeuvre en cours: "envelop", "concentrate", None
+        self._assignments = {}          # id(unit) -> ("envelop"|"guard", target_pos)
+        self._axis = (1.0, 0.0)         # Axe du front (vers l'ennemi)
+        self._melee_front = None        # Projection de la ligne de mêlée
+        self._mc = (0, 0)
         self._refresh_style()
 
     # ─── Analyse de situation ───
@@ -210,7 +215,33 @@ class CommanderAI:
         self._pick_focus_target(s, prio)
         ec = self._center(enemies)
         mc = self._center(alive)
-        lanes = self._assign_lanes(alive, enemies)
+
+        # ── Formation: axe du front + ligne de mêlée (discipline arrière) ──
+        self._compute_formation(alive, ec)
+
+        # ── CONCENTRATION: ennemi scindé en deux groupes → battre en
+        # détail le plus faible avec toute l'armée ──
+        target_group = None
+        if not (is_siege and is_defender):
+            target_group = self._enemy_clusters(enemies)
+        if target_group is not None:
+            self.maneuver = "concentrate"
+            enemies_f = target_group
+            prio = self._rank_targets(enemies_f)
+            self._pick_focus_target(s, prio)
+            ec = self._center(enemies_f)
+        else:
+            if self.maneuver == "concentrate":
+                self.maneuver = None
+            enemies_f = enemies
+
+        # ── Manoeuvres: gardes du corps + débordement par les ailes ──
+        if not (is_defender and is_siege):
+            self._plan_maneuvers(alive, enemies_f, ec, s)
+        else:
+            self._assignments = {}
+
+        lanes = self._assign_lanes(alive, enemies_f)
 
         rush = (self.posture == "rush" or
                 (is_defender and self.posture == "sortie"))
@@ -226,7 +257,7 @@ class CommanderAI:
                 else:
                     order = self._siege_defense(unit, enemies, prio, battle)
             else:
-                order = self._standard(unit, enemies, prio, ec, mc, battle, s)
+                order = self._standard(unit, enemies_f, prio, ec, mc, battle, s)
             order.lane = lane
             unit._tactical_order = order
 
@@ -249,6 +280,162 @@ class CommanderAI:
             return (0, 0)
         return (sum(u.position[0] for u in units) / len(units),
                 sum(u.position[1] for u in units) / len(units))
+
+    # ─── Formation: axe du front et ligne de mêlée ───
+
+    def _front_axis(self, mc, ec):
+        """Vecteur unitaire de mon centre vers le centre ennemi."""
+        dx = ec[0] - mc[0]
+        dy = ec[1] - mc[1]
+        n = (dx * dx + dy * dy) ** 0.5
+        if n < 1e-6:
+            return (1.0, 0.0) if self.is_army1 else (-1.0, 0.0)
+        return (dx / n, dy / n)
+
+    def _proj(self, pos):
+        """Projection sur l'axe du front (plus grand = plus proche de l'ennemi)."""
+        return ((pos[0] - self._mc[0]) * self._axis[0]
+                + (pos[1] - self._mc[1]) * self._axis[1])
+
+    def _compute_formation(self, alive, ec):
+        """Axe du front + ligne de mêlée (70e percentile des projections,
+        robuste aux isolés partis devant)."""
+        self._mc = self._center(alive)
+        self._axis = self._front_axis(self._mc, ec)
+        melee = [u for u in alive
+                 if u._max_range < 4 and not u.spells and u.vitesse > 0]
+        if not melee:
+            self._melee_front = None
+            self._melee_center = None
+            return
+        projs = sorted(self._proj(u.position) for u in melee)
+        idx = min(len(projs) - 1, int(len(projs) * 0.7))
+        self._melee_front = projs[idx]
+        self._melee_center = self._center(melee)
+
+    def _clamp_pos(self, x, y):
+        bf = self.battlefield
+        return (max(1, min(bf.width - 2, int(round(x)))),
+                max(1, min(bf.height - 2, int(round(y)))))
+
+    def _rear_fallback_pos(self, unit):
+        """Si le tireur est devant la ligne de mêlée (exposé), retourne sa
+        position de repli derrière la ligne. Sinon None.
+
+        Discipline de ligne: les unités fragiles restent TOUJOURS derrière
+        l'écran de mêlée."""
+        if self._melee_front is None:
+            return None
+        ux, uy = unit.position
+        # Sur un rempart, la position est déjà protégée
+        if self.battlefield.is_rampart(ux, uy):
+            return None
+        proj_u = self._proj((ux, uy))
+        safety = self._melee_front - 2  # Rester au moins 2 derrière la ligne
+        if proj_u <= safety + 0.5:
+            return None
+        delta = proj_u - (self._melee_front - 4)
+        ax, ay = self._axis
+        return self._clamp_pos(ux - ax * delta, uy - ay * delta)
+
+    def _support_advance_pos(self, unit):
+        """Avance par bonds: progresser vers l'ennemi SANS jamais dépasser
+        la ligne de sécurité — la mêlée ouvre la voie, les tireurs suivent."""
+        if self._melee_front is None:
+            return None
+        ux, uy = unit.position
+        proj_u = self._proj((ux, uy))
+        new_proj = min(self._melee_front - 3, proj_u + unit.vitesse)
+        if new_proj - proj_u < 1.0:
+            return (ux, uy)  # Déjà collé à la ligne: tenir le poste
+        ax, ay = self._axis
+        delta = new_proj - proj_u
+        return self._clamp_pos(ux + ax * delta, uy + ay * delta)
+
+    # ─── Manoeuvres: concentration, débordement, gardes du corps ───
+
+    def _enemy_clusters(self, enemies):
+        """Deux groupes ennemis séparés latéralement ? Retourne le groupe
+        CIBLE (le plus faible) ou None. Concentrer toute l'armée sur un
+        groupe = le battre en détail avant que l'autre n'arrive."""
+        if len(enemies) < 6:
+            return None
+        es = sorted(enemies, key=lambda e: e.position[1])
+        best_gap, split = 0, None
+        for i in range(1, len(es)):
+            gap = es[i].position[1] - es[i - 1].position[1]
+            if gap > best_gap:
+                best_gap, split = gap, i
+        if best_gap < 12 or split is None:
+            return None
+        g1, g2 = es[:split], es[split:]
+        if min(len(g1), len(g2)) < 2:
+            return None
+        p1 = sum(unit_melee_power(e) + unit_ranged_power(e) for e in g1)
+        p2 = sum(unit_melee_power(e) + unit_ranged_power(e) for e in g2)
+        return g1 if p1 <= p2 else g2
+
+    def _plan_maneuvers(self, alive, enemies, ec, s):
+        """Affectations spéciales du round: gardes du corps des tireurs et
+        débordement par les ailes."""
+        self._assignments = {}
+        bf = self.battlefield
+        if bf.siege_data and not bf.gates_open:
+            if self.maneuver == "envelop":
+                self.maneuver = None
+            return  # Pas de manoeuvres d'ailes contre/derrière des murs
+
+        melee = [u for u in alive
+                 if u._max_range < 4 and not u.spells
+                 and u.encouragement_range == 0 and u.vitesse > 0]
+        en_melee_n = sum(1 for e in enemies if e._max_range < 4 and not e.spells)
+
+        # ── GARDES DU CORPS: unités rapides ennemies (cavalerie, même
+        # montée en archers) menaçant nos tireurs ──
+        en_fast = [e for e in enemies if e.vitesse >= 6]
+        my_shooters = [u for u in alive
+                       if (u._max_range >= 4 or u.spells)
+                       and not bf.is_rampart(*u.position)]
+        guards_used = set()
+        if (en_fast and len(my_shooters) >= 2 and len(melee) >= 5
+                and self.posture != "rush"):
+            rc = self._center(my_shooters)
+            tc = self._center(en_fast)
+            dx, dy = tc[0] - rc[0], tc[1] - rc[1]
+            n = max(1e-6, (dx * dx + dy * dy) ** 0.5)
+            base = (rc[0] + dx / n * 2.5, rc[1] + dy / n * 2.5)
+            guards = sorted(melee, key=lambda u: abs(u.position[0] - rc[0])
+                            + abs(u.position[1] - rc[1]))[:2]
+            for gi, g in enumerate(guards):
+                off = -1 if gi == 0 else 1
+                post = self._clamp_pos(base[0] - dy / n * off * 2,
+                                       base[1] + dx / n * off * 2)
+                self._assignments[id(g)] = ("guard", post)
+                guards_used.add(id(g))
+
+        # ── DÉBORDEMENT (envelopment): nette supériorité de mêlée ──
+        # (la concentration reste la manoeuvre prioritaire si active)
+        free_melee = [u for u in melee if id(u) not in guards_used]
+        if (self.posture == "balanced" and self.maneuver != "concentrate"
+                and len(free_melee) >= 6
+                and en_melee_n > 0 and len(free_melee) >= en_melee_n * 1.4
+                and len(free_melee) - max(2, len(free_melee) // 4) >= 4):
+            n_flank = max(2, len(free_melee) // 4)
+            flankers = sorted(free_melee, key=lambda u: -u.vitesse)[:n_flank]
+            ax, ay = self._axis
+            px, py = -ay, ax  # Perpendiculaire au front
+            wing = max(8, bf.height // 4)
+            for u in flankers:
+                # Chaque flanqueur prend l'aile de son côté actuel
+                side_val = ((u.position[0] - ec[0]) * px
+                            + (u.position[1] - ec[1]) * py)
+                sgn = 1 if side_val >= 0 else -1
+                tgt = self._clamp_pos(ec[0] + px * sgn * wing + ax * 2,
+                                      ec[1] + py * sgn * wing + ay * 2)
+                self._assignments[id(u)] = ("envelop", tgt)
+            self.maneuver = "envelop"
+        elif self.maneuver == "envelop":
+            self.maneuver = None
 
     def _rank_targets(self, enemies):
         scored = []
@@ -332,13 +519,35 @@ class CommanderAI:
     def _standard(self, unit, enemies, prio, ec, mc, battle, s):
         bf = self.battlefield
 
-        # Tireurs/mages: d'abord vérifier la menace de contact → kiting
+        # ── Affectation de manoeuvre (débordement / garde du corps) ──
+        assign = self._assignments.get(id(unit))
+        if assign is not None:
+            kind, pos = assign
+            if kind == "guard":
+                return TacticalOrder("guard", target_pos=pos, priority=4)
+            if kind == "envelop":
+                ux, uy = unit.position
+                # Arrivé sur l'aile → tomber sur le flanc/dos ennemi
+                if abs(ux - pos[0]) + abs(uy - pos[1]) <= 4:
+                    shooters = [e for e in enemies if e._max_range >= 4 or e.spells]
+                    pool = shooters if shooters else enemies
+                    t = min(pool, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+                    return TacticalOrder("attack", target_unit=t, priority=5)
+                return TacticalOrder("flank", target_pos=pos, priority=4)
+
+        # ── Tireurs/mages: unités fragiles → discipline stricte ──
         if unit._max_range >= 4 or unit.spells:
+            # 1. Menace de contact imminente → kiting (reculer en tirant)
             threat = self._kite_threat(unit, enemies)
             if threat is not None:
                 return TacticalOrder("kite",
                                      target_pos=self._kite_destination(unit, threat),
                                      priority=5)
+            # 2. Devant la ligne de mêlée → REPLI derrière l'écran.
+            #    Les fragiles ne doublent jamais l'infanterie.
+            fb = self._rear_fallback_pos(unit)
+            if fb is not None:
+                return TacticalOrder("support", target_pos=fb, priority=4)
 
         if unit.spells:
             return self._mage_order(unit, enemies, prio)
@@ -377,6 +586,10 @@ class CommanderAI:
             d = abs(ux - e.position[0]) + abs(uy - e.position[1])
             if d <= max_spell_range:
                 return TacticalOrder("attack", target_unit=e, priority=5)
+        # Rien à portée de sort: suivre la ligne par bonds, pas en solo
+        adv = self._support_advance_pos(unit)
+        if adv is not None:
+            return TacticalOrder("support", target_pos=adv, priority=2)
         if prio:
             return TacticalOrder("attack", target_unit=prio[0][1], priority=2)
         closest = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
@@ -417,6 +630,12 @@ class CommanderAI:
         # dans la zone de feu
         if self.posture == "hold_line":
             return TacticalOrder("hold", target_pos=unit.position, priority=3)
+        # Rien à portée: avancer PAR BONDS en restant derrière la ligne de
+        # mêlée (au lieu de marcher seul vers l'ennemi)
+        adv = self._support_advance_pos(unit)
+        if adv is not None:
+            return TacticalOrder("support", target_pos=adv, priority=2)
+        # Pas de ligne de mêlée (armée de tireurs purs): comportement libre
         c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=1)
 
@@ -585,7 +804,7 @@ def select_tactical_target(unit, battle, battlefield):
         if in_r:
             return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), id(ed[0])))[0]
 
-    if order and order.order_type in ("flank", "hold", "protect", "kite"):
+    if order and order.order_type in ("flank", "hold", "protect", "kite", "support", "guard"):
         in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
         in_r = [(e, d) for e, d in in_r if _reachable(e, d)]
         if in_r:
@@ -614,6 +833,19 @@ def select_tactical_move_target(unit, battle, battlefield):
     if order.order_type == "kite" and order.target_pos:
         # Reculer vers la position de repli (le tir reste géré séparément)
         return None, order.target_pos
+
+    if order.order_type in ("support", "guard") and order.target_pos:
+        # Garde du corps: intercepter tout intrus s'approchant du poste
+        if order.order_type == "guard":
+            post = order.target_pos
+            intruders = [e for e in enemies
+                         if abs(e.position[0] - post[0]) + abs(e.position[1] - post[1]) <= 6]
+            if intruders:
+                return min(intruders, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1])), None
+        # Rejoindre le poste; une fois dessus, compute_move tient la position
+        if abs(ux - order.target_pos[0]) + abs(uy - order.target_pos[1]) > 1:
+            return None, order.target_pos
+        return None, None  # Au poste: ne pas bouger (géré par compute_move)
 
     if order.order_type == "flank" and order.target_pos:
         tx, ty = order.target_pos

@@ -521,6 +521,8 @@ def run_visual(battle, cell_size):
     prev_intact_gates = sum(1 for h in battle.battlefield.gate_hp.values() if h > 0)
     prev_postures = [getattr(battle.commander1, 'posture', 'balanced'),
                      getattr(battle.commander2, 'posture', 'balanced')]
+    prev_maneuvers = [getattr(battle.commander1, 'maneuver', None),
+                      getattr(battle.commander2, 'maneuver', None)]
     
     # Animation: progression d'interpolation du déplacement
     move_anim_progress = 1.0  # 0.0 = début mouvement, 1.0 = arrivé
@@ -595,6 +597,8 @@ def run_visual(battle, cell_size):
                     prev_intact_gates = sum(1 for h in battle.battlefield.gate_hp.values() if h > 0)
                     prev_postures = [getattr(battle.commander1, 'posture', 'balanced'),
                                      getattr(battle.commander2, 'posture', 'balanced')]
+                    prev_maneuvers = [getattr(battle.commander1, 'maneuver', None),
+                                      getattr(battle.commander2, 'maneuver', None)]
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
                 elif event.key == pygame.K_b:
@@ -670,6 +674,14 @@ def run_visual(battle, cell_size):
                             event_banners.append([f"{side} tient la ligne de tir", (90, 180, 255), 120])
                         elif p == "recall":
                             event_banners.append([f"{side} : repli derrière les murs", (150, 200, 255), 150])
+                    m = getattr(cmd, 'maneuver', None)
+                    if m != prev_maneuvers[ci]:
+                        prev_maneuvers[ci] = m
+                        side = f"Armée {ci + 1}"
+                        if m == "envelop":
+                            event_banners.append([f"{side} déborde sur les ailes !", (255, 190, 80), 160])
+                        elif m == "concentrate":
+                            event_banners.append([f"{side} concentre ses forces !", (170, 230, 120), 160])
                 
                 result = battle.is_battle_over()
                 if result:

@@ -156,10 +156,18 @@ class Battle:
         army1_roles = {'front': [], 'mid': [], 'back': []}
         army2_roles = {'front': [], 'mid': [], 'back': []}
         
+        def _effective_role(u):
+            """Les unités fragiles (tireurs, mages) sont TOUJOURS placées
+            à l'arrière, protégées par la mêlée — quel que soit leur rôle
+            déclaré dans la base."""
+            if u._max_range >= 4 or u.spells:
+                return 'back'
+            return u.role
+        
         for u in self.army1:
-            army1_roles[u.role].append(u)
+            army1_roles[_effective_role(u)].append(u)
         for u in self.army2:
-            army2_roles[u.role].append(u)
+            army2_roles[_effective_role(u)].append(u)
         
         import random as _rng
         for roles in (army1_roles, army2_roles):
