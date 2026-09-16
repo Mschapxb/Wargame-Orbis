@@ -11,6 +11,20 @@ import itertools
 _UID = itertools.count(1)
 
 
+def reassign_uid(u):
+    """Attribue un nouvel uid séquentiel à `u` et le renvoie.
+
+    Battle.__init__ deep-copie army1 et army2: un appel `Battle(a, a, …)`
+    donnerait sinon aux deux camps des unités aux uids identiques (copiés
+    tels quels), et un tri comme `(-score, uid, u)` pourrait alors comparer
+    deux Unit directement en cas d'égalité totale de score ET d'uid, ce que
+    Unit ne supporte pas (TypeError). Appelé après les deepcopy, sur army1
+    puis army2, pour garantir des uids uniques sans changer l'ordre relatif
+    (army1 garde des uids plus petits que army2)."""
+    u.uid = next(_UID)
+    return u.uid
+
+
 class Unit:
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
                  armes=None, spells=None, special=None, role="front",

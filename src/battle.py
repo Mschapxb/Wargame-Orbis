@@ -6,6 +6,7 @@ import tactics
 import terrain as tr
 
 from battlefield import Battlefield
+from unit import reassign_uid
 from effects import (FloatingText, AttackLine, Projectile,
                      AoeExplosion, HealBeam, ArmorShimmer, WallEffect,
                      ImpactBurst, ShockWave, SlashEffect, ThrustEffect,
@@ -51,6 +52,13 @@ class Battle:
                  obstacle_count=8, map_name="Prairie"):
         self.army1 = copy.deepcopy(army1)
         self.army2 = copy.deepcopy(army2)
+        # Des uids frais après le deepcopy: `Battle(a, a, …)` copierait sinon
+        # les mêmes uids des deux côtés (voir reassign_uid). army1 garde des
+        # uids plus petits que army2, donc l'ordre relatif ne change pas.
+        for u in self.army1:
+            reassign_uid(u)
+        for u in self.army2:
+            reassign_uid(u)
         self.map_name = map_name
         
         # Générer la map

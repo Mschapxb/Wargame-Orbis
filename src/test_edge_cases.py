@@ -50,6 +50,22 @@ run_case("armée 1 vide", [], sk({"Infanterie régulière": 3}))
 run_case("les deux vides", [], [])
 run_case("1 contre 1", sk({"Infanterie régulière": 1}), sk({"Infanterie régulière": 1}))
 
+# Battle(a, a, ...) deep-copie la MÊME armée des deux côtés: sans réattribution
+# d'uid après les deepcopy, les deux camps auraient des unités aux uids
+# identiques et un tri comme (-score, uid, u) pourrait comparer deux Unit
+# directement en cas d'égalité totale, ce qui lève un TypeError.
+_ident_army = sk({"Infanterie régulière": 5, "Arbaletrier régulier": 3})
+try:
+    _b = Battle(_ident_army, _ident_army, 40, 30, 8, map_name="Prairie")
+    _uids = [u.uid for u in _b.army1 + _b.army2]
+    assert len(_uids) == len(set(_uids)), f"uids dupliqués: {_uids}"
+    print(f"  OK   {'Battle(a, a, ...) -> uids tous distincts':42s}")
+except Exception as _exc:
+    FAILS.append(("Battle(a, a, ...) -> uids tous distincts", traceback.format_exc()))
+    print(f"  ECHEC {'Battle(a, a, ...) -> uids tous distincts':42s} -> {type(_exc).__name__}: {_exc}")
+
+run_case("armées identiques (Battle(a, a, ...))", _ident_army, _ident_army)
+
 sans_arme = Unit("Manchot", pv=3, vitesse=3, morale=2, sauvegarde=5, color=(1, 2, 3))
 sans_arme.token_name = ""
 run_case("unité sans arme", [sans_arme], sk({"Infanterie régulière": 2}))
