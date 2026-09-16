@@ -270,9 +270,12 @@ class Battlefield:
         gate_hp = self.gate_hp
         gates_open = self.gates_open
         reserved = reserved_positions
+        # Lu une seule fois ici, valable pour tout cet appel (le terrain ne
+        # change jamais en cours de bataille). Pas de cache d'instance: si
+        # bf.terrain est réassigné entre deux appels d'a_star_path, le
+        # prochain appel relit la valeur à jour dès cette ligne.
         terr = self.terrain
-        _move = tr.MOVE
-        _elev = tr.ELEVATED
+        _move_elev = tr.MOVE_ELEV
         _uphill = tr.UPHILL_FACTOR
         
         open_set = []
@@ -317,10 +320,17 @@ class Battlefield:
                     hc = hcy
                 if hc < best_h:
                     best_h, best_node = hc, current
-            
+
+            # Élévation de la case courante: invariante pour les 8 voisins.
+            # Calculée une fois par nœud (pas huit fois, une par voisin),
+            # depuis `terr` local ci-dessus — donc toujours cohérente avec
+            # les valeurs lues pour chaque voisin dans la même boucle.
+            if terr is not None:
+                cur_elevated = _move_elev[terr[cx][cy]][1]
+
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
-                
+
                 # is_valid inliné
                 if nx < 0 or nx >= width or ny < 0 or ny >= height:
                     continue
@@ -329,18 +339,17 @@ class Battlefield:
                     continue
                 if cell == 3 and not gates_open and gate_hp.get((nx, ny), 0) > 0:
                     continue
-                
+
                 neighbor = (nx, ny)
                 if neighbor in reserved:
                     continue
-                
+
                 base_cost = _DIAG_COST if (dx and dy) else 1.0
                 if terr is not None:
-                    tn = terr[nx][ny]
-                    mc = _move[tn]
+                    mc, n_elevated = _move_elev[terr[nx][ny]]
                     if mc is None:
                         continue  # rivière
-                    if tn in _elev and terr[cx][cy] not in _elev:
+                    if n_elevated and not cur_elevated:
                         mc *= _uphill
                     base_cost *= mc
 

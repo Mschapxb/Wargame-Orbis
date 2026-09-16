@@ -28,6 +28,12 @@ TERRAINS = {
 # Accès rapides pour les boucles chaudes (A*)
 MOVE = {name: t['move'] for name, t in TERRAINS.items()}
 ELEVATED = frozenset(name for name, t in TERRAINS.items() if t['elevated'])
+# (coût, élevé?) en un seul lookup au lieu de deux (MOVE[name] puis
+# name in ELEVATED) dans la boucle A* — dérivé de TERRAINS, qui ne
+# change jamais en cours de partie: aucun risque de péremption, ce
+# n'est pas un cache par bataille, juste une table de règles statique
+# comme MOVE/ELEVATED ci-dessus.
+MOVE_ELEV = {name: (t['move'], t['elevated']) for name, t in TERRAINS.items()}
 
 UPHILL_FACTOR = 1.5     # monter sur une colline coûte plus cher
 WOODS_BLOCKING = 3      # nombre de cases de bois qui masquent un tir
@@ -111,12 +117,23 @@ def can_charge(bf, frm, to):
 
 
 def range_bonus(bf, shooter, target):
-    """+1 de portée pour un tireur en hauteur visant une cible en contrebas."""
-    if getattr(bf, 'terrain', None) is None or shooter._max_range < 4:
+    """+1 de portée pour un tireur en hauteur visant une cible en contrebas.
+
+    Appelé très souvent (par ennemi, par unité, par round): le corps est
+    inliné (au lieu de deux appels à is_elevated -> at -> getattr) pour
+    rester bon marché, sans introduire de cache — `terr` est relu à
+    chaque appel, donc toujours à jour même si bf.terrain est réassigné
+    entre deux appels."""
+    if shooter._max_range < 4:
         return 0
-    if is_elevated(bf, *shooter.position) and not is_elevated(bf, *target.position):
-        return 1
-    return 0
+    terr = getattr(bf, 'terrain', None)
+    if terr is None:
+        return 0
+    sx, sy = shooter.position
+    if terr[sx][sy] not in ELEVATED:
+        return 0
+    tx, ty = target.position
+    return 0 if terr[tx][ty] in ELEVATED else 1
 
 
 def effective_range(bf, shooter, target):
