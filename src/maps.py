@@ -311,8 +311,9 @@ def generate_forest(width, height):
              for y in range(height)] for x in range(width)]
     for x in range(width):
         for y in range(height):
-            if grid[x][y] == 1 and not core[x][y]:
-                grid[x][y] = 0
+            if grid[x][y] == 1:
+                if not core[x][y]:
+                    grid[x][y] = 0
                 terr[x][y] = tr.WOOD
     # Lisière clairsemée
     for x in range(width // 2):

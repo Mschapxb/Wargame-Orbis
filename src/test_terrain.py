@@ -428,6 +428,29 @@ def test_map_forest():
     assert data.get('deploy_gap'), "deploy_gap doit être conservé"
 
 
+@test
+def test_forest_grove_core_is_wood():
+    # Le cœur d'un bosquet (case obstacle dont les 8 voisines sont aussi
+    # des obstacles) reste impassable, mais doit être du bois pour bloquer
+    # la ligne de vue comme le sous-bois qui l'entoure.
+    random.seed(3)
+    w, h = 178, 64
+    grid, data = maps.generate_map("Forêt", w, h)
+    terr = data['terrain']
+    found_core = False
+    for x in range(w):
+        for y in range(h):
+            if grid[x][y] != 1:
+                continue
+            is_core = all(
+                not (0 <= x + dx < w and 0 <= y + dy < h) or grid[x + dx][y + dy] == 1
+                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+            if is_core:
+                found_core = True
+                assert terr[x][y] == tr.WOOD, (x, y, terr[x][y])
+    assert found_core, "aucune case de cœur de bosquet trouvée pour cette graine"
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":
