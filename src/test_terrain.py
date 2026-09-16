@@ -451,6 +451,16 @@ def test_forest_grove_core_is_wood():
     assert found_core, "aucune case de cœur de bosquet trouvée pour cette graine"
 
 
+@test
+def test_map_village():
+    map_checks("Village")
+    deploy_check("Village")
+    random.seed(4)
+    grid, data = maps.generate_map("Village", 178, 64)
+    names = {n for col in data['terrain'] for n in col}
+    assert {tr.HILL, tr.WOOD, tr.MARSH} <= names, names
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

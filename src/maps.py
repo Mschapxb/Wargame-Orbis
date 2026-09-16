@@ -470,7 +470,27 @@ def generate_village(width, height):
             if try_house(int(cx + math.cos(a) * d), int(cy + math.sin(a) * d), w, h, R + 3):
                 break
 
-    return grid, {'deploy_gap': R + 5}
+    # ── Terrain ──
+    terr = tr.make_grid(width, height)
+    mx = (width - 1) / 2
+    # Le bourg est sur une butte: ses rues dominent les champs
+    _paint_disc(terr, mx, cy, R + 1.0, tr.HILL, width, height)
+    # Jardins et vergers entre les maisons (jamais dans une rue, ni la
+    # nôtre ni celle d'en face une fois le terrain mis en miroir)
+    for x in range(width // 2):
+        for y in range(1, height - 1):
+            d = math.hypot(x - mx, y - cy)
+            if not (R * 0.55 <= d <= R - 0.5) or grid[x][y] != 0:
+                continue
+            if in_street(x, y) or in_street(width - 1 - x, y):
+                continue
+            if random.random() < 0.30:
+                terr[x][y] = tr.WOOD
+    # Mare boueuse au bord de la place, hors de la grand-rue
+    _paint_disc(terr, mx - (plaza + 2.5), cy + plaza + 1.5, 1.6, tr.MARSH, width, height)
+    _mirror_terrain(terr, width, height)
+
+    return grid, {'deploy_gap': R + 5, 'terrain': terr}
 
 
 def generate_siege(width, height):
