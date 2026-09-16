@@ -728,6 +728,13 @@ def generate_defile(width, height):
 # plein milieu du champ où se joue le combat, sinon ils masquent les
 # unités.
 
+# Sous-bois: c'est là, et plus au hasard, que poussent les arbres
+_WOOD_DECOR = {
+    'density': 0.45,
+    'big': [("arbre_pin", 3), ("arbre_rond", 4), ("buisson", 3)],
+}
+_NO_DECOR_TERRAIN = {tr.RIVER, tr.FORD, tr.BRIDGE}
+
 # (nature, poids) par carte — "petit" = herbes, fleurs, cailloux…
 _DECOR_TABLES = {
     "Prairie": {
@@ -772,7 +779,7 @@ def _weighted_pick(rng, table):
     return table[-1][0]
 
 
-def generate_decor(map_name, grid, width, height):
+def generate_decor(map_name, grid, width, height, terrain=None):
     """Sème le décor sur les cases libres. Retourne [(x, y, kind, seed)].
 
     Utilise sa propre RNG (une seule ponction sur le flux global) pour ne
@@ -791,6 +798,19 @@ def generate_decor(map_name, grid, width, height):
         for y in range(1, height - 1):
             if grid[x][y] != 0:
                 continue
+            tname = terrain[x][y] if terrain is not None else tr.PLAIN
+            if tname in _NO_DECOR_TERRAIN:
+                continue
+            if tname == tr.WOOD:
+                if rng.random() > _WOOD_DECOR['density']:
+                    continue
+                if any((x + dx, y + dy) in occupied
+                       for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                    continue
+                occupied.add((x, y))
+                props.append((x, y, _weighted_pick(rng, _WOOD_DECOR['big']),
+                              rng.randrange(1 << 16)))
+                continue
             if rng.random() > density:
                 continue
             # Un gros objet n'a droit de cité que sur les marges ou en
@@ -802,6 +822,8 @@ def generate_decor(map_name, grid, width, height):
             on_margin = y < margin_top or y > margin_bottom
             if (on_margin or near_cover) and rng.random() < 0.55:
                 kind = _weighted_pick(rng, table['big'])
+                if terrain is not None and kind in ("arbre_pin", "arbre_rond"):
+                    kind = "buisson"
                 # Les gros objets ne se collent pas les uns aux autres
                 if any((x + dx, y + dy) in occupied
                        for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
@@ -862,6 +884,7 @@ def generate_map(map_name, width, height):
     gen = generators.get(map_name, generate_prairie)
     grid, map_data = gen(width, height)
     map_data = dict(map_data or {})
-    map_data['decor'] = generate_decor(map_name, grid, width, height)
+    map_data['decor'] = generate_decor(map_name, grid, width, height,
+                                       map_data.get('terrain'))
     map_data['ground_patches'] = generate_ground_patches(map_name, width, height)
     return grid, map_data

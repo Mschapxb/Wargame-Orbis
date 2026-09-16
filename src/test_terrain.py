@@ -470,6 +470,22 @@ def test_map_defile():
     grid, data = maps.generate_map("Défilé", 178, 64)
     names = {n for col in data['terrain'] for n in col}
     assert {tr.HILL, tr.MARSH, tr.RIVER, tr.BRIDGE, tr.FORD} <= names, names
+@test
+def test_decor_follows_terrain():
+    random.seed(6)
+    grid, data = maps.generate_map("Forêt", 178, 64)
+    terr = data['terrain']
+    wet = {tr.RIVER, tr.FORD, tr.BRIDGE}
+    trees = {"arbre_pin", "arbre_rond"}
+    on_wood = off_wood = 0
+    for x, y, kind, _ in data['decor']:
+        assert terr[x][y] not in wet, (x, y, kind, terr[x][y])
+        if kind in trees:
+            if terr[x][y] == tr.WOOD:
+                on_wood += 1
+            else:
+                off_wood += 1
+    assert on_wood > off_wood, (on_wood, off_wood)
 
 
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
