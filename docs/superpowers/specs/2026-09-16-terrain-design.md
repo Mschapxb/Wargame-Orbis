@@ -228,6 +228,21 @@ surplus éventuel va sur les remparts du donjon.
 
 ---
 
+## Prérequis découverts pendant la planification
+
+- **Déterminisme.** Une même graine ne rejoue pas la même bataille: plusieurs tris
+  d'unités utilisent `id()` comme clé (adresse mémoire, différente à chaque
+  exécution). Mesuré: Prairie graine 3 → « Armée 2 en 13 rounds » puis
+  « Armée 1 en 12 rounds » sur deux lancements. Correctif préalable: un
+  identifiant stable `Unit.uid` remplace `id()` dans les clés de tri. Les
+  critères « mêmes résultats sur graines fixes » ci-dessous supposent ce
+  correctif et se comparent à une référence capturée **après** lui.
+- **Estimation IA du rempart inversée** (`tactics.expected_damage`:
+  `extra_perf = -2` *dégrade* la sauvegarde estimée du défenseur alors que
+  le moteur l'*améliore*). Corriger changerait le comportement du Siège, ce
+  qui contredit la non-régression de 1a: le défaut est consigné et traité au
+  chantier 3 (IA). 1a n'y touche pas.
+
 ## Tests et validation
 
 Nouveau fichier `src/test_terrain.py` (même style exécutable que
