@@ -9,6 +9,7 @@ cette cible CE round, quelle case est dangereuse, où sera l'ennemi au
 prochain round.
 """
 import math
+import terrain
 
 # ── Dés: probabilités de base (tout se joue au d6) ──
 
@@ -56,10 +57,17 @@ def expected_damage(attacker, target, dist=None, battlefield=None):
     if battlefield is not None and battlefield.is_rampart(*target.position):
         extra_perf = -2  # Le rempart améliore la sauvegarde du défenseur
     for arme in attacker.armes:
-        if dist is not None and dist > arme.porte:
-            continue
-        total += weapon_expected_damage(arme, attacker, target, extra_perf,
-                                        anti_mod, anti_mod)
+        ranged = arme.porte >= 4
+        if dist is not None:
+            reach = (terrain.weapon_reach(battlefield, arme, attacker, target)
+                     if battlefield is not None else arme.porte)
+            if dist > reach:
+                continue
+        tm = (terrain.combat_mods(battlefield, attacker, target, ranged)
+              if battlefield is not None else {'toucher': 0, 'save': 0})
+        # save +1 (seuil) ⇔ perforation supplémentaire -1 dans cette formule
+        total += weapon_expected_damage(arme, attacker, target, extra_perf - tm['save'],
+                                        anti_mod + tm['toucher'], anti_mod)
     for sp in attacker.spells:
         if sp.spell_type in ("fireball", "projectile"):
             if dist is not None and dist > sp.porte:

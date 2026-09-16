@@ -3,6 +3,7 @@ import math
 import random
 
 import tactics
+import terrain as tr
 
 from battlefield import Battlefield
 from effects import (FloatingText, AttackLine, Projectile,
@@ -994,13 +995,13 @@ class Battle:
             if id(shooter) in movers:
                 continue  # il s'est déplacé: pas de tir d'arrêt
             sx, sy = shooter.position
-            mr = shooter._max_range
             best, best_d = None, 999
             for e in self.get_enemies(shooter):
                 info = movers.get(id(e))
                 if info is None or not e.is_alive:
                     continue
                 old_pos, new_pos = info
+                mr = tr.effective_range(bf, shooter, e)
                 d_old = abs(sx - old_pos[0]) + abs(sy - old_pos[1])
                 d_new = abs(sx - new_pos[0]) + abs(sy - new_pos[1])
                 if d_old <= mr or d_new > mr:
@@ -1099,6 +1100,10 @@ class Battle:
             if not unit.is_alive or unit.fleeing:
                 continue
 
+            # Pas d'élan depuis un bois, un gué ou un marais
+            if not tr.charge_ok(self.battlefield, *unit.position):
+                continue
+
             # BUDGET de mouvement: la charge porte l'allonge du round à
             # 1,5× la vitesse — elle ne s'AJOUTE pas au déplacement déjà
             # effectué. Sans ce décompte, un cavalier avançait de 8 cases
@@ -1146,7 +1151,8 @@ class Battle:
                     if dx == 0 and dy == 0:
                         continue
                     nx, ny = tx + dx, ty + dy
-                    if self.battlefield._can_move_to(unit, (nx, ny), set()):
+                    if (self.battlefield._can_move_to(unit, (nx, ny), set())
+                            and tr.charge_ok(self.battlefield, nx, ny)):
                         d = self.battlefield.manhattan_distance(unit.position, (nx, ny))
                         if d < charge_dist:
                             charge_pos = (nx, ny)
@@ -1156,12 +1162,15 @@ class Battle:
                 continue
 
             path = self.battlefield.a_star_path(unit.position, charge_pos, unit, self)
-            if not path or len(path) > budget:
+            if not path:
+                continue
+            cost = tr.path_cost(self.battlefield, unit.position, path)
+            if cost > budget:
                 continue
 
             start_pos = unit.position
             self.battlefield.move_unit(unit, charge_pos)
-            unit._cells_moved += len(path)
+            unit._cells_moved += cost
             unit.has_charged = True
             unit._charged_this_round = True
 
@@ -1279,7 +1288,7 @@ class Battle:
         is_ranged = mr >= 4
 
         def can_hit(e):
-            if abs(ux - e.position[0]) + abs(uy - e.position[1]) > mr:
+            if abs(ux - e.position[0]) + abs(uy - e.position[1]) > tr.effective_range(bf, unit, e):
                 return False
             if is_ranged and not bf.has_line_of_fire(unit, e):
                 return False
@@ -1494,8 +1503,7 @@ class Battle:
             # une diagonale coûte un pas, pas deux. La distance de Manhattan
             # doublait le coût des trajets obliques et vidait le budget de
             # charge des unités arrivées en biais.
-            unit._cells_moved += max(abs(new_pos[0] - old_pos[0]),
-                                     abs(new_pos[1] - old_pos[1]))
+            unit._cells_moved += tr.move_cost(self.battlefield, old_pos, new_pos)
             bf.move_unit(unit, new_pos)
             movers[id(unit)] = (old_pos, new_pos)
 

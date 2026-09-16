@@ -520,7 +520,7 @@ class Battlefield:
             mr = unit._max_range
             ux_a, uy_a = unit.position
             reachable = [e for e in enemies
-                         if abs(ux_a - e.position[0]) + abs(uy_a - e.position[1]) <= mr
+                         if abs(ux_a - e.position[0]) + abs(uy_a - e.position[1]) <= tr.effective_range(self, unit, e)
                          and self.has_line_of_fire(unit, e)]
             if reachable:
                 # Priorité: achever les blessés, sinon le plus proche
@@ -545,7 +545,7 @@ class Battlefield:
                 ux, uy = unit.position
                 mr = unit._max_range
                 in_range = [e for e in enemies
-                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr
+                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(self, unit, e)
                             and self.has_line_of_fire(unit, e)]
                 if in_range:
                     return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
@@ -575,10 +575,13 @@ class Battlefield:
                 closest_dist = d
                 closest_enemy = e
         
-        if (closest_dist <= unit._max_range and not unit.fleeing
-                and not _is_kiting and not _is_repositioning):
+        if (closest_enemy is not None
+                and closest_dist <= tr.effective_range(self, unit, closest_enemy)
+                and not unit.fleeing and not _is_kiting and not _is_repositioning):
             # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
-            in_range = [e for e in enemies if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range]
+            in_range = [e for e in enemies
+                        if abs(ux - e.position[0]) + abs(uy - e.position[1])
+                        <= tr.effective_range(self, unit, e)]
             # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
             # derrière la porte ne doit pas figer un arbalétrier sur place)
             if unit._max_range >= 4:
@@ -618,7 +621,7 @@ class Battlefield:
                     # atteignable ET visible, sinon pas de visée
                     mr = unit._max_range
                     in_r = [e for e in enemies
-                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= mr
+                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(self, unit, e)
                             and (mr < 4 or self.has_line_of_fire(unit, e))]
                     if in_r:
                         return None, min(in_r, key=lambda e: (e.hp / max(1, e.max_hp),
@@ -651,7 +654,7 @@ class Battlefield:
         
         current_dist = self.manhattan_distance(unit.position, target.position)
         
-        if current_dist <= unit._max_range:
+        if current_dist <= tr.effective_range(self, unit, target):
             # Siège: vérifier qu'un mur ne bloque pas le CaC
             wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
             if wall_x_s and unit._max_range < 4 and unit.position[0] < wall_x_s and target.position[0] >= wall_x_s:

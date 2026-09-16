@@ -190,6 +190,118 @@ def test_los_uses_terrain_without_walls():
     assert bf.has_line_of_fire(U((0, 1), 8), U((8, 1))) is True
 
 
+# ── Combat ──
+
+from models import Arme
+from unit import Unit
+import tactics
+
+
+def archer(pos, save=7):
+    u = Unit("Archer", pv=100, vitesse=4, morale=3, sauvegarde=save, color=(1, 1, 1),
+             armes=[Arme("Arc", nb_attaque=1, toucher=3, blesser=1, perforation=0,
+                         degats="1", porte=8)])
+    u.position = pos
+    return u
+
+
+def target(pos, save=7):
+    u = Unit("Cible", pv=100000, vitesse=4, morale=5, sauvegarde=save, color=(2, 2, 2),
+             armes=[Arme("Epee", 1, 4, 4, 0, "1", porte=1)])
+    u.position = pos
+    return u
+
+
+def mean_damage(bf, a, t, n=3000):
+    total = 0
+    for _ in range(n):
+        before = t.hp
+        a.perform_attacks(t, bf)
+        total += before - t.hp
+        t.hp = t.max_hp
+        t.is_alive = True
+    return total / n
+
+
+@test
+def test_wood_cover_engine_matches_estimate():
+    bf = real_bf(cells={(6, 1): tr.WOOD})
+    a, t = archer((0, 1)), target((6, 1))
+    bf.place_unit(a); bf.place_unit(t)
+    est = tactics.expected_damage(a, t, 6, bf)
+    assert abs(est - 3 / 6) < 1e-9, est          # toucher 3 → 4+ en bois: 3/6
+    got = mean_damage(bf, a, t)
+    assert abs(got - est) / est < 0.10, (got, est)
+
+
+@test
+def test_marsh_worsens_save_engine_matches_estimate():
+    bf = real_bf(cells={(1, 1): tr.MARSH})
+    a, t = archer((0, 1)), target((1, 1), save=4)
+    a.armes[0].porte = 1
+    a._max_range = 1
+    est = tactics.expected_damage(a, t, 1, bf)
+    # toucher 3+ (4/6) × blesser 1+ (1) × échec de sauvegarde 5+ (4/6)
+    assert abs(est - (4 / 6) * (4 / 6)) < 1e-9, est
+    got = mean_damage(bf, a, t)
+    assert abs(got - est) / est < 0.10, (got, est)
+
+
+@test
+def test_hill_gives_range():
+    bf = real_bf(w=16, cells={(0, 1): tr.HILL})
+    a, t = archer((0, 1)), target((9, 1))
+    assert tactics.expected_damage(a, t, 9, bf) > 0
+    assert mean_damage(bf, a, t, 400) > 0
+    a2 = archer((0, 2))
+    assert mean_damage(bf, a2, target((9, 2)), 50) == 0
+
+
+def charge_setup(cells):
+    import unit_library as ul
+    from battle import Battle
+    random.seed(3)
+    rider = Unit("Cavalier", pv=10, vitesse=6, morale=5, sauvegarde=4, color=(9, 9, 9),
+                 armes=[Arme("Lance", 2, 3, 3, 1, "2", porte=1)])
+    rider.charge_montee = True
+    foe = Unit("Fantassin", pv=10, vitesse=0, morale=5, sauvegarde=5, color=(8, 8, 8),
+               armes=[Arme("Epee", 1, 4, 4, 0, "1", porte=1)])
+    b = Battle([rider], [foe], 30, 12, 0, map_name="Prairie")
+    bf = b.battlefield
+    bf.grid = [[0] * bf.height for _ in range(bf.width)]
+    bf.terrain = tr.make_grid(bf.width, bf.height)
+    for (x, y), name in cells.items():
+        bf.terrain[x][y] = name
+    r, f = b.army1[0], b.army2[0]
+    bf.move_unit(r, (10, 5))
+    bf.move_unit(f, (15, 5))
+    r._cells_moved = 0
+    return b, r, f
+
+
+@test
+def test_charge_blocked_by_wood_impact():
+    around = {(15 + dx, 5 + dy): tr.WOOD for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+              if (dx, dy) != (0, 0)}
+    b, r, f = charge_setup(around)
+    b._charge_phase([r, f])
+    assert r.position == (10, 5) and not getattr(r, '_charged_this_round', False)
+
+
+@test
+def test_charge_allowed_on_plain():
+    b, r, f = charge_setup({})
+    b._charge_phase([r, f])
+    assert r.position != (10, 5)
+
+
+@test
+def test_charge_blocked_from_marsh():
+    b, r, f = charge_setup({(10, 5): tr.MARSH})
+    b._charge_phase([r, f])
+    assert r.position == (10, 5)
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

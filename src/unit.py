@@ -2,6 +2,7 @@ import random
 from collections import deque
 
 from effects import FloatingText, FX_CLOCK
+import terrain as tr
 
 import itertools
 
@@ -264,7 +265,8 @@ class Unit:
         dist = battlefield.manhattan_distance(self.position, target.position)
         armes = self.armes if weapons is None else weapons
 
-        if dist > self._max_range or self.fleeing:
+        range_bonus = tr.range_bonus(battlefield, self, target)
+        if dist > self._max_range + range_bonus or self.fleeing:
             self.current_target = None
             return events
 
@@ -340,13 +342,14 @@ class Unit:
             self.has_charged = False  # Reset après application
 
         for arme in armes:
-            if dist > arme.porte:
+            if dist > tr.weapon_reach(battlefield, arme, self, target):
                 continue
             # Ligne de vue: un mur ou une porte fermée bloque les tirs
             if arme.porte >= 4 and not battlefield.has_line_of_fire(self, target):
                 continue
 
             is_ranged_weapon = arme.porte >= 4
+            tmods = tr.combat_mods(battlefield, self, target, is_ranged_weapon)
             # Sprite du projectile: trait de baliste, carreau ou flèche
             if self.is_artillery or arme.porte >= 16:
                 proj_kind = "ballista"
@@ -379,7 +382,7 @@ class Unit:
                 # Résolution combat avec bonus
                 toucher_final = (arme.toucher + (1 if self.afraid else 0)
                                  + anti_toucher + charge_toucher + wall_toucher_bonus
-                                 + flank_toucher + snap_toucher)
+                                 + flank_toucher + snap_toucher + tmods['toucher'])
                 blesser_final = arme.blesser + anti_blesser + charge_blesser
                 perf_final = arme.perforation + charge_perf
 
@@ -398,7 +401,8 @@ class Unit:
                     continue
 
                 # Sauvegarde
-                save_modifie = min(7, target.sauvegarde - perf_final - wall_save_bonus)
+                save_modifie = min(7, target.sauvegarde - perf_final - wall_save_bonus
+                                   + tmods['save'])
                 if random.randint(1, 6) >= save_modifie:
                     target.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
                     continue

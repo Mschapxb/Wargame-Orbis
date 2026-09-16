@@ -25,6 +25,7 @@ manquait pour qu'une bataille ne ressemble pas à la précédente:
 import random
 
 import tactics
+import terrain as tr
 
 
 class TacticalOrder:
@@ -208,10 +209,9 @@ class CommanderAI:
         bf = self.battlefield
         firing = 0
         for a in s['my_artillery']:
-            rng_a = a._max_range
             for e in theirs:
                 d = abs(a.position[0] - e.position[0]) + abs(a.position[1] - e.position[1])
-                if d <= rng_a and bf.has_line_of_fire(a, e):
+                if d <= tr.effective_range(bf, a, e) and bf.has_line_of_fire(a, e):
                     firing += 1
                     break
         s['artillery_firing'] = firing
@@ -220,7 +220,7 @@ class CommanderAI:
         s['support_fire'] = firing + sum(
             1 for u in s['my_ranged_units']
             if any(abs(u.position[0] - e.position[0]) + abs(u.position[1] - e.position[1])
-                   <= u._max_range and bf.has_line_of_fire(u, e) for e in theirs))
+                   <= tr.effective_range(bf, u, e) and bf.has_line_of_fire(u, e) for e in theirs))
         return s
 
     # ─── Posture: décision + inertie ───
@@ -368,7 +368,8 @@ class CommanderAI:
             ex, ey = e.position
             total, n = 0.0, 0
             for u in shooters:
-                rng_u = max(u._max_range, max((sp.porte for sp in u.spells), default=0))
+                rng_u = max(tr.effective_range(bf, u, e),
+                            max((sp.porte for sp in u.spells), default=0))
                 d = abs(u.position[0] - ex) + abs(u.position[1] - ey)
                 if d > rng_u:
                     continue
@@ -1553,7 +1554,7 @@ def select_tactical_target(unit, battle, battlefield):
     is_ranged = max_range >= 4
 
     def _reachable(e, d):
-        if d > max_range:
+        if d > tr.effective_range(battlefield, unit, e):
             return False
         if is_ranged and not battlefield.has_line_of_fire(unit, e):
             return False
