@@ -417,6 +417,17 @@ def test_map_prairie():
     assert {tr.HILL, tr.WOOD} <= names, names
 
 
+@test
+def test_map_forest():
+    map_checks("Forêt")
+    deploy_check("Forêt")
+    random.seed(2)
+    grid, data = maps.generate_map("Forêt", 178, 64)
+    names = {n for col in data['terrain'] for n in col}
+    assert {tr.WOOD, tr.RIVER, tr.FORD} <= names, names
+    assert data.get('deploy_gap'), "deploy_gap doit être conservé"
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

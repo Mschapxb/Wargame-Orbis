@@ -283,6 +283,7 @@ def generate_forest(width, height):
     n_trails = 3 if height < 40 else 4
     x_start = max(0, cx - int(rx * 1.6))
     x_end = min(width - 1, cx + int(rx * 1.6))
+    trail_ys = []
     for i in range(n_trails):
         y0 = int(cy + (i - (n_trails - 1) / 2) * (ry * 1.5 / max(1, n_trails - 1)))
         y = y0
@@ -292,23 +293,68 @@ def generate_forest(width, height):
                 y += random.choice((-1, 1))
                 y = max(y0 - 3, min(y0 + 3, y))
             _carve(grid, x, max(1, min(height - 2, y)), half, width, height)
+            if x == cx - 1:
+                trail_ys.append(max(1, min(height - 2, y)))
+
+    # ── Symétrie: l'ouest est recopié à l'est (terrain équitable) ──
+    for x in range(width // 2):
+        for y in range(height):
+            grid[width - 1 - x][y] = grid[x][y]
+
+    # ── Bosquets: le cœur reste impénétrable, le pourtour devient un
+    # sous-bois traversable (lent, à couvert). On coupe à travers bois. ──
+    terr = tr.make_grid(width, height)
+    core = [[grid[x][y] == 1 and all(
+                not (0 <= x + dx < width and 0 <= y + dy < height)
+                or grid[x + dx][y + dy] == 1
+                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+             for y in range(height)] for x in range(width)]
+    for x in range(width):
+        for y in range(height):
+            if grid[x][y] == 1 and not core[x][y]:
+                grid[x][y] = 0
+                terr[x][y] = tr.WOOD
+    # Lisière clairsemée
+    for x in range(width // 2):
+        for y in range(1, height - 1):
+            if (grid[x][y] == 0 and inside(x, y, 1.4) and not inside(x, y, 1.0)
+                    and random.random() < 0.25):
+                terr[x][y] = tr.WOOD
+    _mirror_terrain(terr, width, height)
+
+    # ── Ruisseau nord-sud au cœur du massif, franchissable à deux gués ──
+    rcols = (cx - 1, cx)
+    for y in range(1, height - 1):
+        if inside(cx, y, 0.9):
+            for x in rcols:
+                grid[x][y] = 0
+                terr[x][y] = tr.RIVER
+    for ty in sorted(set(trail_ys), key=lambda t: abs(t - cy))[:2]:
+        for y in (ty - 1, ty, ty + 1):
+            if 0 < y < height - 1:
+                for x in rcols:
+                    if terr[x][y] == tr.RIVER:
+                        terr[x][y] = tr.FORD
 
     # ── Champs de déploiement dégagés: on se range hors du bois ──
     deploy_gap = rx + 5
-    for side in (-1, 1):
-        x0 = cx + side * deploy_gap
-        for x in range(x0 - 5, x0 + 6):
-            if 0 <= x < width:
+    for x in range(cx - deploy_gap - 5, cx - deploy_gap + 6):
+        for xx in (x, width - 1 - x):
+            if 0 <= xx < width:
                 for y in range(height):
-                    grid[x][y] = 0
+                    grid[xx][y] = 0
+                    terr[xx][y] = tr.PLAIN
 
     # ── Garantie de passage d'un camp à l'autre ──
     left, right = (max(0, cx - int(rx * 2)), cy), (min(width - 1, cx + int(rx * 2)), cy)
-    if not _connected(grid, width, height, left, right):
+    if not _connected(grid, width, height, left, right, terr):
         for x in range(left[0], right[0] + 1):
             _carve(grid, x, cy, 1.2, width, height)
+            for y in (cy - 1, cy, cy + 1):
+                if terr[x][y] == tr.RIVER:
+                    terr[x][y] = tr.FORD
 
-    return grid, {'deploy_gap': deploy_gap}
+    return grid, {'deploy_gap': deploy_gap, 'terrain': terr}
 
 
 def generate_village(width, height):
