@@ -461,6 +461,17 @@ def test_map_village():
     assert {tr.HILL, tr.WOOD, tr.MARSH} <= names, names
 
 
+@test
+def test_map_defile():
+    map_checks("Défilé", sizes=[(178, 64)])
+    map_checks("Défilé", sizes=[(40, 30)], min_paths=1)
+    deploy_check("Défilé")
+    random.seed(5)
+    grid, data = maps.generate_map("Défilé", 178, 64)
+    names = {n for col in data['terrain'] for n in col}
+    assert {tr.HILL, tr.MARSH, tr.RIVER, tr.BRIDGE, tr.FORD} <= names, names
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

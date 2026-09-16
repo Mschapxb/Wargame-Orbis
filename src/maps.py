@@ -668,7 +668,48 @@ def generate_defile(width, height):
         for y in range(pass_top, pass_bot + 1):
             grid[x][y] = 0
 
-    return grid, {}
+    # ── Terrain ──
+    terr = tr.make_grid(width, height)
+    cx = width // 2
+    for x in range(width):
+        in_throat = throat_start <= x < throat_end
+        top_b = pass_top + (throat_squeeze if in_throat else 0)
+        bot_b = pass_bot - (throat_squeeze if in_throat else 0)
+        # Pentes au pied des parois: les tireurs y dominent le couloir
+        for y in (top_b, top_b + 1, bot_b - 1, bot_b):
+            if 0 <= y < height:
+                terr[x][y] = tr.HILL
+        # Éboulis boueux près du torrent, seulement si le couloir est
+        # assez large pour laisser un passage sec au milieu
+        if bot_b - top_b >= 6:
+            if cx - 6 <= x <= cx - 3:
+                terr[x][top_b + 2] = tr.MARSH
+            if cx - 9 <= x <= cx - 6:
+                terr[x][bot_b - 2] = tr.MARSH
+    _mirror_terrain(terr, width, height)
+
+    # Torrent à l'étranglement: un pont et un gué à disputer
+    t_top = pass_top + throat_squeeze
+    t_bot = pass_bot - throat_squeeze
+    rcols = (cx - 1, cx)
+    free = list(range(t_top, t_bot + 1))
+    for x in rcols:
+        for y in free:
+            grid[x][y] = 0          # les saillies cèdent la place au torrent
+            terr[x][y] = tr.RIVER
+    if len(free) >= 4:
+        mid = len(free) // 2
+        bridge = free[mid - 2:mid]
+        ford = free[mid + 1:mid + 3]
+    else:
+        bridge, ford = free, []
+    for x in rcols:
+        for y in bridge:
+            terr[x][y] = tr.BRIDGE
+        for y in ford:
+            terr[x][y] = tr.FORD
+
+    return grid, {'terrain': terr}
 
 
 # ═══════════════════════════════════════════════════════════════
