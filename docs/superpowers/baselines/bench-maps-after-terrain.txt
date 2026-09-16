@@ -1,0 +1,3 @@
+Village mixte          A1=31 A2=29 nul= 0 | rounds moy= 14.9 | surv A1= 3.5 A2= 2.9
+Defile mixte           A1=27 A2=31 nul= 2 | rounds moy= 21.6 | surv A1= 3.0 A2= 3.3
+(10.7s)
