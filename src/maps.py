@@ -671,14 +671,25 @@ def generate_defile(width, height):
     # ── Terrain ──
     terr = tr.make_grid(width, height)
     cx = width // 2
+    # Les pentes restent hors des zones de déploiement: les armées se
+    # déploient en plaine, comme sur les autres cartes (principe "zones de
+    # déploiement en plaine"). La colonne de front par défaut suit la même
+    # formule que Battle.__init__ (gap = max(12, 12% de la largeur), borné
+    # à mid_x - 8): on la reproduit ici pour que les pentes ne débordent
+    # jamais sur la zone où les unités apparaissent, avec une petite marge.
+    _deploy_gap = max(12, int(width * 0.12))
+    _deploy_gap = max(4, min(_deploy_gap, cx - 8))
+    slope_start_x = cx - _deploy_gap + 3
+    slope_end_x = width - slope_start_x
     for x in range(width):
         in_throat = throat_start <= x < throat_end
         top_b = pass_top + (throat_squeeze if in_throat else 0)
         bot_b = pass_bot - (throat_squeeze if in_throat else 0)
         # Pentes au pied des parois: les tireurs y dominent le couloir
-        for y in (top_b, top_b + 1, bot_b - 1, bot_b):
-            if 0 <= y < height:
-                terr[x][y] = tr.HILL
+        if slope_start_x <= x < slope_end_x:
+            for y in (top_b, top_b + 1, bot_b - 1, bot_b):
+                if 0 <= y < height:
+                    terr[x][y] = tr.HILL
         # Éboulis boueux près du torrent, seulement si le couloir est
         # assez large pour laisser un passage sec au milieu
         if bot_b - top_b >= 6:

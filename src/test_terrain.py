@@ -392,6 +392,14 @@ def deploy_check(name, sizes=SIZES, seeds=4):
             for u in b.army1 + b.army2:
                 t = tr.at(bf, *u.position)
                 assert tr.MOVE[t] == 1.0, f"{name} {w}x{h}: {u.name} déployé sur {t} en {u.position}"
+                # Défilé: les pentes (colline) sont exclues de la zone de
+                # déploiement (principe "zones de déploiement en plaine").
+                # Prairie/Village ont été vérifiées: leurs crêtes/butte ne
+                # chevauchent déjà aucune case de déploiement mesurée, donc
+                # on ne durcit pas l'assertion pour elles ici.
+                if name == "Défilé":
+                    assert t == tr.PLAIN, \
+                        f"{name} {w}x{h}: {u.name} déployé sur {t} (pas plaine) en {u.position}"
 
 
 @test
