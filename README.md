@@ -50,6 +50,7 @@ Au lancement, un menu permet de :
 | `ZQSD` / `Flèches` | Déplacer la caméra |
 | `Molette` / `Clic milieu` | Drag caméra |
 | `T` | Afficher/masquer les lignes de ciblage |
+| `L` | Afficher/masquer la légende du terrain |
 | `B` | Basculer plein écran / fenêtré sans bordure |
 | `R` | Relancer la bataille |
 | `M` | Retour au menu |
@@ -61,11 +62,28 @@ Au lancement, un menu permet de :
 
 | Carte | Description |
 |-------|-------------|
-| **Prairie** | Terrain ouvert, deux crêtes rocheuses dessinent trois couloirs. Favorise la cavalerie et les charges. |
-| **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. |
-| **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. |
+| **Prairie** | Terrain ouvert, deux crêtes rocheuses dessinent trois couloirs. Favorise la cavalerie et les charges. Crêtes en collines, colline centrale, broussailles sur les flancs. |
+| **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. Bosquets à cœur impénétrable et sous-bois traversable, ruisseau à deux gués. |
+| **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. Bourg sur une butte, jardins, mare. |
 | **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. |
-| **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. |
+| **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. Pentes, éboulis, torrent avec pont et gué. |
+
+### Terrain
+
+Chaque case porte un terrain qui change la manière de se battre. Chaque
+terrain a une teinte **et** un motif, pour rester lisible sans distinguer
+les couleurs. `L` affiche la légende en bataille.
+
+| Terrain | Déplacement | Vue | Combat |
+|---------|-------------|-----|--------|
+| **Colline** | ×1,5 pour monter | un tireur en hauteur voit par-dessus les bois; une colline masque ce qui est derrière | tireur en hauteur: +1 portée; frapper vers le haut: -1 pour toucher |
+| **Bois** | ×2 | 3 cases de bois masquent la cible | tirs reçus: -1 pour toucher; pas de charge |
+| **Rivière** | infranchissable | — | — |
+| **Gué** | ×2 | — | sauvegarde -1; pas de charge |
+| **Pont** | normal | — | passage étroit |
+| **Marais** | ×3 | — | sauvegarde -1; pas de charge |
+
+Une unité fait toujours au moins un pas par round, même en marais.
 
 Les cartes sont larges (~2,6 écrans × 64 cases): les armées marchent un moment
 avant le choc — premier corps-à-corps vers le 7e round en prairie, 9e en forêt et
@@ -210,6 +228,8 @@ battle-simulator/
 ├── fx_render.py         # Mise en scène: particules, décalques, animations de mort
 ├── sprites.py           # Sprites procéduraux mis en cache (projectiles, lames, sorts…)
 ├── maps.py              # Définition des cartes et génération de terrain
+├── terrain.py           # Règles de terrain (coûts, vue, modificateurs)
+├── terrain_render.py    # Motifs et légende du terrain
 ├── tokens/              # Images PNG des tokens d'unités (optionnel)
 └── requirements.txt     # Dépendances Python
 ```
@@ -246,7 +266,8 @@ modification de mécanique ne fait pas basculer l'équilibre.
 ### Tests
 
 ```bash
-python -m pytest tests/test_main.py -q      # unitaires (règles, groupes du menu, régressions)
+python src/test_terrain.py                  # terrain: règles, cartes, rendu
+python src/test_determinism.py              # une graine rejoue la même bataille
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
 python src/bench_balance.py 60              # équilibrage sur 60 graines par affrontement
