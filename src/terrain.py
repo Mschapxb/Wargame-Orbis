@@ -40,7 +40,7 @@ def make_grid(width, height, fill=PLAIN):
 
 
 def at(bf, x, y):
-    terr = getattr(bf, 'terrain', None)
+    terr = bf.terrain
     if terr is None:
         return PLAIN
     return terr[x][y]
@@ -60,7 +60,7 @@ def charge_ok(bf, x, y):
 
 def step_cost(bf, frm, to):
     """Multiplicateur de coût d'un pas de `frm` vers la case voisine `to`."""
-    if getattr(bf, 'terrain', None) is None:
+    if bf.terrain is None:
         return 1.0
     dest = bf.terrain[to[0]][to[1]]
     m = MOVE[dest]
@@ -91,7 +91,7 @@ def steps_within(bf, start, path, budget):
     marais)."""
     if not path or budget < 1:
         return 0
-    if getattr(bf, 'terrain', None) is None:
+    if bf.terrain is None:
         return min(int(budget), len(path))
     spent, prev, n = 0.0, start, 0
     for cell in path:
@@ -112,7 +112,7 @@ def can_charge(bf, frm, to):
 
 def range_bonus(bf, shooter, target):
     """+1 de portée pour un tireur en hauteur visant une cible en contrebas."""
-    if getattr(bf, 'terrain', None) is None or shooter._max_range < 4:
+    if bf.terrain is None or shooter._max_range < 4:
         return 0
     if is_elevated(bf, *shooter.position) and not is_elevated(bf, *target.position):
         return 1
@@ -130,7 +130,7 @@ def weapon_reach(bf, arme, shooter, target):
 
 
 def combat_mods(bf, attacker, target, ranged):
-    if getattr(bf, 'terrain', None) is None:
+    if bf.terrain is None:
         return dict(_NO_MODS)
     t = TERRAINS[at(bf, *target.position)]
     toucher = 0
@@ -168,7 +168,7 @@ def blocks_line(bf, x0, y0, x1, y1):
     """Vrai si le terrain masque la cible. Un tireur en hauteur voit tout;
     sinon une colline intermédiaire (cible hors colline) ou 3 cases de bois
     bloquent."""
-    terr = getattr(bf, 'terrain', None)
+    terr = bf.terrain
     if terr is None or terr[x0][y0] in ELEVATED:
         return False
     target_up = terr[x1][y1] in ELEVATED

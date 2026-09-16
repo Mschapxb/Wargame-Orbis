@@ -4,4 +4,4 @@ Skald vs Orlandar      A1=58 A2= 2 nul= 0 | rounds moy= 13.2 | surv A1= 5.7 A2= 
 Cavalerie vs Tir       A1=52 A2= 8 nul= 0 | rounds moy= 11.5 | surv A1= 5.8 A2= 0.7
 Siege                  A1=15 A2=45 nul= 0 | rounds moy= 18.4 | surv A1= 1.4 A2= 4.5
 Foret mixte            A1=33 A2=27 nul= 0 | rounds moy= 15.4 | surv A1= 3.2 A2= 2.7
-(32.4s)
+(21.3s)

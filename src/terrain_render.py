@@ -87,7 +87,7 @@ def draw_cell(ov, name, r, cs, sd=0, edges=(False, False, False, False)):
 
 def draw_terrain(surf, bf, cs):
     """Pose les motifs de terrain sur la surface statique de la grille."""
-    if getattr(bf, 'terrain', None) is None:
+    if bf.terrain is None:
         return
     ov = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
     for x in range(bf.width):
@@ -104,7 +104,7 @@ def draw_terrain(surf, bf, cs):
 
 def legend_surface(bf, font):
     """Encart des terrains présents sur la carte (None s'il n'y en a pas)."""
-    if getattr(bf, 'terrain', None) is None:
+    if bf.terrain is None:
         return None
     present = {n for col in bf.terrain for n in col}
     rows = [n for n in _ORDER if n in present]

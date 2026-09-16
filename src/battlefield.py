@@ -25,6 +25,17 @@ class Battlefield:
         # Terrain à effets (colline, bois, rivière…): grille parallèle à
         # `grid`. Extrait AVANT siege_data pour la même raison que le décor.
         self.terrain = _raw.pop('terrain', None)
+        # Caches numériques pour l'A* (boucle chaude): évite de re-hasher les
+        # noms de terrain (str) à chaque case visitée. Le terrain est figé
+        # pour toute la bataille, donc ce précalcul reste valide du début à
+        # la fin (une seule fois par Battlefield, pas par appel d'A*).
+        if self.terrain is not None:
+            _move_map, _elev_set = tr.MOVE, tr.ELEVATED
+            self._terrain_move = [[_move_map[cell] for cell in col] for col in self.terrain]
+            self._terrain_elevated = [[cell in _elev_set for cell in col] for col in self.terrain]
+        else:
+            self._terrain_move = None
+            self._terrain_elevated = None
 
         # Données de siège
         self.siege_data = _raw
@@ -270,9 +281,8 @@ class Battlefield:
         gate_hp = self.gate_hp
         gates_open = self.gates_open
         reserved = reserved_positions
-        terr = self.terrain
-        _move = tr.MOVE
-        _elev = tr.ELEVATED
+        _move_grid = self._terrain_move
+        _elev_grid = self._terrain_elevated
         _uphill = tr.UPHILL_FACTOR
         
         open_set = []
@@ -317,10 +327,15 @@ class Battlefield:
                     hc = hcy
                 if hc < best_h:
                     best_h, best_node = hc, current
-            
+
+            # Élévation de la case courante: invariante pour les 8 voisins,
+            # calculée une fois par nœud plutôt que huit fois (ex-doublon).
+            if _elev_grid is not None:
+                cur_elevated = _elev_grid[cx][cy]
+
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
-                
+
                 # is_valid inliné
                 if nx < 0 or nx >= width or ny < 0 or ny >= height:
                     continue
@@ -329,18 +344,17 @@ class Battlefield:
                     continue
                 if cell == 3 and not gates_open and gate_hp.get((nx, ny), 0) > 0:
                     continue
-                
+
                 neighbor = (nx, ny)
                 if neighbor in reserved:
                     continue
-                
+
                 base_cost = _DIAG_COST if (dx and dy) else 1.0
-                if terr is not None:
-                    tn = terr[nx][ny]
-                    mc = _move[tn]
+                if _move_grid is not None:
+                    mc = _move_grid[nx][ny]
                     if mc is None:
                         continue  # rivière
-                    if tn in _elev and terr[cx][cy] not in _elev:
+                    if _elev_grid[nx][ny] and not cur_elevated:
                         mc *= _uphill
                     base_cost *= mc
 
@@ -402,7 +416,7 @@ class Battlefield:
         height = self.height
         units_dict = self.units
         gate_hp_dict = self.gate_hp
-        terr = self.terrain
+        move_grid = self._terrain_move
 
         best_priority = None
         best_pos = None
@@ -427,7 +441,7 @@ class Battlefield:
                     continue
                 if cell == 3 and not self.gates_open and gate_hp_dict.get((px, py), 0) > 0:
                     continue
-                if terr is not None and tr.MOVE[terr[px][py]] is None:
+                if move_grid is not None and move_grid[px][py] is None:
                     continue
                 pos = (px, py)
                 if pos in reserved_positions:
