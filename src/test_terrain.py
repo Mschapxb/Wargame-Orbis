@@ -258,7 +258,6 @@ def test_hill_gives_range():
 
 
 def charge_setup(cells):
-    import unit_library as ul
     from battle import Battle
     random.seed(3)
     rider = Unit("Cavalier", pv=10, vitesse=6, morale=5, sauvegarde=4, color=(9, 9, 9),
@@ -300,6 +299,52 @@ def test_charge_blocked_from_marsh():
     b, r, f = charge_setup({(10, 5): tr.MARSH})
     b._charge_phase([r, f])
     assert r.position == (10, 5)
+
+
+@test
+def test_charge_blocked_when_path_cost_exceeds_budget():
+    """Un couloir de marais plein entre le cavalier et sa proie doit pouvoir
+    dépasser le budget de charge même quand le nombre de CASES tiendrait:
+    le budget se mesure en coût de terrain, pas en pas comptés."""
+    around = {(x, y): tr.MARSH for x in (11, 12, 13) for y in range(12)}
+    b, r, f = charge_setup(around)
+    b._charge_phase([r, f])
+    assert r.position == (10, 5) and not getattr(r, '_charged_this_round', False)
+
+
+@test
+def test_cells_moved_uses_real_path_cost_not_chebyshev_jump():
+    """Un déplacement multi-cases qui traverse un marais doit décompter le
+    VRAI coût du chemin suivi (steps_within/path_cost), pas un saut
+    Chebyshev vers la destination qui multiplierait le nombre de pas par
+    le coût d'UNE seule case d'arrivée."""
+    from battle import Battle
+    random.seed(3)
+    mover = Unit("Eclaireur", pv=1000, vitesse=6, morale=5, sauvegarde=7,
+                 color=(3, 3, 3),
+                 armes=[Arme("Epee", 1, 4, 4, 0, "1", porte=1)])
+    enemy = Unit("Cible", pv=1000, vitesse=0, morale=5, sauvegarde=7,
+                 color=(4, 4, 4),
+                 armes=[Arme("Epee", 1, 4, 4, 0, "1", porte=1)])
+    b = Battle([mover], [enemy], 16, 9, 0, map_name="Prairie")
+    bf = b.battlefield
+    bf.grid = [[0] * bf.height for _ in range(bf.width)]
+    bf.terrain = tr.make_grid(bf.width, bf.height)
+    for y in range(bf.height):
+        bf.terrain[3][y] = tr.MARSH
+        bf.terrain[4][y] = tr.MARSH
+    m, e = b.army1[0], b.army2[0]
+    bf.move_unit(m, (0, 5))
+    bf.move_unit(e, (10, 5))
+    m._cells_moved = 0
+    b.simulate_round()
+    assert m.position == (3, 5), m.position
+    # 2 pas de plaine (1.0 chacun) + 1 pas de marais (3.0) = 5.0
+    assert abs(m._cells_moved - 5.0) < 1e-9, m._cells_moved
+    # Le bug corrigé aurait compté un saut Chebyshev vers la destination:
+    # 3 pas × coût marais (3.0) = 9, très différent du vrai coût (5).
+    buggy = tr.move_cost(bf, (0, 5), m.position)
+    assert buggy == 9.0 and m._cells_moved != buggy, (m._cells_moved, buggy)
 
 
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──

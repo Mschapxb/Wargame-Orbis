@@ -1364,11 +1364,10 @@ class CommanderAI:
 
     def _ranged_order(self, unit, enemies, prio):
         ux, uy = unit.position
-        max_range = unit._max_range
         bf = self.battlefield
 
         def visible(e):
-            return (abs(ux - e.position[0]) + abs(uy - e.position[1]) <= max_range
+            return (abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)
                     and bf.has_line_of_fire(unit, e))
 
         ft = self.focus_target

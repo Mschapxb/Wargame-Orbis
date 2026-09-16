@@ -1468,7 +1468,7 @@ class Battle:
                 # Bloqué: mouvement latéral seulement si aucun ennemi au contact
                 ux, uy = unit.position
                 enemy_in_range = any(
-                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range
+                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)
                     for e in self.get_enemies(unit) if e.is_alive
                 )
                 if not enemy_in_range:
@@ -1503,7 +1503,20 @@ class Battle:
             # une diagonale coûte un pas, pas deux. La distance de Manhattan
             # doublait le coût des trajets obliques et vidait le budget de
             # charge des unités arrivées en biais.
-            unit._cells_moved += tr.move_cost(self.battlefield, old_pos, new_pos)
+            # Le coût planifié par compute_move (somme des step_cost() du
+            # CHEMIN réellement suivi) est plus exact que le coût d'un seul
+            # saut vers la destination: sur terrain, un vitesse-6 qui
+            # traverse un marais puis 3 cases de plaine dépense 6, pas 4.
+            # On ne le réutilise que s'il vient bien de la destination
+            # appliquée ce round (sinon repli sur le coût du saut direct).
+            planned_cost = getattr(unit, '_planned_move_cost', None)
+            planned_dest = getattr(unit, '_planned_move_dest', None)
+            if (bf.terrain is not None and planned_cost is not None
+                    and planned_dest == new_pos):
+                cost = planned_cost
+            else:
+                cost = tr.move_cost(self.battlefield, old_pos, new_pos)
+            unit._cells_moved += cost
             bf.move_unit(unit, new_pos)
             movers[id(unit)] = (old_pos, new_pos)
 

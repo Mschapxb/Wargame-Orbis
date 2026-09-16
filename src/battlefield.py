@@ -445,6 +445,12 @@ class Battlefield:
         return best_pos
 
     def compute_move(self, unit, battle, reserved_positions):
+        # Coût terrain réel du prochain déplacement, calculé ci-dessous quand
+        # le candidat retourné vient d'un chemin A* (path[i-1]/gpath[i-1]).
+        # Réinitialisé à chaque appel pour qu'une valeur d'un appel précédent
+        # ne puisse jamais être réutilisée pour une destination différente.
+        unit._planned_move_cost = None
+        unit._planned_move_dest = None
         if unit.fleeing:
             # Unités en fuite: courir vers le bord le plus proche
             flee_speed = max(2, unit.vitesse)  # Minimum 2 cases/round en fuite
@@ -475,6 +481,8 @@ class Battlefield:
                 for i in range(steps, 0, -1):
                     new_pos = path[i - 1]
                     if self._can_move_to(unit, new_pos, reserved_positions):
+                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
+                        unit._planned_move_dest = new_pos
                         return new_pos, None
             
             # Fallback: mouvement direct vers le bord, en essayant plusieurs directions
@@ -517,7 +525,6 @@ class Battlefield:
                 return None, None
             # L'artillerie ne vise QUE ce qu'elle peut atteindre ET voir
             # (sinon elle "tirait" inutilement sur des cibles hors d'atteinte)
-            mr = unit._max_range
             ux_a, uy_a = unit.position
             reachable = [e for e in enemies
                          if abs(ux_a - e.position[0]) + abs(uy_a - e.position[1]) <= tr.effective_range(self, unit, e)
@@ -543,7 +550,6 @@ class Battlefield:
         if self.gate_hp and self.is_rampart(*unit.position):
             if unit._max_range >= 4 or bool(unit.spells):
                 ux, uy = unit.position
-                mr = unit._max_range
                 in_range = [e for e in enemies
                             if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(self, unit, e)
                             and self.has_line_of_fire(unit, e)]
@@ -641,6 +647,8 @@ class Battlefield:
                 for i in range(steps, 0, -1):
                     candidate = path[i - 1]
                     if self._can_move_to(unit, candidate, reserved_positions):
+                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
+                        unit._planned_move_dest = candidate
                         return candidate, target
             return self.fallback_move(unit, target, reserved_positions), target
         
@@ -696,8 +704,10 @@ class Battlefield:
                 for i in range(steps, 0, -1):
                     candidate = path[i - 1]
                     if self._can_move_to(unit, candidate, reserved_positions):
+                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
+                        unit._planned_move_dest = candidate
                         return candidate, target
-        
+
         # Siège: pas de chemin direct → passer par une porte
         if self.gate_hp:
             wall_x = self.siege_data.get('wall_x', 0)
@@ -720,6 +730,8 @@ class Battlefield:
                         for i in range(steps, 0, -1):
                             candidate = gpath[i - 1]
                             if self._can_move_to(unit, candidate, reserved_positions):
+                                unit._planned_move_cost = tr.path_cost(self, unit.position, gpath[:i])
+                                unit._planned_move_dest = candidate
                                 return candidate, target
                 
                 # Sinon aller adjacent à la porte intacte la plus proche (pour la détruire au CaC)
@@ -734,6 +746,8 @@ class Battlefield:
                             for i in range(steps, 0, -1):
                                 candidate = gpath[i - 1]
                                 if self._can_move_to(unit, candidate, reserved_positions):
+                                    unit._planned_move_cost = tr.path_cost(self, unit.position, gpath[:i])
+                                    unit._planned_move_dest = candidate
                                     return candidate, target
             
             # Longer le mur vers la porte la plus proche (ou lane)
