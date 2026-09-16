@@ -1,6 +1,8 @@
 import random
 import heapq
 
+import terrain as tr
+
 
 class Battlefield:
     def __init__(self, width=40, height=30, obstacle_count=8, map_name="Prairie", grid=None, map_data=None):
@@ -19,6 +21,10 @@ class Battlefield:
         # Demi-écart entre les fronts au déploiement, imposé par la carte
         # (forêt, village: juste à l'extérieur du terrain central)
         self.deploy_gap = _raw.pop('deploy_gap', None)
+
+        # Terrain à effets (colline, bois, rivière…): grille parallèle à
+        # `grid`. Extrait AVANT siege_data pour la même raison que le décor.
+        self.terrain = _raw.pop('terrain', None)
 
         # Données de siège
         self.siege_data = _raw
@@ -65,6 +71,8 @@ class Battlefield:
     def is_valid(self, x, y):
         if not (0 <= x < self.width and 0 <= y < self.height):
             return False
+        if self.terrain is not None and tr.MOVE[self.terrain[x][y]] is None:
+            return False  # Rivière: infranchissable
         cell = self.grid[x][y]
         if cell == 0:
             return True
@@ -96,14 +104,19 @@ class Battlefield:
         Exception: une unité sur un rempart est surélevée — elle peut tirer
         par-dessus le mur, et peut être visée par-dessus le mur (c'est tout
         l'intérêt et le risque d'être sur le rempart).
+        Le terrain (bois, collines) peut aussi masquer la cible, cf. terrain.blocks_line.
         """
-        if not self.walls and not self.gate_hp:
-            return True  # Pas de fortifications sur cette carte
         sx, sy = shooter.position
         tx, ty = target.position
+        if not self.walls and not self.gate_hp:
+            if self.terrain is None:
+                return True  # Ni fortifications ni terrain sur cette carte
+            return not tr.blocks_line(self, sx, sy, tx, ty)
         if self.is_rampart(sx, sy) or self.is_rampart(tx, ty):
             return True
-        return self._los_clear(sx, sy, tx, ty)
+        if not self._los_clear(sx, sy, tx, ty):
+            return False
+        return self.terrain is None or not tr.blocks_line(self, sx, sy, tx, ty)
 
     def _los_clear(self, x0, y0, x1, y1):
         """Trace de Bresenham: False si un mur (2) ou une porte fermée
@@ -257,6 +270,10 @@ class Battlefield:
         gate_hp = self.gate_hp
         gates_open = self.gates_open
         reserved = reserved_positions
+        terr = self.terrain
+        _move = tr.MOVE
+        _elev = tr.ELEVATED
+        _uphill = tr.UPHILL_FACTOR
         
         open_set = []
         h0 = max(abs(gx - sx), abs(gy - sy))
@@ -318,7 +335,15 @@ class Battlefield:
                     continue
                 
                 base_cost = _DIAG_COST if (dx and dy) else 1.0
-                
+                if terr is not None:
+                    tn = terr[nx][ny]
+                    mc = _move[tn]
+                    if mc is None:
+                        continue  # rivière
+                    if tn in _elev and terr[cx][cy] not in _elev:
+                        mc *= _uphill
+                    base_cost *= mc
+
                 if neighbor in ally_positions and neighbor != goal:
                     new_g = g + base_cost + ALLY_PENALTY
                 else:
@@ -377,7 +402,8 @@ class Battlefield:
         height = self.height
         units_dict = self.units
         gate_hp_dict = self.gate_hp
-        
+        terr = self.terrain
+
         best_priority = None
         best_pos = None
         
@@ -400,6 +426,8 @@ class Battlefield:
                 if cell == 1 or cell == 2:
                     continue
                 if cell == 3 and not self.gates_open and gate_hp_dict.get((px, py), 0) > 0:
+                    continue
+                if terr is not None and tr.MOVE[terr[px][py]] is None:
                     continue
                 pos = (px, py)
                 if pos in reserved_positions:
@@ -442,7 +470,7 @@ class Battlefield:
             # Essayer le A* en premier
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
-                steps = min(flee_speed, len(path))
+                steps = tr.steps_within(self, unit.position, path, flee_speed)
                 # Essayer le step le plus loin possible, puis réduire
                 for i in range(steps, 0, -1):
                     new_pos = path[i - 1]
@@ -606,7 +634,7 @@ class Battlefield:
             target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
-                steps = min(unit.vitesse, len(path))
+                steps = tr.steps_within(self, unit.position, path, unit.vitesse)
                 for i in range(steps, 0, -1):
                     candidate = path[i - 1]
                     if self._can_move_to(unit, candidate, reserved_positions):
@@ -661,7 +689,7 @@ class Battlefield:
         else:
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
-                steps = min(unit.vitesse, len(path))
+                steps = tr.steps_within(self, unit.position, path, unit.vitesse)
                 for i in range(steps, 0, -1):
                     candidate = path[i - 1]
                     if self._can_move_to(unit, candidate, reserved_positions):
@@ -685,7 +713,7 @@ class Battlefield:
                     nearest = self._preferred_gate(unit, destroyed_gates)
                     gpath = self.a_star_path(unit.position, nearest, unit, battle, reserved_positions)
                     if gpath:
-                        steps = min(unit.vitesse, len(gpath))
+                        steps = tr.steps_within(self, unit.position, gpath, unit.vitesse)
                         for i in range(steps, 0, -1):
                             candidate = gpath[i - 1]
                             if self._can_move_to(unit, candidate, reserved_positions):
@@ -699,7 +727,7 @@ class Battlefield:
                     if gate_goal:
                         gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
                         if gpath:
-                            steps = min(unit.vitesse, len(gpath))
+                            steps = tr.steps_within(self, unit.position, gpath, unit.vitesse)
                             for i in range(steps, 0, -1):
                                 candidate = gpath[i - 1]
                                 if self._can_move_to(unit, candidate, reserved_positions):

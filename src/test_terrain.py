@@ -132,6 +132,64 @@ def test_line_of_sight():
     assert tr.blocks_line(bf2, 0, 4, 8, 4) is False   # cible sur la colline
 
 
+# ── Battlefield ──
+
+from battlefield import Battlefield
+
+
+class FakeBattle:
+    def get_allies(self, unit):
+        return []
+
+
+def real_bf(w=16, h=9, cells=None, grid=None):
+    terr = tr.make_grid(w, h)
+    for (x, y), name in (cells or {}).items():
+        terr[x][y] = name
+    g = grid or [[0] * h for _ in range(w)]
+    return Battlefield(w, h, 0, "Prairie", g, {'terrain': terr})
+
+
+@test
+def test_bf_terrain_not_siege():
+    bf = real_bf()
+    assert bf.terrain is not None
+    assert not bf.siege_data, "le terrain ne doit pas faire croire à un siège"
+    plain = Battlefield(10, 6, 0, "Prairie", [[0] * 6 for _ in range(10)], {})
+    assert plain.terrain is None
+
+
+@test
+def test_bf_river_invalid():
+    bf = real_bf(cells={(5, 3): tr.RIVER})
+    assert not bf.is_valid(5, 3)
+    assert bf.is_valid(5, 4)
+
+
+@test
+def test_astar_avoids_marsh_and_river():
+    w, h = 16, 9
+    marsh = {(x, y): tr.MARSH for x in range(6, 10) for y in range(0, 6)}
+    bf = real_bf(w, h, cells=marsh)
+    u = U((2, 3))
+    path = bf.a_star_path((2, 3), (13, 3), u, FakeBattle())
+    assert path and path[-1] == (13, 3)
+    assert not any(bf.terrain[x][y] == tr.MARSH for x, y in path), path
+    river = {(8, y): tr.RIVER for y in range(h)}
+    river[(8, 7)] = tr.FORD
+    bf2 = real_bf(w, h, cells=river)
+    path2 = bf2.a_star_path((2, 3), (13, 3), u, FakeBattle(), max_nodes=5000)
+    assert (8, 7) in path2, path2
+    assert not any(bf2.terrain[x][y] == tr.RIVER for x, y in path2)
+
+
+@test
+def test_los_uses_terrain_without_walls():
+    bf = real_bf(cells={(3, 0): tr.WOOD, (4, 0): tr.WOOD, (5, 0): tr.WOOD})
+    assert bf.has_line_of_fire(U((0, 0), 8), U((8, 0))) is False
+    assert bf.has_line_of_fire(U((0, 1), 8), U((8, 1))) is True
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":
