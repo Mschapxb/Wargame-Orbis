@@ -867,6 +867,10 @@ def build_grid_surface(battle, cell_size):
     if patches and cell_size >= 12:
         draw_ground_patches(grid_surface, patches, cell_size, bg)
 
+    # ─── Terrain à effets: teinte + motif (colline, bois, eau, marais) ───
+    import terrain_render
+    terrain_render.draw_terrain(grid_surface, bf, cell_size)
+
     # ─── Reliefs d'un seul tenant ───
     if bf.map_name == "Village":
         draw_village_buildings(grid_surface, bf, cell_size)
@@ -1109,7 +1113,9 @@ def run_visual(battle, cell_size):
     winner = None
     battle_report = None
     show_lines = True
-    
+    show_terrain_legend = False
+    terrain_legend = None
+
     # Bannières d'événements dramatiques (sortie, portes, charges...)
     event_banners = []  # [texte, couleur, timer_frames]
     prev_gates_open = getattr(battle.battlefield, 'gates_open', False)
@@ -1185,6 +1191,7 @@ def run_visual(battle, cell_size):
                     clamp_camera()
                     winner = None
                     battle_report = None
+                    terrain_legend = None
                     move_anim_progress = 1.0
                     round_frame = 10 ** 6
                     screen_shake = 0.0
@@ -1197,6 +1204,9 @@ def run_visual(battle, cell_size):
                                       getattr(battle.commander2, 'maneuver', None)]
                 elif event.key == pygame.K_t:
                     show_lines = not show_lines
+                elif event.key == pygame.K_l:
+                    show_terrain_legend = not show_terrain_legend
+                    terrain_legend = None   # reconstruit au prochain affichage
                 elif event.key == pygame.K_b:
                     # Basculer entre borderless windowed et fullscreen exclusif
                     is_borderless = not is_borderless
@@ -1705,6 +1715,14 @@ def run_visual(battle, cell_size):
             screen.blit(bsurf, ((SCREEN_W - bw_b) // 2, banner_y))
             banner_y += bh_b + 6
         
+        # ═══ LÉGENDE DU TERRAIN (touche L) ═══
+        if show_terrain_legend:
+            if terrain_legend is None:
+                import terrain_render
+                terrain_legend = terrain_render.legend_surface(battle.battlefield, small_font)
+            if terrain_legend is not None:
+                screen.blit(terrain_legend, (12, top_h + 12))
+
         # ═══ OVERLAY PAUSE ═══
         if pause and winner is None and not battle_report:
             pt = pause_font.render("PAUSE", True, (255, 220, 120))
@@ -1772,7 +1790,7 @@ def run_visual(battle, cell_size):
         screen.blit(tiny_font.render("Sort", True, (180, 180, 180)), (lx5 + 12, ly))
         
         # Contrôles
-        ctrl = tiny_font.render("ESPACE=Pause  ZQSD/Flèches=Caméra  F=Vite  N=Normal  R=Reset  T=Lignes  B=Bordure  M=Menu  ESC=Quit", True, (150, 170, 200))
+        ctrl = tiny_font.render("ESPACE=Pause  ZQSD/Flèches=Caméra  F=Vite  N=Normal  R=Reset  T=Lignes  L=Terrain  B=Bordure  M=Menu  ESC=Quit", True, (150, 170, 200))
         screen.blit(ctrl, (10, ly + 18))
         
         size = tiny_font.render(f"Grille {bf_w}x{bf_h} | Cell {cell_size}px | FPS: {int(clock.get_fps())}", True, (120, 120, 120))

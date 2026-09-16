@@ -488,6 +488,39 @@ def test_decor_follows_terrain():
     assert on_wood > off_wood, (on_wood, off_wood)
 
 
+@test
+def test_render_terrain_smoke():
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import pygame
+    pygame.init()
+    pygame.display.set_mode((1, 1))
+    import terrain_render as trr
+    from renderer import build_grid_surface
+    from battle import Battle
+    import unit_library as ul
+    random.seed(8)
+    for name in ("Prairie", "Forêt", "Village", "Défilé", "Siège"):
+        a = ul.build_army("Armée Skaldienne", [("Infanterie régulière", 3)])
+        b = Battle(a, a, 60, 40, 8, map_name=name)
+        surf = build_grid_surface(b, 16)
+        assert surf.get_width() == 60 * 16
+        leg = trr.legend_surface(b.battlefield, pygame.font.SysFont("arial", 14))
+        if name == "Siège":
+            assert leg is None
+        else:
+            assert leg is not None and leg.get_height() > 20
+    # Une case de rivière est dessinée en bleu
+    random.seed(5)
+    b = Battle(a, a, 178, 64, 8, map_name="Défilé")
+    bf = b.battlefield
+    surf = build_grid_surface(b, 16)
+    rx, ry = next((x, y) for x in range(bf.width) for y in range(bf.height)
+                  if bf.terrain[x][y] == tr.RIVER and bf.grid[x][y] == 0)
+    r, g, bl, _ = surf.get_at((rx * 16 + 8, ry * 16 + 8))
+    assert bl > r and bl > g - 10, (r, g, bl)
+    assert set(trr.LEGEND) >= {tr.HILL, tr.WOOD, tr.RIVER, tr.FORD, tr.BRIDGE, tr.MARSH}
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":
