@@ -270,6 +270,7 @@ python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_determinism.py              # une graine rejoue la même bataille
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
+python src/measure_contact.py               # round du premier contact par carte
 python src/bench_balance.py 60              # équilibrage sur 60 graines par affrontement
 ```
 

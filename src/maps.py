@@ -2,7 +2,9 @@
 
 Types de cellules dans la grille:
     0 = vide (traversable)
-    1 = obstacle (infranchissable, bloque vision)
+    1 = obstacle (infranchissable, ne bloque PAS la vision — seuls les murs,
+        les portes fermées intactes et le terrain à effets — bois, collines,
+        cf. terrain.blocks_line — coupent une ligne de tir)
     2 = mur (infranchissable, unités dessus = +2 svg, CaC ne passe pas)
     3 = porte (destructible, a des PV)
 """
@@ -75,6 +77,11 @@ def generate_prairie(width, height):
 
     Les crêtes à height//4 et 3*height//4 sont interrompues à leurs extrémités
     pour laisser les flancs totalement libres au déploiement.
+
+    Terrain: les crêtes deviennent des collines (on les tient au lieu d'y
+    buter), une colline basse plus petite marque le centre du couloir
+    principal comme objectif naturel, et des broussailles (bois) masquent
+    la cavalerie juste devant chaque ligne de déploiement.
     """
     grid = [[0] * height for _ in range(width)]
 
