@@ -347,6 +347,76 @@ def test_cells_moved_uses_real_path_cost_not_chebyshev_jump():
     assert buggy == 9.0 and m._cells_moved != buggy, (m._cells_moved, buggy)
 
 
+# ── Cartes ──
+
+import maps
+
+SIZES = [(40, 30), (178, 64)]
+
+
+def map_checks(name, seeds=10, sizes=SIZES, min_paths=2):
+    for w, h in sizes:
+        for seed in range(seeds):
+            random.seed(500 + seed)
+            grid, data = maps.generate_map(name, w, h)
+            terr = data.get('terrain')
+            assert terr is not None, f"{name}: pas de terrain"
+            # Symétrie en miroir sur les cases libres des deux côtés
+            for x in range(w // 2):
+                for y in range(h):
+                    xm = w - 1 - x
+                    if grid[x][y] == 0 and grid[xm][y] == 0:
+                        assert terr[x][y] == terr[xm][y], (name, w, h, seed, x, y, terr[x][y], terr[xm][y])
+            left = [(1, y) for y in range(h) if grid[1][y] == 0 and tr.MOVE[terr[1][y]] is not None]
+            right = [(w - 2, y) for y in range(h) if grid[w - 2][y] == 0 and tr.MOVE[terr[w - 2][y]] is not None]
+            p1 = maps._bfs_path(grid, w, h, left, right, terr)
+            assert p1, f"{name} {w}x{h} graine {seed}: aucun passage"
+            if min_paths >= 2:
+                blocked = set(p1[1:-1])
+                p2 = maps._bfs_path(grid, w, h, left, right, terr, blocked=blocked)
+                assert p2, f"{name} {w}x{h} graine {seed}: un seul passage"
+            assert maps._bfs_path(grid, w, h, left, right, terr, avoid=(tr.MARSH,)), \
+                f"{name} {w}x{h} graine {seed}: aucun passage sans marais"
+
+
+def deploy_check(name, sizes=SIZES, seeds=4):
+    import unit_library as ul
+    from battle import Battle
+    for w, h in sizes:
+        for seed in range(seeds):
+            random.seed(900 + seed)
+            a1 = ul.build_army("Armée Skaldienne", [("Infanterie régulière", 12), ("Arbaletrier régulier", 6)])
+            a2 = ul.build_army("Armée Orlandar", [("Fantassin covaliir", 12), ("Archer covaliir", 6), ("Cavalier covaliir", 3)])
+            b = Battle(a1, a2, w, h, 8, map_name=name)
+            bf = b.battlefield
+            for u in b.army1 + b.army2:
+                t = tr.at(bf, *u.position)
+                assert tr.MOVE[t] == 1.0, f"{name} {w}x{h}: {u.name} déployé sur {t} en {u.position}"
+
+
+@test
+def test_connected_is_terrain_aware():
+    grid = [[0] * 5 for _ in range(7)]
+    terr = tr.make_grid(7, 5)
+    for y in range(5):
+        terr[3][y] = tr.RIVER
+    assert maps._connected(grid, 7, 5, (0, 2), (6, 2))            # ancien appel
+    assert not maps._connected(grid, 7, 5, (0, 2), (6, 2), terr)
+    terr[3][4] = tr.MARSH
+    assert maps._connected(grid, 7, 5, (0, 2), (6, 2), terr)
+    assert not maps._connected(grid, 7, 5, (0, 2), (6, 2), terr, avoid=(tr.MARSH,))
+
+
+@test
+def test_map_prairie():
+    map_checks("Prairie")
+    deploy_check("Prairie")
+    random.seed(1)
+    grid, data = maps.generate_map("Prairie", 178, 64)
+    names = {n for col in data['terrain'] for n in col}
+    assert {tr.HILL, tr.WOOD} <= names, names
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ Types de cellules dans la grille:
 import math
 import random
 
+import terrain as tr
+
 
 # ═══════════════════════════════════════════════════════════════
 #                    DÉFINITIONS DES MAPS
@@ -109,7 +111,32 @@ def generate_prairie(width, height):
             grid[cx][cy] = 1
             covers_placed += 1
 
-    return grid, {}
+    # ── Terrain ──
+    # Les crêtes deviennent des collines: on les tient au lieu d'y buter.
+    # La moitié des rochers disparaît, le reste sert de couvert au sommet.
+    for ry in ridge_ys:
+        for x in range(ridge_start_x, ridge_end_x + 1):
+            for y in range(ry - 2, ry + 3):
+                if 0 <= x < width and 0 < y < height - 1 and grid[x][y] == 1 \
+                        and random.random() < 0.5:
+                    grid[x][y] = 0
+
+    terr = tr.make_grid(width, height)
+    half = width // 2
+    for ry in ridge_ys:
+        for x in range(ridge_start_x, half):
+            for y in (ry - 1, ry, ry + 1):
+                if 0 < y < height - 1:
+                    terr[x][y] = tr.HILL
+    # Broussailles sur les flancs, juste devant la ligne de déploiement:
+    # de quoi masquer une cavalerie
+    for by in (height / 8, 7 * height / 8):
+        _paint_disc(terr, width * 0.44, by, 1.8, tr.WOOD, width, height)
+    _mirror_terrain(terr, width, height)
+    # Colline centrale basse: l'objectif naturel du couloir principal
+    _paint_disc(terr, (width - 1) / 2, (height - 1) / 2, 3.0, tr.HILL, width, height)
+
+    return grid, {'terrain': terr}
 
 
 def _carve(grid, x, y, r, width, height):
@@ -123,24 +150,68 @@ def _carve(grid, x, y, r, width, height):
                     grid[nx][ny] = 0
 
 
-def _connected(grid, width, height, start, goal):
-    """Vrai si goal est atteignable depuis start (8-voisinage, cases libres)."""
-    if grid[start[0]][start[1]] != 0 or grid[goal[0]][goal[1]] != 0:
-        return False
-    seen = {start}
-    stack = [start]
-    while stack:
-        cx, cy = stack.pop()
-        if (cx, cy) == goal:
-            return True
+def _connected(grid, width, height, start, goal, terrain=None, avoid=()):
+    """Vrai si goal est atteignable depuis start (8-voisinage, cases libres).
+    Avec `terrain`: la rivière bloque, et les terrains de `avoid` aussi."""
+    return _bfs_path(grid, width, height, [start], [goal], terrain, avoid) is not None
+
+
+def _bfs_path(grid, width, height, starts, goals, terrain=None, avoid=(), blocked=()):
+    """Plus court chemin (en cases, 8-voisinage) d'une case de `starts` à une
+    case de `goals`, ou None. `blocked`: cases interdites en plus."""
+    goals = set(goals)
+    blocked = set(blocked)
+
+    def ok(x, y):
+        if grid[x][y] != 0 or (x, y) in blocked:
+            return False
+        if terrain is not None:
+            name = terrain[x][y]
+            if tr.MOVE[name] is None or name in avoid:
+                return False
+        return True
+
+    from collections import deque
+    came = {}
+    queue = deque()
+    for s in starts:
+        if ok(*s) and s not in came:
+            came[s] = None
+            queue.append(s)
+    while queue:
+        cur = queue.popleft()
+        if cur in goals:
+            path = []
+            while cur is not None:
+                path.append(cur)
+                cur = came[cur]
+            return path[::-1]
+        cx, cy = cur
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 nx, ny = cx + dx, cy + dy
-                if (0 <= nx < width and 0 <= ny < height and (nx, ny) not in seen
-                        and grid[nx][ny] == 0):
-                    seen.add((nx, ny))
-                    stack.append((nx, ny))
-    return False
+                if (0 <= nx < width and 0 <= ny < height and (nx, ny) not in came
+                        and ok(nx, ny)):
+                    came[(nx, ny)] = cur
+                    queue.append((nx, ny))
+    return None
+
+
+def _mirror_terrain(terr, width, height):
+    """Recopie la moitié ouest sur l'est (x → width-1-x): aucun camp n'est
+    avantagé par le terrain."""
+    for x in range(width // 2):
+        for y in range(height):
+            terr[width - 1 - x][y] = terr[x][y]
+
+
+def _paint_disc(terr, cx, cy, r, name, width, height):
+    """Peint un disque de terrain (centre réel autorisé)."""
+    ri = int(math.ceil(r)) + 1
+    for x in range(int(cx) - ri, int(cx) + ri + 2):
+        for y in range(int(cy) - ri, int(cy) + ri + 2):
+            if 0 <= x < width and 0 <= y < height and (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                terr[x][y] = name
 
 
 def generate_forest(width, height):
