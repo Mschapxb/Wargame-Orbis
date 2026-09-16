@@ -29,6 +29,10 @@ MATCHES = [
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 OFF = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
+# Taille de carte (défaut: la petite grille historique, rapide; passer
+# 178 64 pour la taille réelle d'une partie sur écran 1920 px)
+W = int(sys.argv[3]) if len(sys.argv) > 3 else 40
+H = int(sys.argv[4]) if len(sys.argv) > 4 else 30
 t0 = time.time()
 for label, mapname, (f1, c1), (f2, c2) in MATCHES:
     w1 = w2 = draw = 0
@@ -38,7 +42,7 @@ for label, mapname, (f1, c1), (f2, c2) in MATCHES:
         random.seed(OFF + seed)
         a1 = ul.build_army(f1, list(c1.items()))
         a2 = ul.build_army(f2, list(c2.items()))
-        b = Battle(a1, a2, map_name=mapname)
+        b = Battle(a1, a2, W, H, 8, map_name=mapname)
         while not b.is_battle_over() and b.round <= 90:
             b.simulate_round()
         res = b.is_battle_over()

@@ -61,11 +61,15 @@ Au lancement, un menu permet de :
 
 | Carte | Description |
 |-------|-------------|
-| **Prairie** | Terrain ouvert, quelques obstacles. Favorise la cavalerie et les charges. |
-| **Forêt** | Dense, beaucoup d'arbres. Ralentit les charges, avantage aux embuscades. |
-| **Village** | Bâtiments qui créent des couloirs et des points de choke. |
+| **Prairie** | Terrain ouvert, deux crêtes rocheuses dessinent trois couloirs. Favorise la cavalerie et les charges. |
+| **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. |
+| **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. |
 | **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. |
 | **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. |
+
+Les cartes sont larges (~2,6 écrans × 64 cases): les armées marchent un moment
+avant le choc — premier corps-à-corps vers le 7e round en prairie, 9e en forêt et
+au village. Le siège conserve son placement historique.
 
 Chaque carte est habillée d'un **décor** généré (arbres, buissons, fougères,
 fleurs, rochers, caisses, tonneaux, gravats…) et de taches de sol organiques.
@@ -167,6 +171,27 @@ les chercher** au lieu de se débander (mesuré: 2/30 → 30/30 victoires).
 
 ---
 
+## 🎨 Rendu graphique
+
+Tout est **généré en code** (aucune image à fournir hormis les tokens optionnels):
+les sprites sont dessinés une fois à la taille de cellule courante puis mis en
+cache, rotations comprises.
+
+| Élément | Rendu |
+|---------|-------|
+| **Projectiles** | Flèche, carreau d'arbalète et trait de baliste distincts (choisis selon l'arme), trajectoire en cloche proportionnelle à la portée, pointe qui suit la tangente, ombre au sol et sillage |
+| **Corps à corps** | Arc de lame qui balaie et s'efface (coups successifs alternés coup droit / revers), estoc pour les armes d'hast, couleur selon la nature du coup (charge, opportunité, élan…) |
+| **Sorts** | Boule de feu animée avec traînée de braises, explosion (éclair, anneau, braises, fumée, trace calcinée), orbe arcanique lumineux, rayon de soin et croix qui s'élèvent, rune de bouclier tournante, blocs qui surgissent du sol |
+| **Impacts** | Étincelles, gouttes de sang, poussière ou débris selon le coup; éclairs lumineux en mélange additif |
+| **Morts** | Le token reste debout jusqu'à l'instant du coup fatal, recule sous le choc, chute dans le sens du coup, s'assombrit puis s'efface en laissant une dépouille au sol |
+| **Cartes** | Grain de texture, taches de terrain organiques, décor semé (arbres, buissons, rochers, caisses…), maisons d'un seul tenant, falaises stratifiées, remparts crénelés avec ombre portée, portes qui se fissurent |
+| **Ambiance** | Ombres de nuages qui dérivent, vignettage des bords de l'écran |
+
+Les décalques au sol (sang, brûlures, dépouilles) s'estompent au bout d'une
+trentaine de secondes; particules et décalques sont plafonnés. Mesuré avec 79
+unités en pleine mêlée: **7 ms** par image en médiane, **12,5 ms** au 99e
+percentile (le budget à 60 i/s est de 16,6 ms). La pause fige aussi les effets.
+
 ## 🏗️ Architecture du projet
 
 ```
@@ -181,7 +206,9 @@ battle-simulator/
 ├── unit.py              # Classe Unit (stats, combat, animations)
 ├── unit_library.py      # Base de données d'unités et armées prédéfinies
 ├── models.py            # Armes et sorts (Arme, SpellFireball, etc.)
-├── effects.py           # Effets visuels (projectiles, explosions, soins)
+├── effects.py           # Données d'effets horodatées (projectiles, coups, sorts, morts)
+├── fx_render.py         # Mise en scène: particules, décalques, animations de mort
+├── sprites.py           # Sprites procéduraux mis en cache (projectiles, lames, sorts…)
 ├── maps.py              # Définition des cartes et génération de terrain
 ├── tokens/              # Images PNG des tokens d'unités (optionnel)
 └── requirements.txt     # Dépendances Python

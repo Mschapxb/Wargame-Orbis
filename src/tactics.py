@@ -178,9 +178,8 @@ def predicted_position(unit, steps=1, clamp=None):
     """Extrapole où sera l'unité dans `steps` round(s) d'après son
     déplacement du round précédent. Permet d'INTERCEPTER au lieu de
     courir derrière (la cavalerie n'arrivait jamais sur les tireurs)."""
-    px, py = getattr(unit, '_prev_position', unit.position)
     cx, cy = unit.position
-    dx, dy = cx - px, cy - py
+    dx, dy = getattr(unit, '_last_step', (0, 0))
     nx = cx + dx * steps
     ny = cy + dy * steps
     if clamp is not None:

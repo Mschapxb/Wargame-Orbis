@@ -252,7 +252,8 @@ class CommanderAI:
 
         # Urgences: elles brisent le verrou (on ne laisse pas égorger ses
         # tireurs par fidélité au plan précédent)
-        urgent = candidate in ("screen", "rush")
+        urgent = candidate in ("screen", "rush") or (
+            candidate == "exploit" and (s['ratio'] >= 3.0 or len(s['theirs']) <= 2))
         if candidate != self.posture:
             if self._posture_lock > 0 and not urgent:
                 return self.posture
@@ -269,6 +270,12 @@ class CommanderAI:
                 if s['my_ranged'] <= 0.5 and s['en_ranged'] > 3.0:
                     return "rush"
                 return "balanced"
+
+        # 0) Coup de grâce: l'adversaire est anéanti ou presque. On ne tient
+        # plus de ligne, on ne se regroupe plus: on traque les survivants.
+        if s['theirs'] and (s['ratio'] >= 3.0
+                            or (len(s['theirs']) <= 2 and len(s['mine']) >= 2 * len(s['theirs']))):
+            return "exploit"
 
         my_melee_units = [u for u in s['mine']
                           if u._max_range < 4 and not u.spells and u.vitesse > 0]
@@ -395,10 +402,11 @@ class CommanderAI:
             self._posture_lock -= 1
         # L'attente en ligne se compte: on ne reste pas éternellement au
         # garde-à-vous sous prétexte de discipline.
+        # Cumulé sur toute la bataille: en terrain difficile (forêt), les
+        # retardataires arrivent au compte-gouttes et un compteur remis à
+        # zéro à chaque round sans attente laissait l'armée piétiner.
         if getattr(self, '_line_held_this_round', False):
             self._line_hold_rounds += 1
-        else:
-            self._line_hold_rounds = 0
         self._line_held_this_round = False
 
         bf = self.battlefield
@@ -1370,6 +1378,10 @@ class CommanderAI:
                 return TacticalOrder("attack", target_unit=e, priority=3)
         if self.posture in ("hold_line", "screen"):
             return TacticalOrder("hold", target_pos=unit.position, priority=3)
+        if self.posture == "exploit":
+            # Plus besoin d'écran: on se porte à portée des survivants
+            c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+            return TacticalOrder("attack", target_unit=c, priority=3)
         adv = self._support_advance_pos(unit)
         if adv is not None:
             return TacticalOrder("support", target_pos=adv, priority=2)

@@ -6,8 +6,9 @@ import tactics
 
 from battlefield import Battlefield
 from effects import (FloatingText, AttackLine, Projectile,
-                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect, DeathFade,
-                     ImpactBurst, ShockWave, FX_CLOCK)
+                     AoeExplosion, HealBeam, ArmorShimmer, WallEffect,
+                     ImpactBurst, ShockWave, SlashEffect, ThrustEffect,
+                     DeathAnimation, FX_CLOCK)
 from ai_commander import CommanderAI
 
 # RNG dédiée aux effets visuels (délais de volée, dispersion...)
@@ -31,6 +32,15 @@ _KIND_COLORS = {
 # charges, puis l'echange general. Les fenetres se CHEVAUCHENT - c'est ce
 # chevauchement qui donne l'impression de temps reel.
 T_MOVE_START, T_MOVE_END = 0.02, 0.46
+
+# Teinte des lames selon la nature du coup (arc de taille / estoc)
+_BLADE_COLORS = {
+    'normal': (255, 240, 225),
+    'charge': (255, 215, 110),
+    'opportunity': (255, 250, 170),
+    'momentum': (255, 160, 255),
+    'reaction': (170, 225, 255),
+}
 T_CHARGE = 0.26
 T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
@@ -108,32 +118,47 @@ class Battle:
         def to_px(gpos):
             return (gpos[0] * cs + cs // 2, gpos[1] * cs + cs // 2)
 
+        strikes = {}  # coups successifs sur la même cible: décalés et alternés
         for evt in events:
             t = evt['type']
             d = base + int(evt.get('at', 0))
             kind = evt.get('kind', 'normal')
 
             if t == 'arrow':
+                proj = evt.get('proj', 'arrow')
+                dur = {"arrow": 34, "bolt": 26, "ballista": 30}.get(proj, 34)
                 # Petite dispersion: les volées partent en cascade
                 self.visual_effects['projectiles'].append(
                     Projectile(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               (200, 180, 100), 34, "arrow", cs,
+                               (200, 180, 100), dur, proj, cs,
                                delay=d + _FX_RNG.randint(0, 6)))
-            elif t == 'reach':
-                self.visual_effects['attack_lines'].append(
-                    AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               _KIND_COLORS.get(kind, (255, 180, 50)), 22, delay=d))
-            elif t == 'melee':
-                self.visual_effects['attack_lines'].append(
-                    AttackLine(to_px(evt['from_grid']), to_px(evt['to_grid']),
-                               _KIND_COLORS.get(kind, (255, 100, 100)), 22, delay=d))
+            elif t in ('reach', 'melee'):
+                fp = to_px(evt['from_grid'])
+                tp = to_px(evt['to_grid'])
+                key = (evt['from_grid'], evt['to_grid'])
+                n = strikes.get(key, 0)
+                strikes[key] = n + 1
+                dd = d + n * 5
+                col = _BLADE_COLORS.get(kind, _BLADE_COLORS['normal'])
+                if t == 'reach':
+                    self.visual_effects.setdefault('thrusts', []).append(
+                        ThrustEffect(fp, tp, col, 12, delay=dd))
+                else:
+                    ang = math.atan2(tp[1] - fp[1], tp[0] - fp[0])
+                    cx = fp[0] + (tp[0] - fp[0]) * 0.72
+                    cy = fp[1] + (tp[1] - fp[1]) * 0.72
+                    scale = 1.25 if kind in ('charge', 'momentum') else 1.0
+                    self.visual_effects.setdefault('slashes', []).append(
+                        SlashEffect((cx, cy), ang, col, mirror=bool(n % 2),
+                                    scale=scale, duration=14, delay=dd))
             elif t == 'impact':
                 px = to_px(evt['at_grid'])
                 fx_from = to_px(evt.get('from_grid', evt['at_grid']))
                 ang = math.atan2(px[1] - fx_from[1], px[0] - fx_from[0])
                 col = (255, 200, 120) if evt.get('ranged') else (255, 120, 70)
+                fxk = evt.get('fx') or ('ranged' if evt.get('ranged') else 'melee')
                 self.visual_effects.setdefault('impacts', []).append(
-                    ImpactBurst(px, col, evt.get('power', 1.0), ang, 18, delay=d))
+                    ImpactBurst(px, col, evt.get('power', 1.0), ang, 18, delay=d, kind=fxk))
             elif t == 'shockwave':
                 px = to_px(evt['at_grid'])
                 self.visual_effects.setdefault('shockwaves', []).append(
@@ -281,8 +306,39 @@ class Battle:
                 for role_list in groups[key].values():
                     _rng.shuffle(role_list)
 
-            top_margin = 1
-            usable = max(4, bf.height - 2)
+            # Hauteur utilisable: le plus long tronçon praticable de la colonne
+            # de déploiement (celui qui passe par le centre de préférence).
+            # Dans un défilé, déployer sur toute la hauteur jetait la moitié
+            # des unités dans les parois rocheuses.
+            col = max(0, min(bf.width - 1, base_x))
+            mid_y = bf.height // 2
+
+            def walkable(yy):
+                if bf.is_valid(col, yy):
+                    return True
+                # Un obstacle ISOLÉ (arbre de lisière, rocher) ne coupe pas la
+                # colonne: l'unité qui y tomberait est simplement décalée.
+                return (0 < yy < bf.height - 1 and bf.is_valid(col, yy - 1)
+                        and bf.is_valid(col, yy + 1))
+
+            best, best_score = (1, max(4, bf.height - 2)), None
+            y = 1
+            while y < bf.height - 1:
+                if walkable(y):
+                    y0 = y
+                    while y < bf.height - 1 and walkable(y):
+                        y += 1
+                    length = y - y0
+                    # Le tronçon le plus proche du centre l'emporte: un long
+                    # tronçon excentré enverrait l'armée au bord de la carte
+                    dist = 0 if y0 <= mid_y < y else min(abs(mid_y - y0), abs(mid_y - (y - 1)))
+                    score = length - 4 * dist
+                    if best_score is None or score > best_score:
+                        best, best_score = (y0, length), score
+                else:
+                    y += 1
+            top_margin, usable = best
+            usable = max(4, usable)
             gap = 2 if len(order) > 1 else 0
             avail = max(len(order) * 3, usable - gap * (len(order) - 1))
 
@@ -312,7 +368,11 @@ class Battle:
                     i += 1
 
             total_h = sum(bands) + gap * (len(order) - 1)
-            cur_y = top_margin + max(0, (usable - total_h) // 2)
+            # Centré sur le MILIEU DE LA CARTE, borné au tronçon praticable
+            # (et non centré dans le tronçon, qui peut être excentré)
+            lo = top_margin
+            hi = max(lo, top_margin + usable - total_h)
+            cur_y = max(lo, min(hi, bf.height // 2 - total_h // 2))
 
             for key, band_h in zip(order, bands):
                 g = groups[key]
@@ -337,7 +397,19 @@ class Battle:
         # Placement attaquant (armée 1) — à gauche du centre
         # Lignes resserrées pour que l'armée avance de manière cohésive
         mid_x = bf.width // 2
-        gap = 12  # demi-écart: 12 cases de chaque côté = 24-25 cases entre fronts
+        # Demi-écart entre les fronts: les armées doivent marcher un peu
+        # avant le choc (~7 rounds pour l'infanterie en terrain découvert).
+        # La forêt et le village imposent le leur: on se déploie dans les
+        # champs, juste à l'extérieur du terrain central. Le siège garde son
+        # placement historique.
+        if self.map_name == "Siège":
+            gap = 12
+        elif bf.deploy_gap:
+            gap = int(bf.deploy_gap)
+        else:
+            gap = max(12, int(bf.width * 0.12))
+        # Jamais au point de pousser l'arrière-garde hors de la carte
+        gap = max(4, min(gap, mid_x - 8))
 
         a1_front = mid_x - gap
         deploy_contingents(self.army1, a1_front, -1)
@@ -1178,7 +1250,7 @@ class Battle:
                 ImpactBurst((gx * cs + cs // 2, gy * cs + cs // 2),
                             (220, 170, 90), 1.4,
                             math.atan2(gy - uy, gx - ux), 18,
-                            delay=FX_CLOCK.current_delay + 2))
+                            delay=FX_CLOCK.current_delay + 2, kind="gate"))
             if destroyed:
                 unit.floating_texts.append(
                     FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
@@ -1539,10 +1611,24 @@ class Battle:
                 w_u, h_u = self.battlefield.get_unit_dims(unit)
                 px_fx = unit.position[0] * cs_fx + (w_u * cs_fx) // 2
                 py_fx = unit.position[1] * cs_fx + (h_u * cs_fx) // 2
+                pp = unit._prev_position or unit.position
+                from_fx = (pp[0] * cs_fx + (w_u * cs_fx) // 2,
+                           pp[1] * cs_fx + (h_u * cs_fx) // 2)
                 team_c = (60, 120, 220) if id(unit) in self._army1_ids else (220, 60, 60)
-                self.visual_effects.setdefault('death_fades', []).append(
-                    DeathFade((px_fx, py_fx), max(4, cs_fx // 2 - 3), team_c,
-                              delay=getattr(unit, '_hit_flash_delay', 0)))
+                # La victime tombe dans le sens du coup reçu
+                killer = getattr(unit, '_last_attacker', None)
+                if (killer is not None and killer.position is not None
+                        and killer.position != unit.position):
+                    fall = math.atan2(unit.position[1] - killer.position[1],
+                                      unit.position[0] - killer.position[0])
+                else:
+                    fall = _FX_RNG.uniform(0, math.tau)
+                self.visual_effects.setdefault('deaths', []).append(
+                    DeathAnimation(from_fx, (px_fx, py_fx), (w_u, h_u),
+                                   unit.token_name, unit.color, team_c, fall,
+                                   texts=list(unit.floating_texts), duration=70,
+                                   delay=getattr(unit, '_hit_flash_delay', 0),
+                                   seed=id(unit) & 0xFFFF))
                 self.battlefield.remove_unit(unit)
 
         # Fuyards qui atteignent le bord → quittent la map
@@ -1560,6 +1646,26 @@ class Battle:
                         bf.remove_unit(unit)
                         fled_list.append(unit)
                         army_list.remove(unit)
+
+        # ── Fin de partie enlisée ──
+        # Quelques survivants isolés, sans plus aucun combat depuis
+        # longtemps, face à une armée bien plus nombreuse: ils ne tiennent pas
+        # le champ de bataille, ils se débandent. Sans cela, un dernier
+        # soldat réfugié dans un coin pouvait faire durer la partie sans fin.
+        fighting = any(u._damage_taken_round > 0 for u in self.army1 + self.army2)
+        self._quiet_rounds = 0 if fighting else getattr(self, '_quiet_rounds', 0) + 1
+        if self._quiet_rounds >= 10:
+            n1 = sum(1 for u in self.army1 if u.is_alive and not u.fleeing)
+            n2 = sum(1 for u in self.army2 if u.is_alive and not u.fleeing)
+            for army, mine, theirs in ((self.army1, n1, n2), (self.army2, n2, n1)):
+                if mine and theirs and mine * 4 <= theirs:
+                    for u in army:
+                        if u.is_alive and not u.fleeing:
+                            u.fleeing = True
+                            u.status_text = "DÉROUTE"
+                            u.floating_texts.append(FloatingText("Déroute!", (255, 100, 50), 80))
+                    self.log_event("Les derniers survivants abandonnent le terrain !", (255, 120, 60), 2)
+                    self._quiet_rounds = 0
 
         # Vieillissement de la pression subie (lu par la phase de moral du
         # round suivant — d'où le fait de le faire ICI et pas au départ)

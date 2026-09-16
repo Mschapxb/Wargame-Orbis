@@ -26,7 +26,8 @@ class Unit:
         self.is_alive = True
         
         # Animation: position précédente pour interpolation fluide
-        self._prev_position = (0, 0)  # Position au round précédent
+        self._prev_position = (0, 0)  # Position au début du round
+        self._last_step = (0, 0)      # Déplacement du round précédent
         self._lunge_target = None     # Position pixel de la cible pour lunge CaC
         self._lunge_timer = 0         # Timer du lunge (frames restantes)
         self._hit_flash = 0           # Frames restantes de flash de dégâts
@@ -152,6 +153,14 @@ class Unit:
 
     def start_round(self):
         """Réinitialise l'état de réaction en début de round."""
+        # Position de départ du round (pour l'animation) et dernier pas
+        # effectué (pour l'anticipation). Auparavant _prev_position n'était
+        # mise à jour qu'au mouvement: une unité arrêtée rejouait son ancien
+        # déplacement à chaque round et l'IA lui prêtait une vitesse fantôme.
+        if self.position is not None:
+            pp = self._prev_position or self.position
+            self._last_step = (self.position[0] - pp[0], self.position[1] - pp[1])
+            self._prev_position = self.position
         self._opportunity_used = False
         self._momentum_used = False
         self._acted_this_round = False
@@ -331,6 +340,13 @@ class Unit:
                 continue
 
             is_ranged_weapon = arme.porte >= 4
+            # Sprite du projectile: trait de baliste, carreau ou flèche
+            if self.is_artillery or arme.porte >= 16:
+                proj_kind = "ballista"
+            elif "arbal" in arme.name.lower() or "carreau" in arme.name.lower():
+                proj_kind = "bolt"
+            else:
+                proj_kind = "arrow"
             # Temps de vol: le tir part maintenant, il touche plus tard.
             # Les textes (Raté!/-3) sont donc décalés à l'ARRIVÉE.
             flight = 16 if is_ranged_weapon else 0
@@ -343,7 +359,7 @@ class Unit:
                 if is_ranged_weapon:
                     events.append({'type': 'arrow', 'from_grid': self.position,
                                    'to_grid': target.position, 'kind': kind,
-                                   'at': 0})
+                                   'proj': proj_kind, 'at': 0})
                 elif arme.porte >= 2:
                     events.append({'type': 'reach', 'from_grid': self.position,
                                    'to_grid': target.position, 'kind': kind,
@@ -389,6 +405,7 @@ class Unit:
                     'from_grid': self.position,
                     'power': min(2.5, dmg / max(1.0, target.max_pv * 0.25)),
                     'ranged': is_ranged_weapon,
+                    'fx': 'ranged' if is_ranged_weapon else 'melee',
                     'at': flight + (0 if is_ranged_weapon else 2),
                 })
                 if killed:
@@ -553,7 +570,7 @@ class Unit:
                 events.append({'type': 'impact', 'at_grid': enemy.position,
                                'from_grid': target.position,
                                'power': min(2.5, dmg_f / max(1.0, enemy.max_pv * 0.25)),
-                               'ranged': True, 'at': FLIGHT + 2})
+                               'ranged': True, 'fx': 'fire', 'at': FLIGHT + 2})
 
         FX_CLOCK.at(base_t)
         return True
@@ -642,7 +659,7 @@ class Unit:
         events.append({'type': 'impact', 'at_grid': target.position,
                        'from_grid': self.position,
                        'power': min(2.5, dmg_p / max(1.0, target.max_pv * 0.25)),
-                       'ranged': True, 'at': FLIGHT + 2})
+                       'ranged': True, 'fx': 'magic', 'at': FLIGHT + 2})
         FX_CLOCK.at(base_t)
         return True
 

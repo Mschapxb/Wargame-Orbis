@@ -16,6 +16,9 @@ class Battlefield:
         _raw = dict(map_data or {})
         self.decor = list(_raw.pop('decor', []))
         self.ground_patches = list(_raw.pop('ground_patches', []))
+        # Demi-écart entre les fronts au déploiement, imposé par la carte
+        # (forêt, village: juste à l'extérieur du terrain central)
+        self.deploy_gap = _raw.pop('deploy_gap', None)
 
         # Données de siège
         self.siege_data = _raw
@@ -211,7 +214,6 @@ class Battlefield:
 
     def move_unit(self, unit, new_pos):
         """Déplace une unité vers une nouvelle position."""
-        unit._prev_position = unit.position  # Sauvegarder pour animation
         self.remove_unit(unit)
         unit.position = new_pos
         self.place_unit(unit)
@@ -222,8 +224,17 @@ class Battlefield:
     def chebyshev_distance(self, a, b):
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
-    def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=1200):
-        """A* optimisé — opérations inlinées pour la performance."""
+    def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=1200,
+                    partial=False):
+        """A* optimisé — opérations inlinées pour la performance.
+
+        partial=True: si l'objectif est inaccessible (case d'arbre visée par
+        un ordre, poche fermée, budget épuisé), renvoie le chemin vers la
+        case atteinte la plus PROCHE de l'objectif plutôt qu'une liste vide.
+        Sans cela, l'unité retombait sur un déplacement glouton et venait
+        buter contre les bosquets. Réservé au mouvement: une charge, elle,
+        doit réellement atteindre sa case.
+        """
         if reserved_positions is None:
             reserved_positions = set()
         
@@ -252,6 +263,7 @@ class Battlefield:
         heapq.heappush(open_set, (h0, 0.0, sx, sy))
         g_score = {start: 0.0}
         came_from = {}
+        best_node, best_h = start, h0
         
         _DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
         _DIAG_COST = 1.414
@@ -281,6 +293,13 @@ class Battlefield:
             current = (cx, cy)
             if g > g_score.get(current, _INF):
                 continue
+            if partial:
+                hc = _abs(gx - cx)
+                hcy = _abs(gy - cy)
+                if hcy > hc:
+                    hc = hcy
+                if hc < best_h:
+                    best_h, best_node = hc, current
             
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
@@ -314,7 +333,15 @@ class Battlefield:
                     if hdy > h:
                         h = hdy
                     _heappush(open_set, (new_g + h, new_g, nx, ny))
-        
+
+        if partial and best_node != start:
+            path = []
+            current = best_node
+            while current in came_from:
+                path.append(current)
+                current = came_from[current]
+            path.reverse()
+            return path
         return []
 
     def find_best_attack_position(self, unit, target, battle, reserved_positions=None):
@@ -413,7 +440,7 @@ class Battlefield:
                 goal = (self.width - 1, uy)
             
             # Essayer le A* en premier
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
                 steps = min(flee_speed, len(path))
                 # Essayer le step le plus loin possible, puis réduire
@@ -577,7 +604,7 @@ class Battlefield:
             goal = move_pos
             # Trouver une cible pour le combat (le plus proche)
             target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
                 steps = min(unit.vitesse, len(path))
                 for i in range(steps, 0, -1):
@@ -632,7 +659,7 @@ class Battlefield:
         elif goal is None:
             return None, target
         else:
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions)
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
             if path:
                 steps = min(unit.vitesse, len(path))
                 for i in range(steps, 0, -1):

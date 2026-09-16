@@ -7,6 +7,7 @@ Types de cellules dans la grille:
     3 = porte (destructible, a des PV)
 """
 
+import math
 import random
 
 
@@ -35,9 +36,9 @@ MAP_TYPES = {
     },
     "Siège": {
         "description": "Forteresse avec murs et portes défensives",
-        "bg_color": (40, 45, 50),
-        "obstacle_color": (80, 80, 80),
-        "grid_color": (50, 55, 60),
+        "bg_color": (64, 62, 50),
+        "obstacle_color": (92, 88, 80),
+        "grid_color": (70, 68, 56),
         "wall_color": (100, 100, 110),
         "gate_color": (140, 100, 50),
     },
@@ -111,206 +112,247 @@ def generate_prairie(width, height):
     return grid, {}
 
 
+def _carve(grid, x, y, r, width, height):
+    """Dégage un disque de rayon r (sentiers, clairières)."""
+    ri = int(math.ceil(r))
+    for dx in range(-ri, ri + 1):
+        for dy in range(-ri, ri + 1):
+            if dx * dx + dy * dy <= r * r:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    grid[nx][ny] = 0
+
+
+def _connected(grid, width, height, start, goal):
+    """Vrai si goal est atteignable depuis start (8-voisinage, cases libres)."""
+    if grid[start[0]][start[1]] != 0 or grid[goal[0]][goal[1]] != 0:
+        return False
+    seen = {start}
+    stack = [start]
+    while stack:
+        cx, cy = stack.pop()
+        if (cx, cy) == goal:
+            return True
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nx, ny = cx + dx, cy + dy
+                if (0 <= nx < width and 0 <= ny < height and (nx, ny) not in seen
+                        and grid[nx][ny] == 0):
+                    seen.add((nx, ny))
+                    stack.append((nx, ny))
+    return False
+
+
 def generate_forest(width, height):
-    """Forêt: 3 routes garanties traversant toute la carte, forêt dense entre elles.
+    """Forêt: un MASSIF BOISÉ au centre du champ de bataille.
 
-    Routes (garanties libres sur toute la largeur):
-      • Centre      (y ≈ height//2)         — 5 cases de large
-      • Nord        (y ≈ height//4)         — 3 cases de large
-      • Sud         (y ≈ 3*height//4)       — 3 cases de large
+    Les deux armées se déploient en terrain découvert, de part et d'autre,
+    puis doivent entrer dans le bois pour se rencontrer.
 
-    Zones boisées: remplissage case par case avec probabilité décroissante
-    au bord des routes (lisière progressive, pas un mur vertical brutal).
-    Quelques clairières aléatoires dans les zones boisées.
+    Structure:
+      • Massif elliptique au centre, contour irrégulier (pas un ovale net)
+      • Fait de BOSQUETS serrés séparés par des passages sinueux: on s'y
+        faufile au lieu d'y buter sur un mur d'arbres
+      • Clairières intérieures (points d'affrontement naturels)
+      • 3 à 4 sentiers ouest → est garantis, légèrement sinueux
+      • Lisière clairsemée, puis champ ouvert où l'on se déploie
     """
     grid = [[0] * height for _ in range(width)]
+    cx, cy = width // 2, height // 2
+    rx = max(5, int(width * 0.10))
+    ry = max(4, int(height * 0.40))
 
-    center_y = height // 2
-    road_north_y = height // 4
-    road_south_y = 3 * height // 4
+    phases = [random.uniform(0, math.tau) for _ in range(3)]
+    amps, freqs = (0.10, 0.07, 0.05), (3, 5, 8)
 
-    # Demi-largeurs des routes (cases libres de chaque côté de l'axe)
-    ROAD_HALF_C = 2   # Route centrale: 5 cases (±2)
-    ROAD_HALF_S = 1   # Routes latérales: 3 cases (±1)
+    def edge(theta):
+        return 1.0 + sum(a * math.sin(f * theta + p) for a, f, p in zip(amps, freqs, phases))
 
-    def road_clearance(y):
-        """Distance au bord de la route la plus proche (0 = sur la route)."""
-        d_c = max(0, abs(y - center_y) - ROAD_HALF_C)
-        d_n = max(0, abs(y - road_north_y) - ROAD_HALF_S)
-        d_s = max(0, abs(y - road_south_y) - ROAD_HALF_S)
-        return min(d_c, d_n, d_s)
+    def inside(x, y, scale=1.0):
+        dx, dy = (x - cx) / rx, (y - cy) / ry
+        return math.hypot(dx, dy) < edge(math.atan2(dy, dx)) * scale
 
-    # Remplir la forêt case par case
-    # p(arbre) augmente avec la distance à la route (lisière progressive)
-    for x in range(width):
-        for y in range(height):
-            if y == 0 or y == height - 1:
-                continue
-            dist = road_clearance(y)
-            if dist == 0:
-                continue   # Sur la route: toujours libre
-            # Lisière (dist=1): 40%, dist=2: 65%, dist>=3: 80%
-            if dist == 1:
-                p = 0.40
-            elif dist == 2:
-                p = 0.65
-            else:
-                p = 0.80
-            if random.random() < p:
-                grid[x][y] = 1
-
-    # Creuser des clairières (zones ouvertes dans la forêt)
-    num_clearings = random.randint(6, 10)
-    for _ in range(num_clearings):
-        cx = random.randint(width // 6, 5 * width // 6)
-        # Clairière uniquement dans les zones boisées (loin des routes)
-        zone = random.choice([
-            (road_north_y + ROAD_HALF_S + 3, center_y - ROAD_HALF_C - 3),
-            (center_y + ROAD_HALF_C + 3, road_south_y - ROAD_HALF_S - 3),
-        ])
-        if zone[0] >= zone[1]:
-            continue
-        cy = random.randint(zone[0], zone[1])
-        r = random.randint(2, 4)
-        for ox in range(cx - r, cx + r + 1):
-            for oy in range(cy - r, cy + r + 1):
-                if 1 <= ox < width - 1 and 1 <= oy < height - 1:
-                    if abs(ox - cx) + abs(oy - cy) <= r:
-                        grid[ox][oy] = 0
-
-    # Garantir que les routes sont 100% libres (passe finale)
-    for x in range(width):
-        for y in range(height):
-            if road_clearance(y) == 0:
-                grid[x][y] = 0
-
-    # Quelques couverts légers dans les routes (arbres isolés)
-    for route_y in [center_y, road_north_y, road_south_y]:
-        count = 0
-        for _ in range(50):
-            if count >= 4:
+    # ── Bosquets ──
+    area = math.pi * rx * ry
+    for _ in range(int(area / 11)):
+        for _try in range(20):
+            gx = random.randint(cx - rx, cx + rx)
+            gy = random.randint(cy - ry, cy + ry)
+            if inside(gx, gy, 0.95):
                 break
-            tx = random.randint(width // 5, 4 * width // 5)
-            ty = route_y + random.randint(-1, 1)
-            if 0 <= ty < height and grid[tx][ty] == 0 and road_clearance(ty) == 0:
-                # Ne pas placer deux arbres adjacents (garder le passage)
-                if not any(grid[tx + dx][ty] == 1 for dx in [-1, 1] if 0 <= tx + dx < width):
-                    if random.random() < 0.4:
-                        grid[tx][ty] = 1
-                        count += 1
+        else:
+            continue
+        gr = random.uniform(1.0, 2.6)
+        ri = int(math.ceil(gr))
+        for dx in range(-ri, ri + 1):
+            for dy in range(-ri, ri + 1):
+                nx, ny = gx + dx, gy + dy
+                if not (0 <= nx < width and 1 <= ny < height - 1):
+                    continue
+                if dx * dx + dy * dy <= gr * gr and random.random() < 0.85 and inside(nx, ny, 1.02):
+                    grid[nx][ny] = 1
 
-    return grid, {}
+    # ── Lisière: arbres isolés autour du massif ──
+    for x in range(max(0, cx - int(rx * 1.6)), min(width, cx + int(rx * 1.6) + 1)):
+        for y in range(1, height - 1):
+            if grid[x][y] == 0 and inside(x, y, 1.4) and not inside(x, y, 1.0):
+                if random.random() < 0.07:
+                    grid[x][y] = 1
+
+    # ── Clairières ──
+    for _ in range(random.randint(3, 5)):
+        for _try in range(20):
+            kx = random.randint(cx - rx // 2, cx + rx // 2)
+            ky = random.randint(cy - int(ry * 0.7), cy + int(ry * 0.7))
+            if inside(kx, ky, 0.7):
+                _carve(grid, kx, ky, random.uniform(1.8, 3.2), width, height)
+                break
+
+    # ── Sentiers ouest → est ──
+    n_trails = 3 if height < 40 else 4
+    x_start = max(0, cx - int(rx * 1.6))
+    x_end = min(width - 1, cx + int(rx * 1.6))
+    for i in range(n_trails):
+        y0 = int(cy + (i - (n_trails - 1) / 2) * (ry * 1.5 / max(1, n_trails - 1)))
+        y = y0
+        half = 1.2 if abs(y0 - cy) <= 2 else 0.8
+        for x in range(x_start, x_end + 1):
+            if random.random() < 0.35:
+                y += random.choice((-1, 1))
+                y = max(y0 - 3, min(y0 + 3, y))
+            _carve(grid, x, max(1, min(height - 2, y)), half, width, height)
+
+    # ── Champs de déploiement dégagés: on se range hors du bois ──
+    deploy_gap = rx + 5
+    for side in (-1, 1):
+        x0 = cx + side * deploy_gap
+        for x in range(x0 - 5, x0 + 6):
+            if 0 <= x < width:
+                for y in range(height):
+                    grid[x][y] = 0
+
+    # ── Garantie de passage d'un camp à l'autre ──
+    left, right = (max(0, cx - int(rx * 2)), cy), (min(width - 1, cx + int(rx * 2)), cy)
+    if not _connected(grid, width, height, left, right):
+        for x in range(left[0], right[0] + 1):
+            _carve(grid, x, cy, 1.2, width, height)
+
+    return grid, {'deploy_gap': deploy_gap}
 
 
 def generate_village(width, height):
-    """Village: réseau de rues avec bâtiments individuels.
+    """Village: un bourg CIRCULAIRE au centre du champ de bataille.
 
-    Structure garantie:
-      • 1 rue centrale horizontale (y ≈ height//2), large de 4 cases
-      • Rues transversales verticales régulières (tous les ~12-14 cases en x)
-      • Bâtiments individuels (2-5 wide × 2-4 tall) dans les blocs entre rues
-      • Flancs nord/sud libres (y < height//4 et y > 3*height//4) pour la cavalerie
-      • Place centrale autour de (center_x, center_y) laissée ouverte
+    Les armées se déploient dans les champs, de part et d'autre, puis
+    s'engagent dans les rues pour se rencontrer au cœur du bourg.
 
-    Les rues forment un quadrillage lisible que l'IA peut exploiter
-    (avancer rue par rue, se mettre à couvert derrière un bâtiment).
+    Structure:
+      • Place centrale ronde (point de rencontre naturel)
+      • Maisons disposées en anneaux concentriques autour de la place,
+        chacune séparée de ses voisines par une ruelle
+      • Rues rayonnantes: la grand-rue est-ouest (large) relie directement
+        les deux zones de déploiement; d'autres rues partent en étoile
+      • Quelques fermes isolées dans les champs alentour
     """
     grid = [[0] * height for _ in range(width)]
+    cx, cy = width // 2, height // 2
+    R = max(7, int(min(height * 0.40, width * 0.12)))
+    plaza = max(2.5, R * 0.22)
 
-    center_y = height // 2
-    center_x = width // 2
+    # Rues rayonnantes: la grand-rue est-ouest, plus 5 à 6 rues en étoile
+    n_side = random.randint(5, 6)
+    streets = [(0.0, 1.6), (math.pi, 1.6)]
+    base = random.uniform(0, math.pi / n_side)
+    for i in range(n_side):
+        a = base + i * math.tau / n_side
+        # pas de doublon trop proche de la grand-rue
+        if min(abs(math.sin(a)), 1.0) < 0.35:
+            continue
+        streets.append((a, 1.0))
 
-    # ── Définir les rues ──────────────────────────────────────────
-    # Rue centrale horizontale
-    street_c_half = 2   # 4 cases de large (±2)
-
-    # Rues transversales: espacées de 12-14 cases à partir de bld_start
-    bld_start_x = width // 6
-    bld_end_x = 5 * width // 6
-    street_spacing = random.randint(12, 15)
-    transversal_xs = set()
-    sx = bld_start_x + random.randint(4, 8)
-    while sx < bld_end_x - 4:
-        transversal_xs.add(sx)
-        sx += street_spacing + random.randint(-2, 2)
-
-    # Limite verticale des bâtiments (flancs libres)
-    flank_top = height // 4      # y < flank_top → flank libre
-    flank_bot = 3 * height // 4  # y > flank_bot → flank libre
-
-    def is_street(x, y):
-        """Vrai si la case appartient à une rue."""
-        # Rue centrale horizontale
-        if abs(y - center_y) <= street_c_half:
-            return True
-        # Rues transversales (1 case de large)
-        if any(abs(x - sx) <= 1 for sx in transversal_xs):
-            return True
-        # Flancs libres
-        if y <= flank_top or y >= flank_bot:
-            return True
+    def in_street(x, y):
+        vx, vy = x - cx, y - cy
+        for a, half in streets:
+            ux, uy = math.cos(a), math.sin(a)
+            along = vx * ux + vy * uy
+            if along < 0:
+                continue
+            if abs(vx * uy - vy * ux) <= half:
+                return True
         return False
 
-    # ── Place centrale (rayon 5 autour du centre) ─────────────────
-    plaza_r = 5
+    occupied = set()
 
-    # ── Placer les bâtiments ──────────────────────────────────────
-    # Itérer sur les blocs définis par les rues transversales
-    block_starts = sorted(transversal_xs)
-    # Ajouter les limites de la zone de bâtiments
-    xs_bounds = [bld_start_x] + block_starts + [bld_end_x]
+    def try_house(hx, hy, w, h, keep_out_r):
+        cells = [(hx + i, hy + j) for i in range(w) for j in range(h)]
+        for (x, y) in cells:
+            if not (1 <= x < width - 1 and 1 <= y < height - 1):
+                return False
+            if math.hypot(x - cx, y - cy) < keep_out_r:
+                return False
+            if in_street(x, y):
+                return False
+        # Ruelle d'au moins une case avec les maisons voisines
+        for (x, y) in cells:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if (x + dx, y + dy) in occupied:
+                        return False
+        for (x, y) in cells:
+            grid[x][y] = 1
+            occupied.add((x, y))
+        return True
 
-    for bi in range(len(xs_bounds) - 1):
-        block_left = xs_bounds[bi] + 2    # +2 pour laisser la rue
-        block_right = xs_bounds[bi + 1] - 2
-
-        if block_right - block_left < 2:
-            continue
-
-        # Dans ce bloc x, remplir les deux moitiés (nord de la rue centrale, sud)
-        for band_top, band_bot in [
-            (flank_top + 1, center_y - street_c_half - 1),
-            (center_y + street_c_half + 1, flank_bot - 1),
-        ]:
-            if band_bot - band_top < 2:
-                continue
-
-            # Placer des bâtiments dans ce bloc×bande
-            y = band_top
-            while y <= band_bot:
-                if band_bot - y < 1:
+    # ── Anneaux de maisons ──
+    # Pour chaque emplacement on essaie plusieurs gabarits, du plus grand au
+    # plus petit: le bourg reste dense tout en gardant ses ruelles.
+    r = plaza + 2.8
+    while r <= R - 1.2:
+        n_slots = max(6, int(math.tau * r / 3.6))
+        offset = random.uniform(0, math.tau / n_slots)
+        for k in range(n_slots):
+            a = offset + k * math.tau / n_slots
+            sizes = [(random.randint(3, 4), random.randint(2, 3)), (3, 2), (2, 3), (2, 2)]
+            for w, h in sizes:
+                hx = int(round(cx + math.cos(a) * r - w / 2))
+                hy = int(round(cy + math.sin(a) * r - h / 2))
+                if try_house(hx, hy, w, h, plaza + 1.2):
                     break
-                bh = random.randint(2, max(2, min(4, band_bot - y + 1)))
-                x = block_left
-                while x <= block_right:
-                    bw = random.randint(2, max(2, min(5, block_right - x + 1)))
+        r += 3.8
 
-                    # Skip si on est sur la place centrale
-                    bx_c = x + bw // 2
-                    by_c = y + bh // 2
-                    if abs(bx_c - center_x) <= plaza_r and abs(by_c - center_y) <= plaza_r:
-                        x += bw + 1
-                        continue
+    # ── Haie circulaire: la ceinture du bourg, percée à chaque rue ──
+    ring_r = R + 0.8
+    for x in range(max(1, cx - R - 3), min(width - 1, cx + R + 4)):
+        for y in range(1, height - 1):
+            d = math.hypot(x - cx, y - cy)
+            if abs(d - ring_r) > 0.55:
+                continue
+            # ouverture un peu plus large que la rue elle-même
+            vx, vy = x - cx, y - cy
+            opening = False
+            for a, half in streets:
+                ux, uy = math.cos(a), math.sin(a)
+                if vx * ux + vy * uy > 0 and abs(vx * uy - vy * ux) <= half + 1.2:
+                    opening = True
+                    break
+            if opening:
+                continue
+            if any((x + dx, y + dy) in occupied for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                continue
+            grid[x][y] = 1
 
-                    # Placer le bâtiment (en s'assurant de ne pas déborder)
-                    for bx in range(x, min(x + bw, block_right + 1)):
-                        for by in range(y, min(y + bh, band_bot + 1)):
-                            if 0 <= bx < width and 0 <= by < height:
-                                grid[bx][by] = 1
+    # ── Fermes isolées dans les champs (jamais sur l'axe des armées) ──
+    for _ in range(random.randint(2, 4)):
+        for _try in range(30):
+            a = random.uniform(0, math.tau)
+            if abs(math.sin(a)) < 0.6:
+                continue
+            d = random.uniform(R + 4, R + 8)
+            w, h = random.randint(2, 3), random.randint(2, 3)
+            if try_house(int(cx + math.cos(a) * d), int(cy + math.sin(a) * d), w, h, R + 3):
+                break
 
-                    x += bw + 1   # +1 = allée entre bâtiments
-                y += bh + 1       # +1 = allée entre bâtiments
-
-    # ── Passe finale: effacer toutes les rues garanties ──────────
-    for x in range(width):
-        for y in range(height):
-            if is_street(x, y):
-                grid[x][y] = 0
-            # Place centrale
-            if abs(x - center_x) <= plaza_r and abs(y - center_y) <= plaza_r:
-                grid[x][y] = 0
-
-    return grid, {}
+    return grid, {'deploy_gap': R + 5}
 
 
 def generate_siege(width, height):
@@ -516,7 +558,7 @@ _DECOR_TABLES = {
     },
     "Forêt": {
         'density': 0.20,
-        'small': [("herbe", 4), ("fougere", 4), ("champignon", 2), ("caillou", 1)],
+        'small': [("herbe", 4), ("fougere", 5), ("champignon", 1), ("caillou", 1)],
         'big':   [("buisson", 4), ("arbre_pin", 3), ("arbre_rond", 3), ("souche", 2),
                   ("tronc", 2)],
     },
