@@ -521,6 +521,37 @@ def test_render_terrain_smoke():
     assert set(trr.LEGEND) >= {tr.HILL, tr.WOOD, tr.RIVER, tr.FORD, tr.BRIDGE, tr.MARSH}
 
 
+@test
+def test_legend_swatches_opaque():
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    import pygame
+    pygame.init()
+    pygame.display.set_mode((1, 1))
+    import terrain_render as trr
+    from battle import Battle
+    import unit_library as ul
+    random.seed(8)
+    a = ul.build_army("Armée Skaldienne", [("Infanterie régulière", 3)])
+    b = Battle(a, a, 60, 40, 8, map_name="Prairie")
+    bf = b.battlefield
+    font = pygame.font.SysFont("arial", 14)
+    leg = trr.legend_surface(bf, font)
+    assert leg is not None
+    present = {n for col in bf.terrain for n in col}
+    rows = [n for n in trr._ORDER if n in present]
+    assert rows, "Prairie devrait avoir au moins un terrain dans la légende"
+    # Reproduit la mise en page de legend_surface pour localiser chaque case.
+    sw, pad, gap = 22, 10, 6
+    texts = [font.render(trr.LEGEND[n], True, (228, 228, 220)) for n in rows]
+    title = font.render("Terrain  (L pour masquer)", True, (255, 220, 120))
+    y = pad + title.get_height() + gap
+    for n, t in zip(rows, texts):
+        cx, cy = pad + sw // 2, y + sw // 2
+        r, g, bl, al = leg.get_at((cx, cy))
+        assert al == 255, (n, (r, g, bl, al))
+        y += max(sw, t.get_height()) + gap
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

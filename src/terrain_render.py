@@ -123,7 +123,13 @@ def legend_surface(bf, font):
     for n, t in zip(rows, texts):
         box = pygame.Rect(pad, y, sw, sw)
         pygame.draw.rect(surf, (72, 88, 56, 255), box)
-        draw_cell(surf, n, box, sw, 0x5A5A, (True, True, True, True))
+        # draw_cell peint sur une surface SRCALPHA en remplaçant les pixels
+        # (fill/draw.* ne fondent pas l'alpha) : on dessine donc la case sur
+        # une surface temporaire opaque-fond puis on la blitte par-dessus,
+        # comme le fait draw_terrain avec son calque.
+        swatch = pygame.Surface((sw, sw), pygame.SRCALPHA)
+        draw_cell(swatch, n, pygame.Rect(0, 0, sw, sw), sw, 0x5A5A, (True, True, True, True))
+        surf.blit(swatch, box)
         pygame.draw.rect(surf, (200, 200, 200, 200), box, 1)
         surf.blit(t, (pad + sw + 10, y + (sw - t.get_height()) // 2))
         y += max(sw, t.get_height()) + gap
