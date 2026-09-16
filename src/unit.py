@@ -3,12 +3,19 @@ from collections import deque
 
 from effects import FloatingText, FX_CLOCK
 
+import itertools
+
+# Identifiant stable: sert de clé de tri déterministe (id() change d'une
+# exécution à l'autre et rendait les graines non reproductibles).
+_UID = itertools.count(1)
+
 
 class Unit:
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
                  armes=None, spells=None, special=None, role="front",
                  size=1, unit_type="Infanterie"):
         self.name = name
+        self.uid = next(_UID)
         self.token_name = ""
         self.pv = pv
         self.max_pv = pv

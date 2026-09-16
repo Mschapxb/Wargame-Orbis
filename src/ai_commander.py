@@ -352,7 +352,7 @@ class CommanderAI:
                 d += 2.5 * self.ruse
             d *= self.rng.uniform(0.94, 1.06)
             scored.append((d, e))
-        scored.sort(key=lambda x: (-x[0], id(x[1])))
+        scored.sort(key=lambda x: (-x[0], x[1].uid))
         return scored
 
     def _pick_focus_target(self, s, prio):
@@ -734,7 +734,7 @@ class CommanderAI:
         ax, ay = self._axis
         px, py = -ay, ax  # perpendiculaire au front
 
-        lat = sorted(((e.position[0] - ec[0]) * px + (e.position[1] - ec[1]) * py, id(e), e)
+        lat = sorted(((e.position[0] - ec[0]) * px + (e.position[1] - ec[1]) * py, e.uid, e)
                      for e in enemies)
         if len(lat) < 5:
             return None
@@ -856,7 +856,7 @@ class CommanderAI:
             if not units:
                 return
             span = max(4, min(bf.height - 6, span))
-            units.sort(key=lambda u: (u.position[1], id(u)))
+            units.sort(key=lambda u: (u.position[1], u.uid))
             n = len(units)
             for i, u in enumerate(units):
                 frac = (i + 0.5) / n - 0.5
@@ -938,7 +938,7 @@ class CommanderAI:
         ax, ay = self._axis
         px, py = -ay, ax  # perpendiculaire au front
 
-        lat = sorted(((e.position[0] - ec[0]) * px + (e.position[1] - ec[1]) * py, id(e))
+        lat = sorted(((e.position[0] - ec[0]) * px + (e.position[1] - ec[1]) * py, e.uid)
                      for e in enemies)
         if len(lat) < 4:
             return None
@@ -994,7 +994,7 @@ class CommanderAI:
         ec_y = sum(ys) / len(ys)
         spread = (max(ys) - min(ys)) + 6
         span = max(6, min(bf.height - 6, spread))
-        mobile.sort(key=lambda u: (u.position[1], id(u)))
+        mobile.sort(key=lambda u: (u.position[1], u.uid))
         n = len(mobile)
         lanes = {}
         for i, u in enumerate(mobile):
@@ -1567,7 +1567,7 @@ def select_tactical_target(unit, battle, battlefield):
         in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
         in_r = [(e, d) for e, d in in_r if _reachable(e, d)]
         if in_r:
-            return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), id(ed[0])))[0]
+            return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), ed[0].uid))[0]
 
     if order and order.order_type in ("flank", "hold", "protect", "kite",
                                       "support", "guard", "withdraw"):

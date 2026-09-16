@@ -1074,7 +1074,7 @@ class Battle:
             if u.encouragement_range > 0:
                 score += 1.0      # l'officier donne le signal
             score += random.random() * 3.0
-            scored.append((-score, id(u), u))
+            scored.append((-score, u.uid, u))
         scored.sort()
         return [u for _, _, u in scored]
 
@@ -1481,7 +1481,7 @@ class Battle:
         movers = {}
         ordered_moves = sorted(
             moves.items(),
-            key=lambda kv: (-kv[0].vitesse, id(kv[0])))
+            key=lambda kv: (-kv[0].vitesse, kv[0].uid))
         n_mv = max(1, len(ordered_moves))
         for i, (unit, new_pos) in enumerate(ordered_moves):
             if not unit.is_alive:
