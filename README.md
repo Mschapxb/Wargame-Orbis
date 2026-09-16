@@ -135,7 +135,7 @@ les chercher** au lieu de se débander (mesuré: 2/30 → 30/30 victoires).
 
 ### Charges
 
-- **Charge montée** (cavalerie) : déplacement à 1.5× la vitesse + **+1 dégâts** à l'impact
+- **Charge montée** (cavalerie) : allonge portée à 1.5× la vitesse **sur l'ensemble du round** (mouvement + charge) + **+1 dégâts** à l'impact
 - **Charge d'aïda** (infanterie) : déplacement à 1.5× la vitesse + **-1 au jet de blesser** à l'impact
 - Les charges nécessitent un chemin libre (pas de téléportation)
 - Seule la première arme de mêlée frappe pendant la charge
@@ -215,6 +215,15 @@ Chaque round se déroule en phases :
 Le banc d'essai `bench_balance.py` rejoue des affrontements types sur N graines
 et affiche taux de victoire, durée et survivants : de quoi vérifier qu'une
 modification de mécanique ne fait pas basculer l'équilibre.
+
+### Tests
+
+```bash
+python -m pytest tests/test_main.py -q      # unitaires (règles, groupes du menu, régressions)
+python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
+python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
+python src/bench_balance.py 60              # équilibrage sur 60 graines par affrontement
+```
 
 ### Pathfinding (`battlefield.py`)
 

@@ -63,6 +63,171 @@ def draw_text(screen, text, font, pos, color=TEXT):
 #                       MENU PRINCIPAL
 # ═══════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+#                   ÉTAT D'UN CAMP (testable)
+# ═══════════════════════════════════════════════════════════════
+
+class ArmyState:
+    """Composition d'un camp.
+
+    Un camp est UNE armée, mais elle peut être articulée en plusieurs
+    GROUPES (corps, divisions, contingents alliés…). Chaque groupe est
+    déployé séparément sur le terrain, garde sa cohésion au combat et
+    reçoit son propre bilan dans le rapport de bataille.
+    """
+    MAX_GROUPS = 4
+
+    def __init__(self, side):
+        self.side = side  # 0 = gauche, 1 = droite
+        self.groups = [{}]   # [{(faction, unité): nombre}, ...]
+        self.active = 0      # groupe en cours d'édition
+        self.scroll_offset = 0
+        self.show_bonuses = False  # Toggle affichage des bonus
+        # Bonus globaux appliqués à toutes les unités de cette armée
+        self.bonuses = {
+            "mouvement": 0,
+            "pv": 0,
+            "moral": 0,
+            "sauvegarde": 0,
+            "toucher": 0,
+            "blesser": 0,
+            "perforation": 0,
+            "degats": 0,
+        }
+
+    # ── Accès ──
+    @property
+    def current(self):
+        return self.groups[self.active]
+
+    @property
+    def composition(self):
+        """Vue fusionnée de tous les groupes (totaux, résumé tactique)."""
+        merged = {}
+        for g in self.groups:
+            for k, v in g.items():
+                if v > 0:
+                    merged[k] = merged.get(k, 0) + v
+        return merged
+
+    @property
+    def total_units(self):
+        return sum(sum(g.values()) for g in self.groups)
+
+    def group_size(self, i):
+        return sum(self.groups[i].values())
+
+    def group_factions(self, i):
+        return sorted({an for (an, _), c in self.groups[i].items() if c > 0})
+
+    def group_label(self, i):
+        """Nom porté par le groupe dans le rapport de bataille."""
+        facs = self.group_factions(i)
+        single = len(self.groups) == 1
+        if not facs:
+            return f"Groupe {i + 1}"
+        if len(facs) == 1:
+            return facs[0] if single else f"G{i + 1} · {facs[0]}"
+        return facs[0] + " +" if single else f"Groupe {i + 1}"
+
+    # ── Édition ──
+    def add_unit(self, army_name, unit_name, amount=1):
+        key = (army_name, unit_name)
+        g = self.current
+        g[key] = g.get(key, 0) + amount
+
+    def remove_unit(self, army_name, unit_name, amount=1):
+        key = (army_name, unit_name)
+        g = self.current
+        if key in g:
+            g[key] = max(0, g[key] - amount)
+            if g[key] <= 0:
+                del g[key]
+
+    def clear(self):
+        self.groups = [{}]
+        self.active = 0
+
+    def add_group(self):
+        if len(self.groups) < self.MAX_GROUPS:
+            self.groups.append({})
+            self.active = len(self.groups) - 1
+
+    def remove_group(self, i):
+        if len(self.groups) > 1:
+            del self.groups[i]
+            self.active = min(self.active, len(self.groups) - 1)
+
+    def copy_from(self, other):
+        """Recopie la composition (tous groupes) et les bonus d'un autre camp."""
+        self.groups = [dict(g) for g in other.groups] or [{}]
+        self.active = 0
+        self.bonuses = dict(other.bonuses)
+
+    def get_all_units_flat(self):
+        """Retourne [(army_name, unit_def), ...] pour toutes les factions."""
+        result = []
+        for army_name in list_armies():
+            army_data = get_library().get(army_name, {})
+            for unit_def in army_data.get("units", []):
+                result.append((army_name, unit_def))
+        return result
+
+    def build(self):
+        """Construit la liste d'unités, groupe par groupe.
+
+        Chaque unité porte le nom de son groupe (`contingent`): c'est ce
+        qui permet au moteur de déployer les groupes à part et au
+        rapport de les compter séparément.
+        """
+        from unit_library import build_army as _build
+        all_units = []
+        for gi, comp in enumerate(self.groups):
+            by_faction = {}
+            for (army_name, unit_name), count in comp.items():
+                if count <= 0:
+                    continue
+                by_faction.setdefault(army_name, []).append((unit_name, count))
+            if not by_faction:
+                continue
+            label = self.group_label(gi)
+            for army_name, pairs in by_faction.items():
+                units = _build(army_name, pairs)
+                for u in units:
+                    u.contingent = label
+                all_units.extend(units)
+
+        # Appliquer les bonus globaux
+        b = self.bonuses
+        for u in all_units:
+            if b["mouvement"] != 0:
+                u.vitesse = max(0, u.vitesse + b["mouvement"])
+                u.speed = u.vitesse
+            if b["pv"] != 0:
+                bonus_hp = b["pv"]
+                u.pv = max(1, u.pv + bonus_hp)
+                u.max_pv = u.pv
+                u.hp = u.pv
+                u.max_hp = u.pv
+            if b["moral"] != 0:
+                u.morale = max(1, min(6, u.morale + b["moral"]))
+                u.base_morale = u.morale
+            if b["sauvegarde"] != 0:
+                u.sauvegarde = max(2, min(7, u.sauvegarde + b["sauvegarde"]))
+            if b["toucher"] != 0 or b["blesser"] != 0 or b["perforation"] != 0 or b["degats"] != 0:
+                for arme in u.armes:
+                    if b["toucher"] != 0:
+                        arme.toucher = max(2, arme.toucher + b["toucher"])
+                    if b["blesser"] != 0:
+                        arme.blesser = max(2, arme.blesser + b["blesser"])
+                    if b["perforation"] != 0:
+                        arme.perforation = arme.perforation + b["perforation"]
+                    if b["degats"] != 0:
+                        arme._bonus = arme._bonus + b["degats"]
+
+        return all_units
+
+
 def run_army_menu(screen_w=None, screen_h=None):
     """Lance le menu de composition. Retourne (army1_list, army2_list) ou None si quit."""
     
@@ -85,161 +250,6 @@ def run_army_menu(screen_w=None, screen_h=None):
     small_font  = pygame.font.SysFont("arial", 12)
     stat_font   = pygame.font.SysFont("arial", 11)
     
-    # État pour les deux armées
-    class ArmyState:
-        """Composition d'un camp.
-
-        Un camp est UNE armée, mais elle peut être articulée en plusieurs
-        GROUPES (corps, divisions, contingents alliés…). Chaque groupe est
-        déployé séparément sur le terrain, garde sa cohésion au combat et
-        reçoit son propre bilan dans le rapport de bataille.
-        """
-        MAX_GROUPS = 4
-
-        def __init__(self, side):
-            self.side = side  # 0 = gauche, 1 = droite
-            self.groups = [{}]   # [{(faction, unité): nombre}, ...]
-            self.active = 0      # groupe en cours d'édition
-            self.scroll_offset = 0
-            self.show_bonuses = False  # Toggle affichage des bonus
-            # Bonus globaux appliqués à toutes les unités de cette armée
-            self.bonuses = {
-                "mouvement": 0,
-                "pv": 0,
-                "moral": 0,
-                "sauvegarde": 0,
-                "toucher": 0,
-                "blesser": 0,
-                "perforation": 0,
-                "degats": 0,
-            }
-
-        # ── Accès ──
-        @property
-        def current(self):
-            return self.groups[self.active]
-
-        @property
-        def composition(self):
-            """Vue fusionnée de tous les groupes (totaux, résumé tactique)."""
-            merged = {}
-            for g in self.groups:
-                for k, v in g.items():
-                    if v > 0:
-                        merged[k] = merged.get(k, 0) + v
-            return merged
-
-        @property
-        def total_units(self):
-            return sum(sum(g.values()) for g in self.groups)
-
-        def group_size(self, i):
-            return sum(self.groups[i].values())
-
-        def group_factions(self, i):
-            return sorted({an for (an, _), c in self.groups[i].items() if c > 0})
-
-        def group_label(self, i):
-            """Nom porté par le groupe dans le rapport de bataille."""
-            facs = self.group_factions(i)
-            single = len(self.groups) == 1
-            if not facs:
-                return f"Groupe {i + 1}"
-            if len(facs) == 1:
-                return facs[0] if single else f"G{i + 1} · {facs[0]}"
-            return facs[0] + " +" if single else f"Groupe {i + 1}"
-
-        # ── Édition ──
-        def add_unit(self, army_name, unit_name, amount=1):
-            key = (army_name, unit_name)
-            g = self.current
-            g[key] = g.get(key, 0) + amount
-
-        def remove_unit(self, army_name, unit_name, amount=1):
-            key = (army_name, unit_name)
-            g = self.current
-            if key in g:
-                g[key] = max(0, g[key] - amount)
-                if g[key] <= 0:
-                    del g[key]
-
-        def clear(self):
-            self.groups = [{}]
-            self.active = 0
-
-        def add_group(self):
-            if len(self.groups) < self.MAX_GROUPS:
-                self.groups.append({})
-                self.active = len(self.groups) - 1
-
-        def remove_group(self, i):
-            if len(self.groups) > 1:
-                del self.groups[i]
-                self.active = min(self.active, len(self.groups) - 1)
-
-        def get_all_units_flat(self):
-            """Retourne [(army_name, unit_def), ...] pour toutes les factions."""
-            result = []
-            for army_name in army_names:
-                army_data = db.get(army_name, {})
-                for unit_def in army_data.get("units", []):
-                    result.append((army_name, unit_def))
-            return result
-
-        def build(self):
-            """Construit la liste d'unités, groupe par groupe.
-
-            Chaque unité porte le nom de son groupe (`contingent`): c'est ce
-            qui permet au moteur de déployer les groupes à part et au
-            rapport de les compter séparément.
-            """
-            from unit_library import build_army as _build
-            all_units = []
-            for gi, comp in enumerate(self.groups):
-                by_faction = {}
-                for (army_name, unit_name), count in comp.items():
-                    if count <= 0:
-                        continue
-                    by_faction.setdefault(army_name, []).append((unit_name, count))
-                if not by_faction:
-                    continue
-                label = self.group_label(gi)
-                for army_name, pairs in by_faction.items():
-                    units = _build(army_name, pairs)
-                    for u in units:
-                        u.contingent = label
-                    all_units.extend(units)
-
-            # Appliquer les bonus globaux
-            b = self.bonuses
-            for u in all_units:
-                if b["mouvement"] != 0:
-                    u.vitesse = max(0, u.vitesse + b["mouvement"])
-                    u.speed = u.vitesse
-                if b["pv"] != 0:
-                    bonus_hp = b["pv"]
-                    u.pv = max(1, u.pv + bonus_hp)
-                    u.max_pv = u.pv
-                    u.hp = u.pv
-                    u.max_hp = u.pv
-                if b["moral"] != 0:
-                    u.morale = max(1, min(6, u.morale + b["moral"]))
-                    u.base_morale = u.morale
-                if b["sauvegarde"] != 0:
-                    u.sauvegarde = max(2, min(7, u.sauvegarde + b["sauvegarde"]))
-                if b["toucher"] != 0 or b["blesser"] != 0 or b["perforation"] != 0 or b["degats"] != 0:
-                    for arme in u.armes:
-                        if b["toucher"] != 0:
-                            arme.toucher = max(2, arme.toucher + b["toucher"])
-                        if b["blesser"] != 0:
-                            arme.blesser = max(2, arme.blesser + b["blesser"])
-                        if b["perforation"] != 0:
-                            arme.perforation = arme.perforation + b["perforation"]
-                        if b["degats"] != 0:
-                            arme._bonus = arme._bonus + b["degats"]
-
-            return all_units
-
     states = [ArmyState(0), ArmyState(1)]
     selected_map = "Prairie"
     
@@ -551,9 +561,7 @@ def run_army_menu(screen_w=None, screen_h=None):
             mirror_label = "Copier →" if i == 0 else "← Copier"
             if draw_button(screen, mirror_btn, mirror_label, small_font, mouse_pos):
                 if clicked and state.total_units > 0:
-                    other = states[1 - i]
-                    other.composition = dict(state.composition)
-                    other.bonuses = dict(state.bonuses)
+                    states[1 - i].copy_from(state)
             
             # Bouton toggle bonus
             bonus_toggle_btn = pygame.Rect(px + panel_w - 140, compo_y - 2, 64, 22)

@@ -59,6 +59,9 @@ class Unit:
         self.has_charged = False    # A déjà chargé ce round
         self._phalange_bonus_active = False
         self._on_wall = False  # Sur un mur (siège)
+        self._armor_buff = False
+        self._armor_buff_rounds = 0
+        self._armor_buff_amount = 0
 
         # ─── État de réaction / rythme de combat (réinitialisé chaque round) ───
         self._opportunity_used = False   # A déjà porté une attaque d'opportunité
@@ -75,6 +78,9 @@ class Unit:
         self._threatened_by = 0          # Ennemis au contact (calculé par battle)
         self._witnessed_deaths = 0       # Camarades tombés juste à côté
         self._under_fire = 0             # Traits reçus (touchés ou non)
+        self._damage_prev_round = 0      # Dégâts encaissés au round précédent
+        self._cells_moved = 0            # Cases parcourues dans le round
+        self._calm_rounds = 0            # Rounds consécutifs au calme
         
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
@@ -150,21 +156,29 @@ class Unit:
         self._momentum_used = False
         self._acted_this_round = False
         self._damage_taken_round = 0
+        self._cells_moved = 0
         self._reaction_text = ""
-        # Les effets visuels horodatés du round précédent sont périmés:
-        # leur estampille se lit par rapport au DÉBUT du round courant.
-        self._hit_flash = 0
+        # Les estampilles se lisent par rapport au DÉBUT du round courant:
+        # un flash ou un bond encore en cours finit sa course tout de suite
+        # (délai remis à zéro) au lieu d'être coupé net.
         self._hit_flash_delay = 0
-        self._lunge_timer = 0
         self._lunge_delay = 0
-        # Le choc et la pression du feu s'estompent, mais pas d'un coup:
-        # une unité pilonnée deux rounds de suite reste ébranlée.
+
+    def end_round(self):
+        """Vieillissement de la pression subie, EN FIN de round.
+
+        Ces compteurs (traits reçus, camarades tombés, coups violents) sont
+        consultés par la phase de moral du round SUIVANT. Les décrémenter
+        en début de round les ramenait sous leurs seuils avant même d'être
+        lus: les mécaniques de feu nourri et de camarade tombé ne se
+        déclenchaient jamais.
+        """
+        self._damage_prev_round = self._damage_taken_round
         self._suppression = max(0, self._suppression - 1)
         self._shock = max(0, self._shock - 1)
-        self._witnessed_deaths = max(0, self._witnessed_deaths - 1)
         # Être pris sous un feu nourri pèse même quand les traits manquent:
         # on se met à couvert, on baisse la tête, on ne combat plus pareil.
-        self._under_fire //= 2
+        self._under_fire = self._under_fire * 2 // 3
 
     def regenerate(self):
         if not self.is_alive:

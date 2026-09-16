@@ -14,6 +14,9 @@ from ai_commander import CommanderAI
 # — flux séparé pour ne JAMAIS influencer les dés de la simulation
 _FX_RNG = random.Random(20260610)
 
+# Plafond de la file d'effets visuels (sécurité hors rendu — voir fin de round)
+_FX_MAX_QUEUE = 600
+
 # Couleur du trait d'attaque selon la nature du coup: l'oeil distingue
 # instantanement un echange ordinaire d'une reaction ou d'un enchainement.
 _KIND_COLORS = {
@@ -77,6 +80,9 @@ class Battle:
         self.fx_frames_per_round = 48
         # Fil d'evenements notables du round (reactions, ruptures, exploits)
         self.round_events = []
+        # Cache du rapport de forces (une evaluation par round suffit)
+        self._force_cache = (0.0, 0.0)
+        self._force_cache_round = -1
 
         # Initialiser les positions d'animation (pas de transition au premier frame)
         for u in self.army1 + self.army2:
@@ -558,12 +564,22 @@ class Battle:
     #   TENUE AU FEU — qui rompt, et qui se reprend
     # ═══════════════════════════════════════════════════════════════
 
+    def _side_values(self):
+        """Valeur restante de chaque camp, calculée UNE fois par round."""
+        if self._force_cache_round != self.round:
+            v1 = sum(tactics.remaining_value(u) for u in self.army1
+                     if u.is_alive and not u.fleeing)
+            v2 = sum(tactics.remaining_value(u) for u in self.army2
+                     if u.is_alive and not u.fleeing)
+            self._force_cache = (v1, v2)
+            self._force_cache_round = self.round
+        return self._force_cache
+
     def _force_ratio(self, unit):
         """Rapport de forces vu par cette unité (>1 = son camp domine)."""
-        mine = sum(tactics.remaining_value(u) for u in self.get_allies(unit)
-                   if u.is_alive and not u.fleeing)
-        theirs = sum(tactics.remaining_value(e) for e in self.get_enemies(unit)
-                     if e.is_alive and not e.fleeing)
+        v1, v2 = self._side_values()
+        self._refresh_army_sets()
+        mine, theirs = (v1, v2) if id(unit) in self._army1_ids else (v2, v1)
         if theirs <= 0.01:
             return 99.0
         return mine / max(0.01, theirs)
@@ -605,7 +621,7 @@ class Battle:
             return True                       # acculée: la panique est permise
         if unit.hp <= max(1, unit.max_hp // 3) and self._force_ratio(unit) < 1.2:
             return True                       # exsangue et sans ascendant
-        if getattr(unit, '_under_fire', 0) >= 6 and unit.hp < unit.max_hp:
+        if getattr(unit, '_under_fire', 0) >= 3 and unit.hp < unit.max_hp:
             return True                       # clouée sous un feu nourri
         if (getattr(unit, '_witnessed_deaths', 0) >= 2
                 and (unit.hp < unit.max_hp or d_min <= 6)):
@@ -668,7 +684,7 @@ class Battle:
         for unit in self.get_all_alive():
             if unit.fleeing or unit.morale_malus <= 0:
                 continue
-            if unit._damage_taken_round > 0:
+            if unit._damage_taken_round > 0 or getattr(unit, '_damage_prev_round', 0) > 0:
                 unit._calm_rounds = 0
                 continue
             ux, uy = unit.position
@@ -737,7 +753,7 @@ class Battle:
                     # Test de moral : lancer 1d6, réussir si <= bravoure effective
                     unit._half_army_malus_applied = True
                     if not unit.morale_check():
-                        unit.morale_malus += 1
+                        unit.morale_malus = min(unit.base_morale + 2, unit.morale_malus + 1)
                         unit.floating_texts.append(
                             FloatingText("-1 Moral (Pertes!)", (255, 100, 60), 90))
 
@@ -757,7 +773,7 @@ class Battle:
                     
                     unit._critical_malus_applied = True
                     if not unit.morale_check():
-                        unit.morale_malus += 1
+                        unit.morale_malus = min(unit.base_morale + 2, unit.morale_malus + 1)
                         unit.floating_texts.append(
                             FloatingText("-1 Moral (Déroute!)", (255, 50, 50), 90))
 
@@ -812,7 +828,7 @@ class Battle:
         for unit in self.get_all_alive():
             if unit.fleeing or unit.afraid or not unit.is_alive:
                 continue
-            pressure = unit._shock + (1 if getattr(unit, '_under_fire', 0) >= 6 else 0)
+            pressure = unit._shock + (1 if getattr(unit, '_under_fire', 0) >= 3 else 0)
             if pressure >= 2 and not unit.morale_check():
                 unit.afraid = True
                 unit.status_text = "ÉBRANLÉ"
@@ -828,11 +844,12 @@ class Battle:
             if getattr(unit, '_witnessed_deaths', 0) <= 0:
                 continue
             if not unit.morale_check():
-                unit.morale_malus += 1
+                unit.morale_malus = min(unit.base_morale + 2, unit.morale_malus + 1)
                 unit.floating_texts.append(
                     FloatingText("-1 Moral (Camarade!)", (255, 120, 80), 80))
                 if unit.get_effective_morale() <= 0:
                     self._break_unit(unit, "FUITE!")
+            unit._witnessed_deaths = 0   # testé: on ne le rejoue pas
 
         # --- 2c) Ralliement et retour au calme ---
         self._rally_phase()
@@ -1010,8 +1027,16 @@ class Battle:
             if not unit.is_alive or unit.fleeing:
                 continue
 
-            min_dist = unit.vitesse
-            max_dist = int(unit.vitesse * 1.5)
+            # BUDGET de mouvement: la charge porte l'allonge du round à
+            # 1,5× la vitesse — elle ne s'AJOUTE pas au déplacement déjà
+            # effectué. Sans ce décompte, un cavalier avançait de 8 cases
+            # en phase de mouvement puis chargeait 12 cases de plus: 20
+            # cases par round pour une vitesse de 8.
+            budget = int(unit.vitesse * 1.5) - getattr(unit, '_cells_moved', 0)
+            if budget < 2:
+                continue
+            min_dist = 2
+            max_dist = budget
 
             # ── Choix de la proie: valeur de la cible / résistance attendue ──
             best_target = None
@@ -1059,11 +1084,12 @@ class Battle:
                 continue
 
             path = self.battlefield.a_star_path(unit.position, charge_pos, unit, self)
-            if not path or len(path) > max_dist:
+            if not path or len(path) > budget:
                 continue
 
             start_pos = unit.position
             self.battlefield.move_unit(unit, charge_pos)
+            unit._cells_moved += len(path)
             unit.has_charged = True
             unit._charged_this_round = True
 
@@ -1392,6 +1418,12 @@ class Battle:
             old_pos = unit.position
             if not self._opportunity_attacks(unit, new_pos, t01 + 0.03):
                 continue  # abattu en se dérobant: il ne part pas
+            # Le déplacement se compte en PAS (8 directions, comme l'A*):
+            # une diagonale coûte un pas, pas deux. La distance de Manhattan
+            # doublait le coût des trajets obliques et vidait le budget de
+            # charge des unités arrivées en biais.
+            unit._cells_moved += max(abs(new_pos[0] - old_pos[0]),
+                                     abs(new_pos[1] - old_pos[1]))
             bf.move_unit(unit, new_pos)
             movers[id(unit)] = (old_pos, new_pos)
 
@@ -1528,6 +1560,18 @@ class Battle:
                         bf.remove_unit(unit)
                         fled_list.append(unit)
                         army_list.remove(unit)
+
+        # Vieillissement de la pression subie (lu par la phase de moral du
+        # round suivant — d'où le fait de le faire ICI et pas au départ)
+        for unit in self.army1 + self.army2:
+            unit.end_round()
+
+        # Garde-fou: c'est le renderer qui purge les effets visuels au fil
+        # des frames. Sans lui (tests headless, simulation accélérée), les
+        # listes grossiraient sans fin. On plafonne en jetant les plus vieux.
+        for _key, _lst in self.visual_effects.items():
+            if _key != 'target_indicators' and len(_lst) > _FX_MAX_QUEUE:
+                del _lst[:len(_lst) - _FX_MAX_QUEUE]
 
         self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
         self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
