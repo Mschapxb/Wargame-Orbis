@@ -1,0 +1,7 @@
+Melee vs Archers       A1=51 A2= 9 nul= 0 | rounds moy= 12.7 | surv A1= 6.0 A2= 0.8
+Mixte miroir           A1=28 A2=32 nul= 0 | rounds moy= 10.0 | surv A1= 1.9 A2= 2.2
+Skald vs Orlandar      A1=59 A2= 1 nul= 0 | rounds moy= 13.0 | surv A1= 5.6 A2= 0.1
+Cavalerie vs Tir       A1=53 A2= 7 nul= 0 | rounds moy= 10.9 | surv A1= 5.5 A2= 0.9
+Siege                  A1=15 A2=45 nul= 0 | rounds moy= 18.4 | surv A1= 1.4 A2= 4.5
+Foret mixte            A1=34 A2=26 nul= 0 | rounds moy= 14.0 | surv A1= 3.6 A2= 2.4
+(23.1s)
