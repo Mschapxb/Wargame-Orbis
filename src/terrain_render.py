@@ -9,8 +9,8 @@ import pygame
 import terrain as tr
 
 LEGEND = {
-    tr.HILL:   "Colline — tir: +1 portée vers le bas · mêlée: -1 pour toucher qui est en haut · monter ×1,5",
-    tr.WOOD:   "Bois — déplacement ×2 · tirs reçus: -1 pour toucher · pas de charge · 3 cases masquent la vue",
+    tr.HILL:   "Colline — tir depuis la hauteur: +1 portée · mêlée contre une unité en hauteur: +1 au seuil de toucher (plus difficile) · monter ×1,5",
+    tr.WOOD:   "Bois — déplacement ×2 · tirs reçus: +1 au seuil de toucher (plus difficile) · pas de charge · 3 cases masquent la vue",
     tr.RIVER:  "Rivière — infranchissable",
     tr.FORD:   "Gué — déplacement ×2 · sauvegarde -1 · pas de charge",
     tr.BRIDGE: "Pont — passage étroit, déplacement normal",

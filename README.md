@@ -76,8 +76,8 @@ les couleurs. `L` affiche la légende en bataille.
 
 | Terrain | Déplacement | Vue | Combat |
 |---------|-------------|-----|--------|
-| **Colline** | ×1,5 pour monter | un tireur en hauteur voit par-dessus les bois; une colline masque ce qui est derrière | tireur en hauteur: +1 portée; frapper vers le haut: -1 pour toucher |
-| **Bois** | ×2 | 3 cases de bois masquent la cible | tirs reçus: -1 pour toucher; pas de charge |
+| **Colline** | ×1,5 pour monter | un tireur en hauteur voit par-dessus les bois; une colline masque ce qui est derrière | tir depuis la hauteur: +1 portée; mêlée contre une unité en hauteur: +1 au seuil de toucher (plus difficile) |
+| **Bois** | ×2 | 3 cases de bois masquent la cible | tirs reçus: +1 au seuil de toucher (plus difficile); pas de charge |
 | **Rivière** | infranchissable | — | — |
 | **Gué** | ×2 | — | sauvegarde -1; pas de charge |
 | **Pont** | normal | — | passage étroit |
