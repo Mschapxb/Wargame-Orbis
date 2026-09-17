@@ -26,6 +26,8 @@ class Battlefield:
         # Terrain à effets (colline, bois, rivière…): grille parallèle à
         # `grid`. Extrait AVANT siege_data pour la même raison que le décor.
         self.terrain = _raw.pop('terrain', None)
+        # Thème résolu (biome, rivière, collines): sert au rendu.
+        self.theme = _raw.pop('theme', None)
         # Structures destructibles (maisons, haies, bosquets, rochers):
         # extraites AVANT siege_data, installées une fois la grille connue.
         _structures = _raw.pop('structures', None)

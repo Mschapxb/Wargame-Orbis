@@ -144,8 +144,8 @@ class Minimap:
         if not force and sig == self._sig:
             return
         self._sig = sig
-        from maps import get_map_info
-        bg = get_map_info(bf.map_name)["bg_color"]
+        from maps import theme_info
+        bg = theme_info(bf)["bg_color"]
         small = pygame.Surface((bf.width, bf.height))
         small.fill(bg)
         terr = bf.terrain

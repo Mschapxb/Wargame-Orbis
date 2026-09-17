@@ -37,7 +37,10 @@ Au lancement, un menu permet de :
   d'une pastille de couleur sur le terrain et **comptée à part dans le rapport de
   bataille**. Les boutons `+/-` alimentent le groupe sélectionné.
 - Ajouter/retirer des unités individuellement avec les boutons **+/-**
-- Choisir la **carte** (Prairie, Forêt, Village, Siège, Citadelle, Défilé)
+- Choisir la **carte** (Prairie, Forêt, Désert, Village, Siège, Citadelle, Défilé)
+- Choisir le **thème** (Prairie, Forêt, Désert — pour Village, Siège et Citadelle)
+  et le **relief**: Plat, Rivière, Collines, Rivière + collines ou Aléatoire
+  (cf. *Thèmes procéduraux* ci-dessous)
 - Lancer la bataille avec **COMBAT!**
 
 ### Contrôles en bataille
@@ -73,6 +76,26 @@ Au lancement, un menu permet de :
 | **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. Fossé boueux au pied du mur (chaussée devant la porte), glacis derrière les escaliers, palissades inflammables côté assaillant, mur que les machines de guerre peuvent percer. |
 | **Citadelle** | Double enceinte. L'armée 2 défend. Mur extérieur à **deux portes** (fossé, glacis, palissades côté assaillant), **basse-cour** avec maisons, jardins et butte, puis **donjon** à une porte. Quand l'enceinte extérieure est sur le point de tomber, la défense **se replie sur le donjon**. |
 | **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. Pentes, éboulis, torrent avec pont et gué. |
+| **Désert** | Reg ouvert: affleurements rocheux destructibles, longues dunes (collines) et oasis centrale (mare boueuse, palmeraie). |
+
+### Thèmes procéduraux
+
+Chaque carte (sauf le Défilé) se combine avec un **relief**, et Village, Siège
+et Citadelle avec un **biome**. Le thème *naturel* d'une carte (relief
+présélectionné dans le menu, biome Prairie) redonne exactement la carte
+historique: mêmes tirages, même équilibrage mesuré. Les autres choix posent
+des couches procédurales (`src/procgen.py`, politique dans `maps.apply_theme`):
+
+| Couche | Batailles rangées (symétriques) | Siège / Citadelle |
+|--------|--------------------------------|-------------------|
+| **Rivière** | Nord-sud au centre, berges irrégulières en miroir, pont sur l'axe central (grand-rue du village) + 1 à 2 gués; berges boisées | Serpente devant le fossé, un pont devant chaque porte + 1 à 2 gués |
+| **Collines** | Buttes semées entre les fronts, recopiées en miroir; *Plat* retire crêtes, butte du bourg et dunes | Buttes côté assaillant (hors axes des portes); glacis et butte du donjon restent des ouvrages |
+| **Biome Forêt** | Bosquets traversables dans les champs, décor boisé, sol plus sombre | Bosquets côté assaillant |
+| **Biome Désert** | Jardins et vergers disparus (palmiers seulement près de l'eau), mare du village en oasis, décor sec, sol sable | Idem, décor sec |
+
+Garanties testées (`src/test_themes.py`): symétrie, deux passages d'un camp à
+l'autre sur grande carte (dont un sans marais), déploiement hors eau/bois/marais,
+chaque porte atteignable par l'assaillant, relief conforme au choix.
 
 ### Terrain
 
@@ -345,6 +368,7 @@ python src/test_destruction.py              # structures, incendie, ruines, IA e
 python src/test_citadelle.py                # double enceinte: portes par case, bascule, repli, rendu
 python src/test_battle_plan.py              # plans de bataille: choix, phases, réserve, intentions
 python src/test_ui.py                       # interface: zoom, mini-carte, fiche d'unité, bandeau, boucle réelle
+python src/test_themes.py                   # thèmes: biome × relief, symétrie, passages, déploiement
 python src/test_determinism.py              # une graine rejoue la même bataille
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)

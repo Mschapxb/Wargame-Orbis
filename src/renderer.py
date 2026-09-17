@@ -777,9 +777,9 @@ def repaint_gates(surface, battle, cell_size, previous_state):
     Reconstruire tout le terrain à chaque round coûtait ~90 ms sur une
     grande carte: un à-coup visible une fois par seconde pendant un siège.
     """
-    from maps import get_map_info
+    from maps import theme_info
     bf = battle.battlefield
-    theme = get_map_info(bf.map_name)
+    theme = theme_info(bf)
     bg = theme["bg_color"]
     gate_color = theme.get("gate_color", (140, 100, 50))
     new_state = gate_visual_state(bf)
@@ -915,18 +915,19 @@ def build_ground_layer(battle, cell_size):
     """Couche de SOL: fond, petits détails, repères, grain, taches organiques
     et traces permanentes (cratères). Construite une fois; le repeint d'une
     région y reprend le sol avant de redessiner ce qui repose dessus."""
-    from maps import get_map_info
+    from maps import theme_info
     bf = battle.battlefield
     cs = cell_size
     W, H = bf.width * cs, bf.height * cs
-    bg = get_map_info(bf.map_name)["bg_color"]
+    theme = theme_info(bf)
+    bg = theme["bg_color"]
     ground = pygame.Surface((W, H))
     ground.fill(bg)
     # Couleur de grille très discrète (proche du fond) — l'ancienne grille
     # par case donnait un aspect "tableur"
     subtle_grid = (max(0, bg[0] - 3), max(0, bg[1] - 3), max(0, bg[2] - 3))
     if cs >= 14:
-        grassy = bf.map_name in ("Prairie", "Forêt")
+        grassy = theme["grassy"]
         gc = (min(255, bg[0] + 14), min(255, bg[1] + 22), min(255, bg[2] + 10))
         sc = (min(255, bg[0] + 16), min(255, bg[1] + 14), min(255, bg[2] + 12))
         for x in range(bf.width):
@@ -964,7 +965,7 @@ def paint_region(surf, battle, cell_size, ground, x0, y0, x1, y1):
     """Peint tout ce qui est statique sur les cases [x0..x1]×[y0..y1]: sol,
     fortifications, obstacles, terrain, bâtiments, décor. La carte entière
     et le repeint après destruction passent par ici: même résultat."""
-    from maps import get_map_info
+    from maps import theme_info
     import structures as st
     import terrain as tr_mod
     import terrain_render
@@ -975,7 +976,7 @@ def paint_region(surf, battle, cell_size, ground, x0, y0, x1, y1):
     if x1 < x0 or y1 < y0:
         return
     region = (x0, y0, x1, y1)
-    theme = get_map_info(bf.map_name)
+    theme = theme_info(bf)
     bg = theme["bg_color"]
     wall_color = theme.get("wall_color", (100, 100, 110))
     gate_color = theme.get("gate_color", (140, 100, 50))
@@ -1447,6 +1448,7 @@ def run_visual(battle, cell_size):
     _bf_h = battle.battlefield.height
     _obstacle_count = 8
     _map_name = battle.map_name
+    _map_options = getattr(battle, 'map_options', None)
 
     while running:
         now = pygame.time.get_ticks()
@@ -1513,7 +1515,8 @@ def run_visual(battle, cell_size):
                     _return_action = "menu"
                 elif event.key == pygame.K_r:
                     from battle import Battle
-                    battle = Battle(_original_army1, _original_army2, _bf_w, _bf_h, _obstacle_count, map_name=_map_name)
+                    battle = Battle(_original_army1, _original_army2, _bf_w, _bf_h, _obstacle_count, map_name=_map_name,
+                                    map_options=_map_options)
                     battle.cell_size = cell_size
                     grid_surface = build_grid_surface(battle, cell_size)
                     fxr.reset(_bf_w * cell_size, _bf_h * cell_size)

@@ -8,15 +8,20 @@ Types de cellules dans la grille:
     2 = mur (infranchissable, unités dessus = +2 svg, CaC ne passe pas)
     3 = porte (destructible, a des PV)
 
-Les cartes de bataille rangée (Prairie, Forêt, Village, Défilé) sont
-symétriques: grille et terrain de la moitié ouest sont recopiés à l'est.
-Les obstacles `1` de Prairie, Forêt et Village sont des structures
-destructibles (cf. generate_structures et structures.py).
+Les cartes de bataille rangée (Prairie, Forêt, Désert, Village, Défilé)
+sont symétriques: grille et terrain de la moitié ouest sont recopiés à
+l'est. Les obstacles `1` de Prairie, Forêt, Désert et Village sont des
+structures destructibles (cf. generate_structures et structures.py).
+
+Thèmes: chaque carte (sauf le Défilé) accepte un biome et un relief
+(rivière, collines) posés en couches procédurales — cf. « THÈMES ET
+RELIEF » et procgen.py.
 """
 
 import math
 import random
 
+import procgen
 import structures as st
 import terrain as tr
 
@@ -67,14 +72,124 @@ MAP_TYPES = {
         "grid_color": (65, 60, 55),
     },
 }
+# Le Désert est inséré après la Forêt: les trois cartes de rase campagne
+# se suivent dans le menu.
+MAP_TYPES = dict(list(MAP_TYPES.items())[:2] + [("Désert", {
+    "description": "Désert — reg ouvert, dunes, affleurements rocheux et oasis centrale",
+    "bg_color": (122, 104, 70),
+    "obstacle_color": (150, 128, 92),
+    "grid_color": (130, 112, 78),
+})] + list(MAP_TYPES.items())[2:])
+
+
+# ═══════════════════════════════════════════════════════════════
+#                    THÈMES ET RELIEF
+# ═══════════════════════════════════════════════════════════════
+# Une carte = une DISPOSITION (Prairie, Village, Siège…) + des OPTIONS:
+#   biome  — "Prairie", "Forêt" ou "Désert": couleurs, décor, végétation
+#   river  — une rivière à franchir (gués, ponts)
+#   hills  — des collines / dunes
+# Chaque disposition a un thème NATUREL: le choisir rend exactement la carte
+# historique (mêmes tirages, même équilibrage mesuré). Les autres choix
+# ajoutent ou retirent des couches procédurales (cf. procgen.py).
+
+BIOMES = ("Prairie", "Forêt", "Désert")
+# Cartes de rase campagne: leur nom EST leur biome
+OPEN_MAPS = ("Prairie", "Forêt", "Désert")
+# Cartes dont on peut choisir le thème et le relief
+THEMED_MAPS = OPEN_MAPS + ("Village", "Siège", "Citadelle")
+SIEGE_MAPS = ("Siège", "Citadelle")
+
+RELIEFS = {
+    "Plat": (False, False),
+    "Rivière": (True, False),
+    "Collines": (False, True),
+    "Rivière + collines": (True, True),
+}
+RANDOM_RELIEF = "Aléatoire"
+
+# (rivière, collines) de la carte historique
+NATURAL_RELIEF = {
+    "Prairie": (False, True),
+    "Forêt": (True, False),
+    "Désert": (False, True),
+    "Village": (False, True),
+    "Siège": (False, False),
+    "Citadelle": (False, False),
+    "Défilé": (True, True),
+}
+
+# Teinte appliquée aux couleurs d'une disposition bâtie hors de son biome
+_BIOME_TINT = {
+    "Forêt": (-16, 2, -12),
+    "Désert": (56, 40, 16),
+}
 
 
 def get_map_names():
     return list(MAP_TYPES.keys())
 
 
-def get_map_info(name):
-    return MAP_TYPES.get(name, MAP_TYPES["Prairie"])
+def natural_biome(map_name):
+    return map_name if map_name in OPEN_MAPS else "Prairie"
+
+
+def natural_relief_name(map_name):
+    pair = NATURAL_RELIEF.get(map_name, (False, False))
+    return next(name for name, v in RELIEFS.items() if v == pair)
+
+
+def resolve_options(map_name, options=None):
+    """Options complètes {biome, river, hills} d'une carte.
+
+    `options` peut donner `relief` (clé de RELIEFS ou "Aléatoire") au lieu
+    de `river`/`hills`. Sans options: le thème naturel. Le Défilé n'a pas
+    d'options (sa géométrie est son relief). "Aléatoire" ne tire un dé que
+    s'il est demandé."""
+    river, hills = NATURAL_RELIEF.get(map_name, (False, False))
+    biome = natural_biome(map_name)
+    if options and map_name in THEMED_MAPS:
+        if map_name not in OPEN_MAPS and options.get('biome') in BIOMES:
+            biome = options['biome']
+        relief = options.get('relief')
+        if relief == RANDOM_RELIEF:
+            relief = random.choice(list(RELIEFS))
+        if relief in RELIEFS:
+            river, hills = RELIEFS[relief]
+        river = bool(options.get('river', river))
+        hills = bool(options.get('hills', hills))
+    return {'biome': biome, 'river': river, 'hills': hills}
+
+
+def get_map_info(name, biome=None):
+    """Couleurs et description d'une carte, dans le biome demandé.
+    `grassy`: le sol porte des brins d'herbe (sinon des gravillons)."""
+    base = MAP_TYPES.get(name, MAP_TYPES["Prairie"])
+    info = dict(base)
+    if biome in _BIOME_TINT and biome != natural_biome(name):
+        tint = _BIOME_TINT[biome]
+        for key in ("bg_color", "obstacle_color", "grid_color"):
+            info[key] = tuple(max(0, min(255, c + d)) for c, d in zip(base[key], tint))
+    info['grassy'] = name in ("Prairie", "Forêt") or biome == "Forêt"
+    return info
+
+
+def theme_info(bf):
+    """Couleurs du champ de bataille `bf` (disposition + biome choisi)."""
+    theme = getattr(bf, 'theme', None) or {}
+    return get_map_info(bf.map_name, theme.get('biome'))
+
+
+def describe_options(map_name, opts):
+    """Libellé court pour la console et le menu: « Village, désert, rivière »."""
+    if map_name not in THEMED_MAPS or not opts:
+        return map_name
+    parts = [map_name]
+    if map_name not in OPEN_MAPS:
+        parts.append(opts['biome'].lower())
+    parts.append(next(n for n, v in RELIEFS.items()
+                      if v == (opts['river'], opts['hills'])).lower())
+    return ", ".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -859,10 +974,9 @@ def generate_defile(width, height):
     # déploiement en plaine"). La colonne de front par défaut suit la même
     # formule que Battle.__init__ (gap = max(12, 12% de la largeur), borné
     # à mid_x - 8): on la reproduit ici pour que les pentes ne débordent
-    # jamais sur la zone où les unités apparaissent, avec une petite marge.
-    _deploy_gap = max(12, int(width * 0.12))
-    _deploy_gap = max(4, min(_deploy_gap, cx - 8))
-    slope_start_x = cx - _deploy_gap + 3
+    # jamais sur la zone où les unités apparaissent, avec une petite marge
+    # (cf. deploy_front).
+    slope_start_x = deploy_front(width) + 3
     slope_end_x = width - slope_start_x
     for x in range(width):
         in_throat = throat_start <= x < throat_end
@@ -906,6 +1020,240 @@ def generate_defile(width, height):
     return grid, {'terrain': terr}
 
 
+def deploy_front(width, deploy_gap=None, siege=False):
+    """Colonne de front de l'armée 1, selon la même formule que
+    Battle._place_armies: rien de procédural ne doit tomber à sa gauche
+    (principe « zones de déploiement en plaine »)."""
+    mid_x = width // 2
+    if siege:
+        gap = 12
+    elif deploy_gap:
+        gap = int(deploy_gap)
+    else:
+        gap = max(12, int(width * 0.12))
+    return mid_x - max(4, min(gap, mid_x - 8))
+
+
+def generate_desert(width, height):
+    """Désert: un reg ouvert où l'eau et l'ombre sont les objectifs.
+
+    Structure:
+      • Affleurements rocheux en petits amas (couverts destructibles), plus
+        nombreux vers le centre
+      • Dunes: longues crêtes nord-sud (collines) — on les tient, elles
+        masquent ce qui se cache derrière
+      • Oasis centrale: mare boueuse cernée de palmiers (bois)
+    Aucun obstacle ni relief devant les lignes de déploiement.
+    """
+    grid = [[0] * height for _ in range(width)]
+    terr = tr.make_grid(width, height)
+    lo = deploy_front(width) + 3
+    mx, cy = (width - 1) / 2, (height - 1) / 2
+
+    # ── Affleurements rocheux (ouest tiré, est recopié) ──
+    n_rocks = max(3, (width * height) // 420)
+    procgen.scatter_rocks(grid, width, height, n_rocks, (lo, width // 2 - 3),
+                          (2, height - 3), cluster=(2, 5), symmetric=True)
+
+    # ── Oasis: mare boueuse et palmeraie ──
+    pond_r = max(1.2, min(height, width) * 0.05)
+    for x in range(width):
+        for y in range(height):
+            d = math.hypot(x - mx, y - cy)
+            if d <= pond_r + 3.2:
+                grid[x][y] = 0
+            if d <= pond_r:
+                terr[x][y] = tr.MARSH
+    for x in range(width // 2):
+        for y in range(1, height - 1):
+            d = math.hypot(x - mx, y - cy)
+            if pond_r < d <= pond_r + 2.2 and random.random() < 0.55:
+                terr[x][y] = tr.WOOD
+    _mirror_terrain(terr, width, height)
+
+    # ── Dunes ──
+    n_dunes = max(2, (width * height) // 900)
+    size = (1.4, max(2.0, height * 0.07))
+    procgen.scatter_blobs(terr, grid, width, height, n_dunes, (lo, width // 2 - 2),
+                          (2, height - 3), size, tr.HILL, elongated=True, symmetric=True)
+    return grid, {'terrain': terr}
+
+
+# ═══════════════════════════════════════════════════════════════
+#                 COUCHES DE THÈME (relief, biome)
+# ═══════════════════════════════════════════════════════════════
+
+def _field_x_range(map_name, width, data):
+    """Bande de terrain où les couches procédurales ont le droit de peindre:
+    entre le front de l'armée 1 et le centre (cartes symétriques), ou entre
+    le front de l'assaillant et le fossé (sièges)."""
+    if map_name in SIEGE_MAPS:
+        wall_x = data['rings'][0]['wall_x'] if data.get('rings') else data['wall_x']
+        return deploy_front(width, siege=True) + 3, wall_x - 6
+    return deploy_front(width, data.get('deploy_gap')) + 3, width // 2 - 2
+
+
+def _gate_rows(data):
+    return list(data.get('gate_positions', ()))
+
+
+def _clear_village_houses_near(grid, width, height, cells):
+    """Une maison coupée par la rivière n'est plus une maison: on retire
+    les blocs d'obstacles qui touchent le lit (le miroir est préservé,
+    le lit étant symétrique)."""
+    near = {(x + dx, y) for (x, y) in cells for dx in (-1, 0, 1)}
+    obstacles = [(x, y) for x in range(width) for y in range(height) if grid[x][y] == 1]
+    for comp in st._components(obstacles):
+        if any(c in near for c in comp):
+            for (x, y) in comp:
+                grid[x][y] = 0
+
+
+def _add_river(map_name, grid, data, width, height, biome):
+    terr = data['terrain']
+    cy = height // 2
+    if map_name in SIEGE_MAPS:
+        x_lo, x_hi = _field_x_range(map_name, width, data)
+        if x_hi - x_lo < 3:
+            return
+        spans = procgen.river_spans_meander(height, (x_lo + x_hi) // 2, x_lo, x_hi,
+                                            width_cells=2 if width < 90 else 3)
+        gates = _gate_rows(data)
+        crossings = procgen.pick_rows(height, 1 if height < 40 else 2, forced=gates)
+        _, approach = procgen.paint_river(grid, terr, width, height, spans, crossings,
+                                          bridge_rows=gates)
+        # Les palissades ne se dressent pas au milieu de l'eau
+        structs = data.get('structures')
+        if structs:
+            for c in [c for c in structs if grid[c[0]][c[1]] == 0]:
+                del structs[c]
+        if biome == "Forêt":
+            procgen.paint_banks(grid, terr, width, height, spans, tr.WOOD, 0.3, skip=approach)
+        return
+
+    amp = 1 if width < 90 else 2
+    spans = procgen.river_spans_symmetric(width, height, amp)
+    if map_name == "Village":
+        bed = {(x, y) for y, (x0, x1) in spans.items() for x in range(x0, x1 + 1)}
+        _clear_village_houses_near(grid, width, height, bed)
+    # Un pont là où l'on marche déjà (grand-rue du village, couloir central)
+    forced = [cy]
+    crossings = procgen.pick_rows(height, 2 if height < 40 else 3, margin=4, forced=forced)
+    _, approach = procgen.paint_river(grid, terr, width, height, spans, crossings,
+                                      bridge_rows=forced)
+    bank = {"Forêt": (tr.WOOD, 0.35), "Désert": (tr.WOOD, 0.45),
+            "Prairie": (tr.WOOD, 0.12)}[biome]
+    procgen.paint_banks(grid, terr, width, height, spans, bank[0], bank[1],
+                        skip=approach, symmetric=True)
+
+
+def _remove_river(map_name, data, width, height):
+    """Le ruisseau de la Forêt redevient sous-bois; ses gués, des sentiers."""
+    terr = data['terrain']
+    procgen.strip(terr, width, height, (tr.RIVER,), to=tr.WOOD)
+    procgen.strip(terr, width, height, (tr.FORD, tr.BRIDGE), to=tr.PLAIN)
+
+
+def _add_hills(map_name, grid, data, width, height):
+    terr = data['terrain']
+    x_lo, x_hi = _field_x_range(map_name, width, data)
+    n = max(2, (width * height) // 1100)
+    size = (1.6, max(2.2, height * 0.06))
+    if map_name in SIEGE_MAPS:
+        procgen.scatter_blobs(terr, grid, width, height, n, (x_lo, x_hi), (2, height - 3),
+                              size, tr.HILL, avoid_rows=_gate_rows(data))
+    else:
+        if map_name == "Forêt":
+            x_lo = max(x_lo, width // 2 - int(width * 0.16))
+        procgen.scatter_blobs(terr, grid, width, height, n, (x_lo, x_hi), (2, height - 3),
+                              size, tr.HILL, symmetric=True)
+
+
+def _apply_biome(map_name, grid, data, width, height, biome):
+    """Végétation d'une disposition bâtie hors de sa prairie natale."""
+    terr = data['terrain']
+    x_lo, x_hi = _field_x_range(map_name, width, data)
+    cy = height // 2
+    if biome == "Forêt":
+        n = max(3, (width * height) // 450)
+        size = (1.4, max(2.0, height * 0.06))
+        if map_name in SIEGE_MAPS:
+            procgen.scatter_blobs(terr, grid, width, height, n, (x_lo, x_hi), (1, height - 2),
+                                  size, tr.WOOD, avoid_rows=_gate_rows(data))
+        else:
+            procgen.scatter_blobs(terr, grid, width, height, n, (x_lo, x_hi), (1, height - 2),
+                                  size, tr.WOOD, avoid_rows=[cy], symmetric=True)
+    elif biome == "Désert":
+        # Plus de jardins ni de vergers: seuls restent les palmiers au bord
+        # de l'eau. Règle déterministe → la symétrie est préservée.
+        wet = set(procgen.WET)
+        for x in range(width):
+            for y in range(height):
+                if terr[x][y] != tr.WOOD:
+                    continue
+                if not any(0 <= x + dx < width and 0 <= y + dy < height
+                           and terr[x + dx][y + dy] in wet
+                           for dx in (-2, -1, 0, 1, 2) for dy in (-2, -1, 0, 1, 2)):
+                    terr[x][y] = tr.PLAIN
+        if map_name == "Village":
+            # La mare du village devient une oasis: palmiers tout autour
+            for x in range(width):
+                for y in range(1, height - 1):
+                    if (terr[x][y] == tr.PLAIN and grid[x][y] == 0 and abs(y - cy) > 2
+                            and any(0 <= x + dx < width and terr[x + dx][y + dy] == tr.MARSH
+                                    for dx in (-1, 0, 1) for dy in (-1, 0, 1))):
+                        terr[x][y] = tr.WOOD
+
+
+def _ensure_crossing(map_name, grid, data, width, height):
+    """Filet de sécurité: si les couches ont coupé le passage d'un bord à
+    l'autre (ou jusqu'au fossé), on ouvre un gué sur la rangée centrale."""
+    terr = data['terrain']
+    cy = height // 2
+    x_end = _field_x_range(map_name, width, data)[1] + 3 if map_name in SIEGE_MAPS else width - 2
+    left = [(1, y) for y in range(1, height - 1) if grid[1][y] == 0 and tr.MOVE[terr[1][y]] is not None]
+    right = [(x_end, y) for y in range(1, height - 1)
+             if grid[x_end][y] == 0 and tr.MOVE[terr[x_end][y]] is not None]
+    if _bfs_path(grid, width, height, left, right, terr):
+        return
+    for x in range(1, x_end + 1):
+        for y in (cy - 1, cy, cy + 1):
+            if grid[x][y] == 1:
+                grid[x][y] = 0
+            if terr[x][y] == tr.RIVER:
+                terr[x][y] = tr.FORD
+    structs = data.get('structures')
+    if structs:
+        for c in [c for c in structs if grid[c[0]][c[1]] == 0]:
+            del structs[c]
+
+
+def apply_theme(map_name, grid, data, width, height, opts):
+    """Pose les couches de thème sur une carte générée. Ne fait RIEN (et ne
+    tire aucun dé) quand `opts` est le thème naturel de la carte."""
+    if map_name not in THEMED_MAPS or data.get('terrain') is None:
+        return
+    nat_river, nat_hills = NATURAL_RELIEF[map_name]
+    changed = False
+    if opts['biome'] != natural_biome(map_name):
+        _apply_biome(map_name, grid, data, width, height, opts['biome'])
+        changed = True
+    if opts['hills'] != nat_hills:
+        if opts['hills']:
+            _add_hills(map_name, grid, data, width, height)
+        else:
+            procgen.strip(data['terrain'], width, height, (tr.HILL,))
+        changed = True
+    if opts['river'] != nat_river:
+        if opts['river']:
+            _add_river(map_name, grid, data, width, height, opts['biome'])
+        else:
+            _remove_river(map_name, data, width, height)
+        changed = True
+    if changed:
+        _ensure_crossing(map_name, grid, data, width, height)
+
+
 # ═══════════════════════════════════════════════════════════════
 #                    FONCTION PRINCIPALE
 # ═══════════════════════════════════════════════════════════════
@@ -926,6 +1274,18 @@ def generate_defile(width, height):
 _WOOD_DECOR = {
     'density': 0.45,
     'big': [("arbre_pin", 3), ("arbre_rond", 4), ("buisson", 3)],
+}
+# Au désert, le « bois » est une palmeraie clairsemée
+_WOOD_DECOR_DESERT = {
+    'density': 0.35,
+    'big': [("arbre_rond", 3), ("buisson", 2), ("buisson_sec", 3)],
+}
+# Ce que devient un objet de décor verdoyant sous le soleil du désert
+_DESERT_SWAP = {
+    "herbe": "caillou", "herbe_haute": "buisson_sec", "fleurs": "caillou",
+    "fougere": "buisson_sec", "champignon": "caillou", "buisson": "buisson_sec",
+    "arbre_pin": "buisson_sec", "arbre_rond": "rocher", "botte_foin": "caisse",
+    "souche": "rocher", "tronc": "buisson_sec",
 }
 _NO_DECOR_TERRAIN = {tr.RIVER, tr.FORD, tr.BRIDGE}
 
@@ -965,7 +1325,33 @@ _DECOR_TABLES = {
         'small': [("caillou", 5), ("gravats", 2), ("herbe", 1)],
         'big':   [("rocher", 4), ("buisson_sec", 3), ("souche", 1)],
     },
+    "Désert": {
+        'density': 0.09,
+        'small': [("caillou", 5), ("gravats", 2)],
+        'big':   [("rocher", 4), ("buisson_sec", 4), ("gravats_tas", 1)],
+    },
 }
+
+
+def _decor_table(map_name, biome=None):
+    """Table de décor d'une disposition, adaptée à son biome."""
+    table = _DECOR_TABLES.get(map_name, _DECOR_TABLES["Prairie"])
+    if biome is None or biome == natural_biome(map_name):
+        return table
+    if biome == "Désert":
+        def swap(entries):
+            merged = {}
+            for kind, w in entries:
+                k = _DESERT_SWAP.get(kind, kind)
+                merged[k] = merged.get(k, 0) + w
+            return list(merged.items())
+        return {'density': table['density'] * 0.8,
+                'small': swap(table['small']), 'big': swap(table['big'])}
+    if biome == "Forêt":
+        return {'density': table['density'] * 1.2,
+                'small': table['small'] + [("fougere", 3), ("champignon", 1)],
+                'big': table['big'] + [("buisson", 3), ("souche", 2), ("tronc", 1)]}
+    return table
 
 
 def _weighted_pick(rng, table):
@@ -979,13 +1365,14 @@ def _weighted_pick(rng, table):
     return table[-1][0]
 
 
-def generate_decor(map_name, grid, width, height, terrain=None):
+def generate_decor(map_name, grid, width, height, terrain=None, biome=None):
     """Sème le décor sur les cases libres. Retourne [(x, y, kind, seed)].
 
     Utilise sa propre RNG (une seule ponction sur le flux global) pour ne
     pas décaler les dés de la bataille.
     """
-    table = _DECOR_TABLES.get(map_name, _DECOR_TABLES["Prairie"])
+    table = _decor_table(map_name, biome)
+    wood_decor = _WOOD_DECOR_DESERT if (biome or natural_biome(map_name)) == "Désert" else _WOOD_DECOR
     rng = random.Random(random.randrange(1 << 30))
 
     density = table['density']
@@ -1002,13 +1389,13 @@ def generate_decor(map_name, grid, width, height, terrain=None):
             if tname in _NO_DECOR_TERRAIN:
                 continue
             if tname == tr.WOOD:
-                if rng.random() > _WOOD_DECOR['density']:
+                if rng.random() > wood_decor['density']:
                     continue
                 if any((x + dx, y + dy) in occupied
                        for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
                     continue
                 occupied.add((x, y))
-                props.append((x, y, _weighted_pick(rng, _WOOD_DECOR['big']),
+                props.append((x, y, _weighted_pick(rng, wood_decor['big']),
                               rng.randrange(1 << 16)))
                 continue
             if rng.random() > density:
@@ -1036,7 +1423,7 @@ def generate_decor(map_name, grid, width, height, terrain=None):
     return props
 
 
-def generate_ground_patches(map_name, width, height):
+def generate_ground_patches(map_name, width, height, biome=None):
     """Grandes taches de sol (terre battue, herbe rase, mousse, gravier).
 
     Le bruit calculé par case produit forcément des carrés alignés sur la
@@ -1053,8 +1440,12 @@ def generate_ground_patches(map_name, width, height):
         "Siège":   [((-20, -20, -16), 60), ((22, 18, 14), 46), ((26, 10, -8), 38)],
         "Citadelle": [((-20, -20, -16), 60), ((22, 18, 14), 46), ((26, 10, -8), 38)],
         "Défilé":  [((26, 18, 2), 56), ((-24, -22, -18), 58), ((14, 14, 18), 40)],
+        "Désert":  [((24, 18, 6), 58), ((-22, -20, -14), 52), ((14, 4, -10), 44)],
     }
-    pal = palettes.get(map_name, palettes["Prairie"])
+    if biome is not None and biome != natural_biome(map_name):
+        pal = palettes[biome]
+    else:
+        pal = palettes.get(map_name, palettes["Prairie"])
 
     patches = []
     for _ in range(n):
@@ -1076,21 +1467,26 @@ def generate_structures(map_name, grid, width, height):
         return st.classify_village(grid, width, height)
     if map_name == "Forêt":
         return {c: st.GROVE for c in obstacles}
-    if map_name == "Prairie":
+    if map_name in ("Prairie", "Désert"):
         return {c: st.ROCK for c in obstacles}
     return {}
 
 
-def generate_map(map_name, width, height):
+def generate_map(map_name, width, height, options=None):
     """Génère la grille et les données spéciales pour un type de map.
+
+    options: {'biome', 'relief'} ou {'biome', 'river', 'hills'} (cf.
+    resolve_options). Sans options, la carte historique.
 
     Retourne (grid, map_data) où:
         grid: [[int]] — grille 2D (0=vide, 1=obstacle, 2=mur, 3=porte)
-        map_data: dict — données spéciales (siege_data, etc.)
+        map_data: dict — données spéciales (siege_data, etc.), dont
+            'theme': les options résolues {'biome', 'river', 'hills'}
     """
     generators = {
         "Prairie": generate_prairie,
         "Forêt": generate_forest,
+        "Désert": generate_desert,
         "Village": generate_village,
         "Siège": generate_siege,
         "Citadelle": generate_citadel,
@@ -1098,11 +1494,15 @@ def generate_map(map_name, width, height):
     }
 
     gen = generators.get(map_name, generate_prairie)
+    opts = resolve_options(map_name, options)
     grid, map_data = gen(width, height)
     map_data = dict(map_data or {})
+    apply_theme(map_name, grid, map_data, width, height, opts)
+    map_data['theme'] = opts
     map_data['decor'] = generate_decor(map_name, grid, width, height,
-                                       map_data.get('terrain'))
-    map_data['ground_patches'] = generate_ground_patches(map_name, width, height)
+                                       map_data.get('terrain'), opts['biome'])
+    map_data['ground_patches'] = generate_ground_patches(map_name, width, height,
+                                                         opts['biome'])
     if 'structures' not in map_data:
         map_data['structures'] = generate_structures(map_name, grid, width, height)
     return grid, map_data

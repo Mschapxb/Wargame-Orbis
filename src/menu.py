@@ -229,7 +229,9 @@ class ArmyState:
 
 
 def run_army_menu(screen_w=None, screen_h=None):
-    """Lance le menu de composition. Retourne (army1_list, army2_list) ou None si quit."""
+    """Lance le menu de composition. Retourne (army1_list, army2_list,
+    map_name, map_options) ou None si quit. map_options: {'biome', 'relief'}
+    (cf. maps.resolve_options)."""
     
     if screen_w is None or screen_h is None:
         info = pygame.display.Info()
@@ -252,6 +254,12 @@ def run_army_menu(screen_w=None, screen_h=None):
     
     states = [ArmyState(0), ArmyState(1)]
     selected_map = "Prairie"
+    import maps as maps_mod
+    selected_biome = "Prairie"
+    selected_relief = maps_mod.natural_relief_name(selected_map)
+
+    def map_options():
+        return {'biome': selected_biome, 'relief': selected_relief}
     
     # ─── Fond dégradé pré-rendu (une seule fois) ───
     bg_surface = pygame.Surface((screen_w, screen_h))
@@ -311,7 +319,7 @@ def run_army_menu(screen_w=None, screen_h=None):
                     if states[0].total_units > 0 and states[1].total_units > 0:
                         a1 = states[0].build()
                         a2 = states[1].build()
-                        return a1, a2, selected_map
+                        return a1, a2, selected_map, map_options()
         
         screen.blit(bg_surface, (0, 0))
         
@@ -326,7 +334,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         panel_margin = 15
         panel_top = 50
         panel_w = (screen_w - panel_margin * 3) // 2
-        panel_h = screen_h - panel_top - 70
+        panel_h = screen_h - panel_top - 150
         
         for i, state in enumerate(states):
             px = panel_margin + i * (panel_w + panel_margin)
@@ -659,29 +667,51 @@ def run_army_menu(screen_w=None, screen_h=None):
         from maps import get_map_names, get_map_info
         map_names = get_map_names()
         
-        map_y = screen_h - 100
-        map_label = small_font.render("Map:", True, TEXT)
-        screen.blit(map_label, (panel_margin, map_y + 4))
+        map_y = screen_h - 132
+        map_label = small_font.render("Carte:", True, TEXT)
+        screen.blit(map_label, (panel_margin, map_y + 6))
         
-        btn_x = panel_margin + 40
-        for midx, mname in enumerate(map_names):
-            minfo = get_map_info(mname)
-            is_selected = (mname == selected_map)
-            label_w = small_font.size(mname)[0]
-            mbtn = pygame.Rect(btn_x, map_y, max(70, label_w + 20), 26)
-            btn_color = BTN_ACTIVE if is_selected else BTN_NORMAL
-            hover_c = (100, 180, 255) if is_selected else BTN_HOVER
-            if draw_button(screen, mbtn, mname, small_font, mouse_pos, btn_color, hover_c,
-                           TEXT_BRIGHT if is_selected else TEXT):
-                if clicked:
-                    selected_map = mname
-            if is_selected:
-                pygame.draw.rect(screen, GOLD, mbtn, 2, border_radius=4)
-            btn_x += mbtn.w + 6
+        def choice_row(options, selected, x, y, min_w=70):
+            """Rangée de boutons à choix unique. Retourne (choix, x de fin)."""
+            for opt in options:
+                is_sel = (opt == selected)
+                rect = pygame.Rect(x, y, max(min_w, small_font.size(opt)[0] + 20), 26)
+                if draw_button(screen, rect, opt, small_font, mouse_pos,
+                               BTN_ACTIVE if is_sel else BTN_NORMAL,
+                               (100, 180, 255) if is_sel else BTN_HOVER,
+                               TEXT_BRIGHT if is_sel else TEXT) and clicked:
+                    selected = opt
+                if is_sel:
+                    pygame.draw.rect(screen, GOLD, rect, 2, border_radius=4)
+                x += rect.w + 6
+            return selected, x
+
+        new_map, btn_x = choice_row(map_names, selected_map, panel_margin + 48, map_y)
+        if new_map != selected_map:
+            # Une nouvelle carte repart de son thème naturel
+            selected_map = new_map
+            selected_relief = maps_mod.natural_relief_name(selected_map)                 if selected_map in maps_mod.THEMED_MAPS else selected_relief
         
-        # Description de la map
+        # Description de la map (bornée avant le bouton d'éditeur)
         map_desc = get_map_info(selected_map).get("description", "")
+        screen.set_clip(pygame.Rect(btn_x + 10, map_y, max(0, screen_w - 200 - btn_x), 26))
         draw_text(screen, map_desc, small_font, (btn_x + 10, map_y + 6), TEXT_DIM)
+        screen.set_clip(None)
+
+        # ─── THÈME ET RELIEF (procéduraux) ───
+        opt_y = map_y + 32
+        if selected_map in maps_mod.THEMED_MAPS:
+            x = panel_margin
+            if selected_map not in maps_mod.OPEN_MAPS:
+                draw_text(screen, "Thème:", small_font, (x, opt_y + 6), TEXT)
+                selected_biome, x = choice_row(maps_mod.BIOMES, selected_biome, x + 48, opt_y)
+                x += 18
+            draw_text(screen, "Relief:", small_font, (x, opt_y + 6), TEXT)
+            reliefs = list(maps_mod.RELIEFS) + [maps_mod.RANDOM_RELIEF]
+            selected_relief, x = choice_row(reliefs, selected_relief, x + 48, opt_y)
+        else:
+            draw_text(screen, "Relief fixe: le goulet et son torrent sont la carte.",
+                      small_font, (panel_margin, opt_y + 6), TEXT_DIM)
         
         # ─── BOUTON ÉDITEUR D'UNITÉS ───
         custom_btn = pygame.Rect(screen_w - 180, map_y, 160, 26)
@@ -718,7 +748,7 @@ def run_army_menu(screen_w=None, screen_h=None):
             if hovered and clicked:
                 a1 = states[0].build()
                 a2 = states[1].build()
-                return a1, a2, selected_map
+                return a1, a2, selected_map, map_options()
         else:
             draw_button(screen, launch_rect,
                         "Ajoutez des unités aux deux armées",

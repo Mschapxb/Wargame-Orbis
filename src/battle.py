@@ -50,7 +50,7 @@ T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
 class Battle:
     def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, 
-                 obstacle_count=8, map_name="Prairie"):
+                 obstacle_count=8, map_name="Prairie", map_options=None):
         self.army1 = copy.deepcopy(army1)
         self.army2 = copy.deepcopy(army2)
         # Des uids frais après le deepcopy: `Battle(a, a, …)` copierait sinon
@@ -61,10 +61,13 @@ class Battle:
         for u in self.army2:
             reassign_uid(u)
         self.map_name = map_name
+        # Thème demandé (biome, relief), rejoué tel quel par un redémarrage
+        self.map_options = map_options
         
         # Générer la map
         from maps import generate_map
-        grid, map_data = generate_map(map_name, battlefield_width, battlefield_height)
+        grid, map_data = generate_map(map_name, battlefield_width, battlefield_height,
+                                      map_options)
         self.battlefield = Battlefield(battlefield_width, battlefield_height, 
                                         obstacle_count, map_name, grid, map_data)
         self.round = 1
