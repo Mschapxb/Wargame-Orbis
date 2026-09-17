@@ -190,7 +190,7 @@ def test_oblique_aile_refusee_en_retrait():
     assert all(o is None or o[0] in ("hold", "support") for o in orders)
 
 
-# ── Colline, réserve ──
+# ── Colline, plus de réserve ──
 
 @test
 def test_colline_tireurs_sur_la_colline():
@@ -217,30 +217,39 @@ def test_colline_tireurs_sur_la_colline():
 
 
 @test
-def test_reserve_engagee_a_la_chute_d_une_unite():
-    b = battle(INF, "Prairie", 7)
-    cmd = b.commander1
-    alive, enemies, s = start(b, cmd, "oblique")
-    plan = cmd.plan
-    reserve = [u for u in alive if plan.roles.get(id(u)) == "reserve"]
-    assert reserve, "une armée de 8 mêlées ou plus garde une réserve"
-    cmd.posture = "balanced"
-    plan.update(cmd, alive, enemies, s)
-    assert not plan.reserve_committed
-    bf = b.battlefield
-    front = [u for u in alive if is_front_melee(plan, u)]
-    victim, fighter = front[0], front[1]
-    e = enemies[0]
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        pos = (e.position[0] + dx, e.position[1] + dy)
-        if bf.is_valid(*pos) and pos not in bf.units:
-            bf.move_unit(fighter, pos)
-            break
-    victim.is_alive = False
-    alive = [u for u in alive if u.is_alive]
-    plan.update(cmd, alive, enemies, s)
-    assert plan.reserve_committed
-    assert plan.order_for(cmd, reserve[0], enemies)[0] == "attack"
+def test_aucune_reserve_toute_la_melee_marche():
+    """La réserve a été retirée: aucun plan ne met de mêlée de côté."""
+    for kind in ("marteau", "feinte", "oblique"):
+        b = battle(INF, "Prairie", 7)
+        cmd = b.commander1
+        alive, enemies, s = start(b, cmd, kind)
+        assert "reserve" not in cmd.plan.roles.values(), kind
+        assert not hasattr(cmd.plan, 'reserve_committed')
+
+
+@test
+def test_colline_contre_attaque_si_l_ennemi_ne_vient_pas():
+    """Deux armées qui tiennent chacune leur hauteur ne se regardent pas:
+    faute d'ennemi qui approche, la tenue tourne court."""
+    army = ("Armée Skaldienne", {"Infanterie régulière": 6, "Arbaletrier régulier": 4, "Officier": 1})
+    for seed in range(8):
+        b = battle(army, "Prairie", seed)
+        cmd = b.commander1
+        alive, enemies, s = prime(b, cmd)
+        hill = cmd.plan._find_hill(cmd, alive, enemies)
+        if hill is None:
+            continue
+        cmd.plan.points['colline'] = hill
+        cmd.plan._start("colline", cmd, alive, enemies)
+        cmd.posture = "balanced"
+        cmd.plan._set_phase("tenue")
+        cmd.plan._enemy_proj0 = cmd.plan._enemy_front(cmd, enemies)
+        for _ in range(3):
+            cmd.plan.update(cmd, alive, enemies, s)   # l'ennemi reste immobile
+            if cmd.plan.phase == "contre":
+                return
+        raise AssertionError(f"toujours en {cmd.plan.phase} après 3 rounds")
+    raise AssertionError("aucune colline objectif trouvée sur 8 graines")
 
 
 # ── Intentions, bataille complète ──

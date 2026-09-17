@@ -1640,11 +1640,18 @@ class Battle:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
 
         # === Pass 3: en approche — avance cohésive ===
-        # Trier les approchants du PLUS LOIN au PLUS PROCHE de l'ennemi
-        approaching.sort(key=lambda u: min(
-            (bf.manhattan_distance(u.position, e.position)
-             for e in self.get_enemies(u) if e.is_alive), default=999),
-            reverse=True)
+        # Trier les approchants du PLUS LOIN au PLUS PROCHE de l'ennemi —
+        # sauf les blocs en formation, qui avancent AVANT eux et premier rang
+        # en tête: un rang arrière qui bouge d'abord bute sur le rang de
+        # devant encore en place, et le bloc se déforme en U.
+        def _approach_key(u):
+            d = min((bf.manhattan_distance(u.position, e.position)
+                     for e in self.get_enemies(u) if e.is_alive), default=999)
+            o = getattr(u, '_tactical_order', None)
+            if o is not None and o.order_type == "form":
+                return (0, d)
+            return (1, -d)
+        approaching.sort(key=_approach_key)
 
         median_dist = 999
         if approaching:

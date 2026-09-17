@@ -25,7 +25,7 @@ MATCHES = [
 ]
 
 EVENTS = (("frappe", "marteau frappe"), ("brisé", "marteau brisé"),
-          ("réserve", "réserve engagée"), ("assaut principal", "feinte puis assaut"),
+          ("assaut principal", "feinte puis assaut"),
           ("contre-attaque", "contre-attaque colline"), ("aile refusée", "aile refusée engagée"))
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40

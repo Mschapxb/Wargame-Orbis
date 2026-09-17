@@ -1,0 +1,6 @@
+Prairie  contact  5.0 | durée  17.5 | paquet  48.2 % (marche  83.6) | traînard  9.8 % | attente  1.4 % (marche  0.5) | gauche  60.0 % (18/30)
+Forêt    contact  5.0 | durée  17.2 | paquet  46.6 % (marche  69.6) | traînard 10.0 % | attente  1.2 % (marche  1.1) | gauche  46.7 % (14/30)
+Désert   contact  5.0 | durée  16.0 | paquet  57.0 % (marche  84.3) | traînard  6.9 % | attente  2.7 % (marche  4.6) | gauche  46.7 % (14/30)
+Village  contact  5.0 | durée  16.0 | paquet  50.8 % (marche  85.5) | traînard  9.0 % | attente  1.8 % (marche  2.7) | gauche  40.0 % (12/30)
+Défilé   contact  6.0 | durée  17.1 | paquet  72.3 % (marche  89.1) | traînard  2.2 % | attente  2.0 % (marche  2.0) | gauche  40.0 % (12/30)
+MOYENNE  paquet 55.0 | trainard 7.6 | attente 1.8 | contact 5.2 | duree 16.8  (21s)

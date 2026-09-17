@@ -19,10 +19,11 @@ _ORDER_FR = {
     "attack": "attaque", "flank": "contournement", "hold": "tient la position",
     "protect": "garde la ligne", "support": "gagne son poste", "guard": "escorte",
     "kite": "recule en tirant", "withdraw": "décroche", "demolish": "démolit",
+    "form": "marche en formation",
 }
 _ROLE_FR = {
     "hammer": "marteau", "lure": "leurre", "refused": "aile refusée",
-    "hill": "tient la colline", "reserve": "réserve",
+    "hill": "tient la colline",
 }
 
 

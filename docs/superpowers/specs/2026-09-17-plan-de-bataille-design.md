@@ -207,3 +207,13 @@ Le plan s'applique en postures `balanced`, `hold_line` et `rush`. En `exploit`
 
 Écart d'équilibre asymétrique **accepté tel quel**: l'IA exploite une règle de
 terrain existante; l'équilibre se rattrapera par les compositions d'armées.
+
+## Révision 2026-09-17 — réserve retirée, IA plus agressive
+
+À la demande de l'utilisateur (« le système de réserve est pénible et mal
+adapté »), la **réserve est supprimée** de tous les plans: toute la mêlée
+marche au combat. Les sections ci-dessus qui la décrivent sont caduques.
+Phases raccourcies: marteau ≤ 7 rounds d'approche, feinte ≤ 3, aile refusée
+≤ 4, colline: prise ≤ 3, tenue ≤ 3 avec contre-attaque dès que l'ennemi ne
+progresse plus. Les armées marchent désormais en blocs (`formation.py`, cf.
+README « Formations en bloc »).

@@ -21,9 +21,15 @@ manquait pour qu'une bataille ne ressemble pas à la précédente:
     on y jette immédiatement ce qu'on a sous la main.
   • CONSERVATION: une unité à l'agonie décroche et laisse la place au lieu
     de mourir bêtement — si la ligne peut l'absorber.
+  • FORMATIONS: chaque groupe marche en BLOC (mêlée devant, tireurs et
+    officiers derrière, cavalerie sur l'aile) au pas du plus lent, puis rompt
+    les rangs et charge dès que l'ennemi est à portée de charge. Au combat,
+    les unités préfèrent frapper ensemble la même cible (cf. formation.py).
 """
+import math
 import random
 
+import formation
 import tactics
 import structures as st
 from battle_plan import BattlePlan
@@ -89,6 +95,8 @@ class CommanderAI:
     # Plans de bataille multi-rounds (cf. battle_plan.py). Désactivables pour
     # mesurer ce qu'ils apportent (bench_plans.py).
     use_plans = True
+    # Marche en blocs (cf. formation.py). Désactivable pour mesurer.
+    use_formations = True
 
     def __init__(self, army, enemy_army, battlefield, is_army1=True):
         self.army = army
@@ -135,6 +143,14 @@ class CommanderAI:
         self._artillery_wait = 0        # Rounds passés à couvert des machines
         self.breach = None              # Faille repérée dans la ligne adverse
         self._lane_center = None        # Secteur visé par l'avance
+        self._lane_y = None             # Centre latéral de l'avance (couloirs)
+        self._hold_line_rounds = 0      # Rounds cumulés en posture « ligne de tir »
+        self._slots = {}                # id(unité) -> case dans son bloc
+        self._blocks_engaged = set()    # blocs qui ont rompu les rangs pour charger
+        self._block_memory = {}         # bloc -> ordre des unités (stabilité)
+        self._block_of = {}             # id(unité) -> clé de son bloc
+        self._claims = {}               # id(ennemi) -> unités de mêlée qui le visent
+        self._closed_ground = None      # bois entre les armées (ordre dispersé)
 
         self._refresh_style()
 
@@ -317,15 +333,19 @@ class CommanderAI:
         # salve gratuite. Envoyer l'infanterie au contact maintenant, ce
         # serait masquer notre propre feu et arriver en ordre dispersé.
         # On tient la ligne tant que l'échange nous est favorable.
+        # Attente bornée: l'IA reste agressive, elle ne campe pas.
+        hold_cap = 3 + int(self.patience * 2)
         if (s.get('artillery_firing', 0) >= 1
                 and s['my_ranged'] >= s['en_ranged'] * 0.75
                 and s['bleeding'] <= s['hurting_them'] + 0.02
-                and self._artillery_wait < 4 + int(self.patience * 3)):
+                and self._artillery_wait < 2 + int(self.patience * 2)
+                and self._hold_line_rounds < hold_cap):
             return "hold_line"
 
         # 5) Supériorité de tir nette: laisser l'ennemi traverser la zone de feu
         if (s['my_ranged'] > s['en_ranged'] * (2.0 / max(0.7, self.patience))
-                and len(s['my_ranged_units']) >= 2):
+                and len(s['my_ranged_units']) >= 2
+                and self._hold_line_rounds < hold_cap):
             return "hold_line"
 
         # 6) On saigne vite et on est en dessous: se resserrer avant de rompre
@@ -441,6 +461,8 @@ class CommanderAI:
             self._artillery_wait += 1
         else:
             self._artillery_wait = 0
+        if self.posture == "hold_line":
+            self._hold_line_rounds += 1
 
         # Actions de posture sur le terrain (portes)
         if is_defender:
@@ -504,6 +526,8 @@ class CommanderAI:
                 u._assault_gate = self.assault_gate
 
         lanes = self._assign_lanes(alive, enemies_f)
+        self._claims = {}
+        self._plan_formations(alive, enemies_f, is_siege)
 
         rush = (self.posture in ("rush", "exploit") or
                 (is_defender and self.posture == "sortie"))
@@ -803,7 +827,7 @@ class CommanderAI:
 
         # L'attente a une limite: au bout de quelques rounds, l'assaut part
         # de toute façon (sinon deux armées prudentes se regardent).
-        if self._line_hold_rounds > 6:
+        if self._line_hold_rounds > 3:
             return None
 
         proj_u = self._proj((ux, uy))
@@ -960,6 +984,7 @@ class CommanderAI:
             if self.use_plans and self.plan.active():
                 # Feinte, ordre oblique: l'avance penche vers l'aile choisie
                 ec_y += self.plan.lane_bias[1]
+        self._lane_y = ec_y
 
 
         melee = [u for u in mobile
@@ -1136,6 +1161,200 @@ class CommanderAI:
             self.maneuver = "envelop"
         elif self.maneuver == "envelop":
             self.maneuver = None
+
+    # ─── Formations en bloc ───
+
+    def _plan_formations(self, alive, enemies, is_siege):
+        """Répartit l'armée en BLOCS et donne à chaque membre sa case.
+
+        Blocs: un par groupe d'armée (contingent) — la mêlée devant, les
+        tireurs, mages et officiers en rangs derrière, la cavalerie en bloc
+        distinct sur l'aile — plus le marteau en approche et l'aile refusée.
+        Le bloc avance vers sa destination au pas de son membre le plus lent:
+        personne ne court devant, personne ne traîne.
+
+        Il ROMPT LES RANGS dès qu'un ennemi est à portée de charge de son
+        front (≈ deux mouvements): la formation sert à arriver ensemble, pas
+        à attendre. Hystérésis: un bloc engagé ne se reforme que si l'ennemi
+        s'est nettement éloigné. Aucune formation en siège, en charge
+        générale (rush, exploit) ni pour l'écran d'urgence."""
+        self._slots = {}
+        self._block_of = {}
+        bf = self.battlefield
+        if (not self.use_formations or is_siege
+                or self.posture in ("rush", "exploit", "screen")):
+            self._blocks_engaged = set()
+            return
+        foes = [e for e in enemies if not e.fleeing] or enemies
+        if not foes:
+            return
+        # Bois entre les armées: on s'y faufile en ordre dispersé. Des blocs
+        # s'entassaient sur les mêmes sentiers (Forêt 178×64, 30 graines:
+        # 38 rounds de bataille en rangs contre 30 dispersés, sans gain de
+        # cohésion). Réévalué tous les 4 rounds: la forêt ne bouge pas.
+        if self._round % 4 == 1 or self._closed_ground is None:
+            self._closed_ground = self.plan._contact_zone_is_close(self, alive, foes)
+        if self._closed_ground:
+            self._blocks_engaged = set()
+            return
+        plan = self.plan if self.use_plans else None
+        plan_on = plan is not None and plan.active()
+        axis, origin = self._axis, self._mc
+        halt = self.posture in ("hold_line", "regroup")
+
+        groups = {}
+        for u in alive:
+            if u.vitesse <= 0 or getattr(u, 'is_artillery', False):
+                continue
+            if id(u) in self._assignments:
+                continue            # curée, brèche, escorte, débordement
+            role = plan.roles.get(id(u)) if plan_on else None
+            # La cavalerie de mêlée chevauche sur l'aile. Celle qui porte des
+            # javelots reste derrière l'infanterie: exposée sur l'aile, elle
+            # harcelait moins bien (Prairie 178×64, contre l'ancienne IA:
+            # 29 % de victoires sur l'aile, 46 % derrière les rangs).
+            rear = u._max_range >= 4 or bool(u.spells) or u.encouragement_range > 0
+            mounted = u.vitesse >= 6 and not rear
+            if role in ("lure", "hill"):
+                continue
+            if (plan_on and plan.kind == "colline" and plan.phase in ("prise", "tenue")
+                    and role is None and not rear):
+                key = ("colline",)  # bloc au pied de la colline, face à l'ennemi
+            elif role == "hammer":
+                if plan.phase != "approche":
+                    continue
+                key = ("marteau",)
+            elif role == "refused":
+                if plan.phase != "refus":
+                    continue
+                key = ("refus",)
+            else:
+                key = ("corps", u.contingent or "")
+            if rear:
+                part = 'rear'
+            elif mounted and key[0] == "corps":
+                part = 'cav'
+            else:
+                part = 'inf'
+            groups.setdefault(key, {'inf': [], 'cav': [], 'rear': []})[part].append(u)
+
+        frame = {id(u): formation.to_frame(origin, axis, u.position)
+                 for g in groups.values() for part in g.values() for u in part}
+        enemy_front = min(formation.to_frame(origin, axis, e.position)[0] for e in foes)
+        ecx, ecy = self._center(foes)
+        lane_lat = formation.to_frame(
+            origin, axis, (ecx, self._lane_y if self._lane_y is not None else ecy))[1]
+        corps_lats = [frame[id(u)][1] for k, g in groups.items() if k[0] == "corps"
+                      for u in (g['inf'] or g['cav'] or g['rear'])]
+        army_lat = sum(corps_lats) / len(corps_lats) if corps_lats else 0.0
+        taken = set()
+        engaged_now = set()
+
+        def near_enemy(units):
+            return min(abs(u.position[0] - e.position[0]) + abs(u.position[1] - e.position[1])
+                       for u in units for e in foes)
+
+        def form(key, units, dest_proj, dest_lat, speed, no_advance=False, start_rank=0,
+                 anchor=None):
+            """Place un bloc; retourne son ancre (centre du 1er rang)."""
+            step = formation.spacing(bf, units)
+            if anchor is None:
+                projs = [frame[id(u)][0] for u in units]
+                lats = [frame[id(u)][1] for u in units]
+                d = formation.depth(len(units))
+                cur_p = sum(projs) / len(projs) + (d - 1) / 2.0 * step
+                cur_l = sum(lats) / len(lats)
+                dp = 0.0 if no_advance else max(-speed, min(speed, dest_proj - cur_p))
+                dl = max(-2.0, min(2.0, dest_lat - cur_l))
+                anchor = formation.to_world(origin, axis, cur_p + dp, cur_l + dl)
+            ordered = formation.arrange(units, anchor, axis, self._block_memory.get(key))
+            self._block_memory[key] = [id(u) for u in ordered]
+            placed = formation.slots(bf, ordered, anchor, axis, start_rank, taken, step)
+            self._slots.update(placed)
+            for u in units:
+                self._block_of[id(u)] = key
+            return anchor
+
+        terr = getattr(bf, 'terrain', None)
+
+        def rough(units):
+            """Un tiers du bloc dans les bois, un marais ou un gué: on s'y
+            faufile en ordre dispersé (mesuré en Forêt 178×64: contact au
+            round 14 en rangs contre 9,5 dispersé), on se reforme au sortir."""
+            if terr is None:
+                return False
+            slow = sum(1 for u in units
+                       if (tr.MOVE[terr[u.position[0]][u.position[1]]] or 99) > 1.0)
+            return slow * 3 >= len(units)
+
+        def engaged(key, units, reach):
+            if rough(units):
+                return True
+            d = near_enemy(units)
+            if d <= reach or (key in self._blocks_engaged and d <= reach + 6):
+                engaged_now.add(key)
+                for u in units:
+                    self._block_of[id(u)] = key
+                return True
+            return False
+
+        for key in sorted(groups, key=str):
+            g = groups[key]
+            front = g['inf'] or g['cav'] or g['rear']
+            walkers = front + (g['rear'] if front is not g['rear'] else [])
+            speed = min(u.vitesse for u in walkers)
+            reach = max(4, 2 * min(u.vitesse for u in front) + 2)
+            if key[0] == "marteau":
+                dest = formation.to_frame(origin, axis, plan.points.get('attente', self._mc))
+            elif key[0] == "colline":
+                hill = plan.points['colline']
+                dest = formation.to_frame(origin, axis, (hill[0] + axis[0] * 3, hill[1] + axis[1] * 3))
+            elif key[0] == "refus":
+                strong = [frame[id(u)][0] for k, gg in groups.items() if k[0] == "corps"
+                          for u in gg['inf']]
+                dest = ((max(strong) - 3) if strong else enemy_front - 8,
+                        sum(frame[id(u)][1] for u in front) / len(front))
+            else:
+                offset = sum(frame[id(u)][1] for u in front) / len(front) - army_lat
+                dest = (enemy_front - 1, lane_lat + offset * 0.9)
+            anchor = None
+            fkey = key + ('front',)
+            if not engaged(fkey, front, reach):
+                anchor = form(fkey, front, dest[0], dest[1], speed,
+                              no_advance=halt and key[0] == "corps")
+            if g['rear'] and front is not g['rear'] and anchor is not None:
+                gap = formation.depth(len(front)) * formation.spacing(bf, front)
+                rstep = formation.spacing(bf, g['rear'])
+                form(key + ('rear',), g['rear'], 0, 0, speed,
+                     start_rank=int(math.ceil(gap / rstep)) + 1, anchor=anchor)
+            if g['cav'] and front is not g['cav']:
+                ckey = key + ('cav',)
+                creach = max(4, 2 * min(u.vitesse for u in g['cav']) + 2)
+                if not engaged(ckey, g['cav'], creach):
+                    inf_lat = sum(frame[id(u)][1] for u in front) / len(front)
+                    cav_lat = sum(frame[id(u)][1] for u in g['cav']) / len(g['cav'])
+                    side = 1 if cav_lat >= inf_lat else -1
+                    wing = (formation.half_width(bf, front) + 1.5
+                            + formation.half_width(bf, g['cav']))
+                    level = (formation.to_frame(origin, axis, anchor)[0]
+                             if anchor is not None else dest[0])
+                    form(ckey, g['cav'], level, inf_lat + side * wing,
+                         min(u.vitesse for u in g['cav']))
+        self._blocks_engaged = engaged_now
+
+    def _visible_target(self, unit, enemies):
+        """Le tireur ou le mage a-t-il une cible à portée (et en vue) ?"""
+        bf = self.battlefield
+        ux, uy = unit.position
+        spell = max((sp.porte for sp in unit.spells), default=0)
+        for e in enemies:
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            if d <= spell:
+                return True
+            if (unit._max_range >= 4 and d <= tr.effective_range(bf, unit, e)
+                    and bf.has_line_of_fire(unit, e)):
+                return True
+        return False
 
     # ─── Kiting (tir en reculant) ───
 
@@ -1336,7 +1555,13 @@ class CommanderAI:
             unit.status_text = "REPLI"
             return TacticalOrder("withdraw", target_pos=wd, priority=6)
 
-        # ── Rôle dans le plan de bataille (marteau, leurre, réserve…) ──
+        # ── Formation: le bloc marche groupé tant que l'ennemi est loin ──
+        slot = self._slots.get(id(unit))
+        if slot is not None and not ((unit._max_range >= 4 or unit.spells)
+                                     and self._visible_target(unit, enemies)):
+            return TacticalOrder("form", target_pos=slot, priority=3)
+
+        # ── Rôle dans le plan de bataille (marteau, leurre, aile refusée…) ──
         if self.use_plans:
             po = self.plan.order_for(self, unit, enemies)
             if po is not None:
@@ -1378,8 +1603,10 @@ class CommanderAI:
             return self._screen_order(unit, enemies, mc)
         # Armée de tireurs: l'infanterie fait écran... sauf à l'assaut d'une
         # forteresse, où l'ennemi ne viendra jamais au contact de lui-même.
+        # Une fois son bloc au contact, elle charge comme les autres.
         if (self.style == "ranged_heavy" and unit.role == "front"
-                and not (bf.is_siege and self.is_army1)):
+                and not (bf.is_siege and self.is_army1)
+                and self._block_of.get(id(unit)) not in self._blocks_engaged):
             return self._screen_order(unit, enemies, mc)
 
         if self.posture == "regroup":
@@ -1502,9 +1729,15 @@ class CommanderAI:
             if self.posture == "exploit":
                 val += tactics.kill_chance(dmg, e) * 6.0
             val -= d * 1.65 / max(1, unit.vitesse)
+            # Frapper ENSEMBLE: rejoindre les camarades qui visent déjà cette
+            # cible garde les paquets serrés et gagne le combat local — mais
+            # une cible déjà cernée n'a plus de place autour d'elle.
+            n = self._claims.get(id(e), 0)
+            val += 1.5 * min(n, 2) - (4.0 if n >= 4 else 0.0)
             if val > best_score:
                 best, best_score = e, val
         if best is not None:
+            self._claims[id(best)] = self._claims.get(id(best), 0) + 1
             return TacticalOrder("attack", target_unit=best, priority=3)
         c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=1)
@@ -1670,7 +1903,7 @@ def select_tactical_target(unit, battle, battlefield):
             return min(in_r, key=lambda ed: (ed[0].hp / max(1, ed[0].max_hp), ed[0].uid))[0]
 
     if order and order.order_type in ("flank", "hold", "protect", "kite",
-                                      "support", "guard", "withdraw"):
+                                      "support", "guard", "withdraw", "form"):
         in_r = [(e, abs(ux - e.position[0]) + abs(uy - e.position[1])) for e in enemies]
         in_r = [(e, d) for e, d in in_r if _reachable(e, d)]
         if in_r:
@@ -1700,7 +1933,7 @@ def select_tactical_move_target(unit, battle, battlefield):
         # Rompre le contact: le tir reste géré séparément
         return None, order.target_pos
 
-    if order.order_type in ("support", "guard") and order.target_pos:
+    if order.order_type in ("support", "guard", "form") and order.target_pos:
         if order.order_type == "guard":
             post = order.target_pos
             intruders = [e for e in enemies

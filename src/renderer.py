@@ -1113,8 +1113,8 @@ def apply_destruction(surface, battle, cell_size, round_frame):
 
 
 def draw_intents(screen, battle, cell_size, ox, oy):
-    """Intentions des plans de bataille: flèches (marteau, feinte, aile forte,
-    réserve lancée), zones (réserve, aile refusée), drapeau (colline).
+    """Intentions des plans de bataille: flèches (marteau, feinte, aile forte),
+    zone (aile refusée), drapeau (colline).
     Translucides, dans la couleur du camp, sous les unités."""
     cs = cell_size
     font = _intent_font()

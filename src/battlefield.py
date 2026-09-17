@@ -727,7 +727,7 @@ class Battlefield:
         # === Ordres SUPPORT/GUARD au poste: tenir la position ===
         # (sans ce bloc, A* vers sa propre case + fallback_move feraient
         # dériver l'unité vers l'ennemi)
-        if (_order is not None and _order.order_type in ("support", "guard")
+        if (_order is not None and _order.order_type in ("support", "guard", "form")
                 and _order.target_pos is not None):
             _post = _order.target_pos
             _d_post = abs(ux - _post[0]) + abs(uy - _post[1])
@@ -778,6 +778,13 @@ class Battlefield:
         current_dist = self.manhattan_distance(unit.position, target.position)
         
         if current_dist <= tr.effective_range(self, unit, target):
+            # Tireur à portée mais aveuglé (rocher, maison, bois): rester planté
+            # figeait les duels de tir jusqu'au plafond de rounds. On se décale
+            # vers une case d'où la cible est visible.
+            if unit._max_range >= 4 and not self.has_line_of_fire(unit, target):
+                step = self._clear_line_step(unit, target, reserved_positions)
+                if step is not None:
+                    return step, target
             # Siège: vérifier qu'un mur ne bloque pas le CaC
             wall_x_s = self.wall_x
             if wall_x_s and unit._max_range < 4 and unit.position[0] < wall_x_s and target.position[0] >= wall_x_s:
@@ -900,6 +907,33 @@ class Battlefield:
         
         return self.fallback_move(unit, target, reserved_positions), target
     
+    def _clear_line_step(self, unit, target, reserved_positions):
+        """Case atteignable ce round (≤ vitesse pas) d'où `target` est à portée
+        ET visible; la plus proche. None s'il n'y en a pas."""
+        ux, uy = unit.position
+        tx, ty = target.position
+        reach = tr.effective_range(self, unit, target)
+        r = max(1, min(3, unit.vitesse))
+        terr = self.terrain
+        best, best_key = None, None
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if not (dx or dy):
+                    continue
+                pos = (ux + dx, uy + dy)
+                if abs(pos[0] - tx) + abs(pos[1] - ty) > reach:
+                    continue
+                if not self._can_move_to(unit, pos, reserved_positions):
+                    continue
+                if not self._los_clear(pos[0], pos[1], tx, ty):
+                    continue
+                if terr is not None and tr.blocks_line(self, pos[0], pos[1], tx, ty):
+                    continue
+                key = (max(abs(dx), abs(dy)), abs(dx) + abs(dy), pos)
+                if best_key is None or key < best_key:
+                    best, best_key = pos, key
+        return best
+
     def _preferred_gate(self, unit, gates):
         """Porte visée: celle que le commandant a désignée pour l'assaut si
         elle est encore utilisable, sinon la plus proche."""

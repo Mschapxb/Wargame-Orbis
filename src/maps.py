@@ -32,7 +32,7 @@ import terrain as tr
 
 MAP_TYPES = {
     "Prairie": {
-        "description": "Terrain ouvert — 3 couloirs naturels séparés par des crêtes rocheuses",
+        "description": "Campagne vallonnée — collines éparses, bosquets, couloir central ouvert",
         "bg_color": (45, 65, 35),
         "obstacle_color": (70, 90, 55),
         "grid_color": (55, 75, 45),
@@ -197,84 +197,78 @@ def describe_options(map_name, opts):
 # ═══════════════════════════════════════════════════════════════
 
 def generate_prairie(width, height):
-    """Prairie: deux crêtes rocheuses créent 3 couloirs horizontaux naturels.
+    """Prairie: une campagne vallonnée, ouverte, sans règle ni équerre.
 
     Structure:
-      • Flanc haut  (y < height//4)      — couloir ouvert, cavalry route
-      • Zone centre (y ≈ height//2)      — couloir principal avec couverts
-      • Flanc bas   (y > 3*height//4)    — couloir ouvert, cavalry route
+      • Des collines éparses au nord et au sud, de tailles et d'orientations
+        variées, parfois coiffées de rochers: le centre reste un couloir
+        ouvert, les flancs sont vallonnés
+      • Une butte irrégulière au centre, objectif naturel du couloir principal
+      • Bosquets et broussailles de formes libres dans l'entre-deux (jamais
+        sur les lignes de déploiement), qui masquent une cavalerie
+      • Quelques rochers isolés près du centre, couverts pour les tireurs
 
-    Les crêtes à height//4 et 3*height//4 sont interrompues à leurs extrémités
-    pour laisser les flancs totalement libres au déploiement.
-
-    Terrain: les crêtes deviennent des collines (on les tient au lieu d'y
-    buter), une colline basse plus petite marque le centre du couloir
-    principal comme objectif naturel, et des broussailles (bois) masquent
-    la cavalerie juste devant chaque ligne de déploiement.
+    La moitié ouest est tirée au hasard puis recopiée à l'est (équitable).
     """
     grid = [[0] * height for _ in range(width)]
-
-    ridge_ys = [height // 4, 3 * height // 4]
-    # Les crêtes ne commencent qu'après la zone de déploiement (x > width//6)
-    # et s'arrêtent avant l'autre zone de déploiement (x < 5*width//6)
-    ridge_start_x = width // 5
-    ridge_end_x = 4 * width // 5
-
-    for ry in ridge_ys:
-        # Placer 4–6 groupes de roches le long de la crête
-        num_groups = random.randint(4, 6)
-        spacing = (ridge_end_x - ridge_start_x) // num_groups
-        for g in range(num_groups):
-            cx = ridge_start_x + g * spacing + random.randint(0, spacing - 1)
-            cy = ry + random.randint(-1, 1)
-            group_size = random.randint(2, 4)
-            for _ in range(group_size):
-                ox = cx + random.randint(-1, 1)
-                oy = cy + random.randint(-1, 1)
-                if ridge_start_x <= ox <= ridge_end_x and 1 < oy < height - 1:
-                    grid[ox][oy] = 1
-
-    # Quelques couverts isolés au centre (abris pour tireurs)
-    center_x = width // 2
-    center_y = height // 2
-    cover_attempts = 0
-    covers_placed = 0
-    while covers_placed < 4 and cover_attempts < 80:
-        cover_attempts += 1
-        cx = center_x + random.randint(-width // 6, width // 6)
-        cy = center_y + random.randint(-3, 3)
-        if grid[cx][cy] == 0:
-            grid[cx][cy] = 1
-            covers_placed += 1
-
-    # ── Terrain ──
-    # Les crêtes deviennent des collines: on les tient au lieu d'y buter.
-    # La moitié des rochers disparaît, le reste sert de couvert au sommet.
-    for ry in ridge_ys:
-        for x in range(ridge_start_x, ridge_end_x + 1):
-            for y in range(ry - 2, ry + 3):
-                if 0 <= x < width and 0 < y < height - 1 and grid[x][y] == 1 \
-                        and random.random() < 0.5:
-                    grid[x][y] = 0
-    # Les groupes de roches se tassaient vers l'ouest (le dernier intervalle
-    # s'arrête avant ridge_end_x): la moitié gauche fait foi.
-    _mirror_grid(grid, width, height)
-
     terr = tr.make_grid(width, height)
     half = width // 2
-    for ry in ridge_ys:
-        for x in range(ridge_start_x, half):
-            for y in (ry - 1, ry, ry + 1):
-                if 0 < y < height - 1:
-                    terr[x][y] = tr.HILL
-    # Broussailles sur les flancs, juste devant la ligne de déploiement:
-    # de quoi masquer une cavalerie
-    for by in (height / 8, 7 * height / 8):
-        _paint_disc(terr, width * 0.44, by, 1.8, tr.WOOD, width, height)
-    _mirror_terrain(terr, width, height)
-    # Colline centrale basse: l'objectif naturel du couloir principal
-    _paint_disc(terr, (width - 1) / 2, (height - 1) / 2, 3.0, tr.HILL, width, height)
+    mx, cy = (width - 1) / 2, (height - 1) / 2
+    lo = deploy_front(width) + 3
+    small = height < 40
+    west = (1, half - 1)
 
+    # ── Collines: des buttes éparses au nord et au sud, de tailles et
+    # d'orientations variées — pas de crête tirée d'un bord à l'autre. Le
+    # centre reste dégagé: trois couloirs subsistent, mais irréguliers. ──
+    hill_x0 = max(2, int(width * 0.16))
+    n_hills = 3 + (width * height) // 3000
+    for k in range(n_hills):
+        side = -1 if k % 2 == 0 else 1
+        hy = cy + side * height * random.uniform(0.14, 0.38)
+        hx = random.uniform(hill_x0, half - 2)
+        r = random.uniform(1.3, 2.2 if small else 3.6)
+        stretch = random.uniform(1.0, 2.2)
+        procgen.paint_blob(terr, grid, width, height, hx, hy, r * stretch, r,
+                           random.uniform(-1.0, 1.0), tr.HILL, x_range=west, rough=0.3)
+        # Quelques rochers sur les plus grandes, hors des lignes de départ
+        if r > 1.8 and hx >= lo and random.random() < 0.6:
+            for _ in range(random.randint(1, 3)):
+                rx = int(round(hx + random.uniform(-r, r)))
+                ry = int(round(hy + random.uniform(-r * 0.6, r * 0.6)))
+                if lo <= rx < half and 1 < ry < height - 2 and terr[rx][ry] == tr.HILL:
+                    grid[rx][ry] = 1
+
+    # ── Butte centrale ──
+    r = max(2.2, min(width, height) * 0.055)
+    procgen.paint_blob(terr, grid, width, height, mx, cy + random.uniform(-1.5, 1.5),
+                       r * random.uniform(1.0, 1.35), r, random.uniform(0, math.pi),
+                       tr.HILL, x_range=west, rough=0.3)
+
+    # ── Bosquets et broussailles, sur les flancs ──
+    # Le couloir central reste ouvert: une Prairie boisée entre les armées
+    # se jouerait comme une forêt (l'IA y renonce aux manœuvres et aux rangs).
+    n_woods = 2 + (width * height) // 2600
+    for k in range(n_woods):
+        r = random.uniform(1.0, 1.8 if small else 2.6)
+        x_min = lo + r * 1.4 + 1
+        if x_min > half - 2:
+            break
+        wx = random.uniform(x_min, half - 2)
+        side = -1 if k % 2 == 0 else 1
+        wy = cy + side * random.uniform(height * 0.3, height * 0.44)
+        procgen.paint_blob(terr, grid, width, height, wx, wy, r * random.uniform(1.0, 1.6), r,
+                           random.uniform(0, math.pi), tr.WOOD, x_range=west, rough=0.35)
+
+    # ── Rochers isolés près du centre (abris pour tireurs) ──
+    for _ in range(random.randint(2, 4)):
+        rx = random.randint(max(lo, half - max(3, width // 6)), max(lo, half - 2))
+        ry = int(round(cy + random.randint(-4, 4)))
+        if 1 < ry < height - 2 and grid[rx][ry] == 0:
+            grid[rx][ry] = 1
+
+    _mirror_grid(grid, width, height)
+    _mirror_terrain(terr, width, height)
     return grid, {'terrain': terr}
 
 
@@ -470,16 +464,19 @@ def generate_forest(width, height):
     _mirror_terrain(terr, width, height)
 
     # ── Ruisseau nord-sud au cœur du massif, franchissable à deux gués ──
-    rcols = (cx - 1, cx)
+    # Tracé naturel (bras, îlots, largeur qui respire), en miroir.
+    spans = procgen.river_spans_symmetric(width, height, 0 if width < 90 else 1)
     for y in range(1, height - 1):
         if inside(cx, y, 0.9):
-            for x in rcols:
-                grid[x][y] = 0
-                terr[x][y] = tr.RIVER
+            for x0, x1 in spans[y]:
+                for x in range(x0, x1 + 1):
+                    grid[x][y] = 0
+                    terr[x][y] = tr.RIVER
     for ty in sorted(set(trail_ys), key=lambda t: abs(t - cy))[:2]:
         for y in (ty - 1, ty, ty + 1):
             if 0 < y < height - 1:
-                for x in rcols:
+                x0, x1 = procgen.span_bounds(spans[y])
+                for x in range(x0, x1 + 1):
                     if terr[x][y] == tr.RIVER:
                         terr[x][y] = tr.FORD
 
@@ -624,8 +621,22 @@ def generate_village(width, height):
     # ── Terrain ──
     terr = tr.make_grid(width, height)
     mx = (width - 1) / 2
-    # Le bourg est sur une butte: ses rues dominent les champs
-    _paint_disc(terr, mx, cy, R + 1.0, tr.HILL, width, height)
+    # Le bourg est sur une butte aux contours irréguliers: ses rues dominent
+    # les champs. Peinte à l'ouest, recopiée à l'est avec le reste.
+    procgen.paint_blob(terr, grid, width, height, mx, cy, R + 1.2,
+                       (R + 1.2) * random.uniform(0.92, 1.0), random.uniform(0, math.pi),
+                       tr.HILL, x_range=(0, width // 2 - 1), rough=0.08)
+    # Bosquets dans les champs, au nord et au sud du bourg
+    lo_v = deploy_front(width, R + 5) + 3
+    for _ in range(random.randint(2, 4)):
+        r = random.uniform(1.2, 2.6)
+        wx = random.uniform(lo_v + r * 1.4 + 1, max(lo_v + r * 1.4 + 1, mx - 2))
+        wy = random.choice((random.uniform(2, cy - R * 0.7), random.uniform(cy + R * 0.7, height - 3)))
+        if math.hypot(wx - mx, wy - cy) < R + 3 + r or abs(wy - cy) < 3:
+            continue
+        procgen.paint_blob(terr, grid, width, height, wx, wy, r * random.uniform(1.0, 1.5), r,
+                           random.uniform(0, math.pi), tr.WOOD, x_range=(0, width // 2 - 1),
+                           rough=0.35)
     # Jardins et vergers entre les maisons (jamais dans une rue, ni la
     # nôtre ni celle d'en face une fois le terrain mis en miroir)
     for x in range(width // 2):
@@ -675,6 +686,23 @@ def _build_wall(grid, wall_x, gate_rows, width, height, walls, gates, ramparts, 
             if 0 <= tx2 < width and 0 <= ty < height and grid[tx2][ty] != 4:
                 grid[tx2][ty] = 2
                 walls.append((tx2, ty))
+
+
+def _siege_copses(grid, terr, width, height, wall_x, gate_rows):
+    """Quelques bosquets dans les champs de l'assaillant, loin des axes des
+    portes et du fossé: un paysage, pas un terrain vague."""
+    x_lo = deploy_front(width, siege=True) + 3
+    x_hi = wall_x - 9
+    if x_hi - x_lo < 3:
+        return
+    for _ in range(random.randint(2, 4)):
+        r = random.uniform(1.0, 2.2 if height >= 40 else 1.5)
+        wx = random.uniform(x_lo + r, x_hi - r)
+        wy = random.uniform(2, height - 3)
+        if any(abs(wy - g) < 6 + r for g in gate_rows):
+            continue
+        procgen.paint_blob(terr, grid, width, height, wx, wy, r * random.uniform(1.0, 1.6), r,
+                           random.uniform(0, math.pi), tr.WOOD, x_range=(x_lo, x_hi), rough=0.35)
 
 
 def generate_citadel(width, height):
@@ -770,6 +798,8 @@ def generate_citadel(width, height):
                             and (x, y) not in roads and (x - gx) ** 2 + (y - gy) ** 2 <= 2.2):
                         terr[x][y] = tr.WOOD
 
+    _siege_copses(grid, terr, width, height, wx1, outer_centers)
+
     structs = {(x, y): st.PALISADE for x in range(wx1) for y in range(height) if grid[x][y] == 1}
     for c in houses:
         structs[c] = st.HOUSE
@@ -852,6 +882,8 @@ def generate_siege(width, height):
             if grid[glacis_x][y] == 0:
                 terr[glacis_x][y] = tr.HILL
 
+    _siege_copses(grid, terr, width, height, wall_x, gate_positions)
+
     structs = {(x, y): st.PALISADE for x in range(wall_x) for y in range(height)
                if grid[x][y] == 1}
     for (x, y) in walls:
@@ -877,7 +909,7 @@ def generate_defile(width, height):
     """Défilé montagneux: goulet central avec flancs impraticables.
 
     Structure:
-      • Terrain rocheux dense sur y < pass_top et y > pass_bot
+      • Parois rocheuses au nord et au sud, aux bords découpés et irréguliers
       • Goulet central libre (pass_top à pass_bot, environ height//3 à 2*height//3)
       • Étranglement au milieu (x ≈ width//2): le goulet se rétrécit de 4 cases de part et d'autre
       • Gros rochers à l'intérieur du goulet comme couverts
@@ -893,53 +925,56 @@ def generate_defile(width, height):
     pass_top = height // 3
     pass_bot = 2 * height // 3
     pass_center_y = height // 2
+    cx = width // 2
+    mid = (width - 1) / 2
 
-    # ── Parois rocheuses Nord et Sud ──
+    # ── Parois: bords découpés par un bruit lisse, étranglement en douceur ──
+    # (une cloche en cosinus, pas une marche d'escalier). Tiré sur la moitié
+    # ouest, lu en miroir à l'est.
+    amp = 1.0 if height < 40 else 2.2
+    n_top = procgen.smooth_noise(width // 2 + 1, amp)
+    n_bot = procgen.smooth_noise(width // 2 + 1, amp)
+    throat_squeeze = random.randint(3, 5)
+    throat_half = max(3.0, width / 8 * 1.5)
+    min_gap = 2 if height < 40 else 5
+
+    def bump(x):
+        d = min(1.0, abs(x - mid) / throat_half)
+        return 0.5 * (1.0 + math.cos(math.pi * d))
+
+    tops, bots = [], []
+    for x in range(width):
+        i = min(x, width - 1 - x)
+        sq = throat_squeeze * bump(x)
+        # Bords droits dans les zones de déploiement, découpés au-delà: un bord
+        # irrégulier sous les colonnes de départ décalait les deux armées
+        # différemment (test_miroir_colonnes_de_deploiement).
+        fade = max(0.0, min(1.0, (i - width // 6) / max(1, width // 12)))
+        t = int(round(pass_top + n_top[i] * fade + sq))
+        b = int(round(pass_bot - n_bot[i] * fade - sq))
+        if b - t < min_gap:
+            c = (t + b) // 2
+            t, b = c - min_gap // 2, c - min_gap // 2 + min_gap
+        tops.append(max(1, t))
+        bots.append(min(height - 2, b))
     for x in range(width):
         for y in range(height):
-            # Zone Nord: entièrement obstruée
-            if y < pass_top:
-                grid[x][y] = 1
-            # Zone Sud: entièrement obstruée
-            elif y > pass_bot:
+            if y < tops[x] or y > bots[x]:
                 grid[x][y] = 1
 
-    # ── Étranglement central (x ≈ width//2 ± width//8) ──
-    # Le goulet se rétrécit de "throat" cases sur chaque paroi
-    throat_start = width // 2 - width // 8
-    throat_end = width // 2 + width // 8
-    throat_squeeze = random.randint(3, 5)  # Cases ajoutées à chaque paroi
-
-    for x in range(throat_start, throat_end):
-        for squeeze_y in range(throat_squeeze):
-            # Rétrécir la paroi nord
-            ny = pass_top + squeeze_y
-            if 0 <= ny < height:
-                grid[x][ny] = 1
-            # Rétrécir la paroi sud
-            sy = pass_bot - squeeze_y
-            if 0 <= sy < height:
-                grid[x][sy] = 1
-
-    # ── Dégazer les bords du goulet (quelques irrégularités) ──
-    for x in range(width // 6, 5 * width // 6):
-        # Saillies rocheuses dans le goulet depuis la paroi nord
-        if random.random() < 0.07:
-            jut = random.randint(1, 2)
-            for j in range(jut):
-                ny = pass_top + j
-                if 0 <= ny < height and grid[x][ny] == 0:
-                    grid[x][ny] = 1
-        # Saillies depuis la paroi sud
-        if random.random() < 0.07:
-            jut = random.randint(1, 2)
-            for j in range(jut):
-                sy = pass_bot - j
-                if 0 <= sy < height and grid[x][sy] == 0:
-                    grid[x][sy] = 1
+    # ── Éperons: quelques avancées rocheuses qui cassent la ligne du bord ──
+    for x in range(width // 6, width // 2):
+        for edge, sgn in ((tops, 1), (bots, -1)):
+            if random.random() < 0.06 and bots[x] - tops[x] > min_gap + 3:
+                for j in range(random.randint(1, 2)):
+                    y = edge[x] + sgn * j
+                    for xx in (x, x + random.choice((0, 1))):
+                        if 0 <= xx < width // 2 and tops[xx] <= y <= bots[xx]:
+                            grid[xx][y] = 1
 
     # ── Rochers/couverts dans le goulet (abris tactiques) ──
-    # 3 zones de couverts: 1/4, 1/2 et 3/4 de la largeur
+    # 3 zones de couverts: 1/4, 1/2 et 3/4 de la largeur, jamais dans
+    # l'étranglement (trop difficile à traverser)
     for zone_x in [width // 4, width // 2, 3 * width // 4]:
         num_rocks = random.randint(2, 4)
         placed = 0
@@ -948,67 +983,58 @@ def generate_defile(width, height):
             attempts += 1
             rx = zone_x + random.randint(-4, 4)
             ry = pass_center_y + random.randint(-4, 4)
-            # Ne pas placer dans l'étranglement (trop difficile à traverser)
-            if throat_start - 2 < rx < throat_end + 2:
+            if abs(rx - mid) < throat_half + 2:
                 continue
-            if 0 <= rx < width and grid[rx][ry] == 0:
+            if min(rx, width - 1 - rx) < deploy_front(width) + 3:
+                continue            # jamais sur les colonnes de déploiement
+            if 0 <= rx < width and tops[rx] + 1 < ry < bots[rx] - 1 and grid[rx][ry] == 0:
                 grid[rx][ry] = 1
                 placed += 1
 
-    # ── Dégager les zones de spawn (x < width//6 et x > 5*width//6) ──
-    # Enlever les obstacles dans les zones de déploiement des armées
-    for x in range(0, width // 6):
-        for y in range(pass_top, pass_bot + 1):
+    # ── Dégager les zones de déploiement (x < width//6 et le reflet) ──
+    for x in list(range(0, width // 6)) + list(range(width - width // 6, width)):
+        for y in range(tops[x], bots[x] + 1):
             grid[x][y] = 0
-    for x in range(5 * width // 6, width):
-        for y in range(pass_top, pass_bot + 1):
-            grid[x][y] = 0
-    # Saillies et rochers tirés au hasard: même goulet des deux côtés
+    # Éperons et rochers tirés au hasard: même goulet des deux côtés
     _mirror_grid(grid, width, height)
 
     # ── Terrain ──
     terr = tr.make_grid(width, height)
-    cx = width // 2
     # Les pentes restent hors des zones de déploiement: les armées se
-    # déploient en plaine, comme sur les autres cartes (principe "zones de
-    # déploiement en plaine"). La colonne de front par défaut suit la même
-    # formule que Battle.__init__ (gap = max(12, 12% de la largeur), borné
-    # à mid_x - 8): on la reproduit ici pour que les pentes ne débordent
-    # jamais sur la zone où les unités apparaissent, avec une petite marge
-    # (cf. deploy_front).
+    # déploient en plaine, comme sur les autres cartes (cf. deploy_front).
     slope_start_x = deploy_front(width) + 3
     slope_end_x = width - slope_start_x
+    marsh_n = procgen.smooth_noise(width // 2 + 1, 1.0)
     for x in range(width):
-        in_throat = throat_start <= x < throat_end
-        top_b = pass_top + (throat_squeeze if in_throat else 0)
-        bot_b = pass_bot - (throat_squeeze if in_throat else 0)
+        top_b, bot_b = tops[x], bots[x]
         # Pentes au pied des parois: les tireurs y dominent le couloir
         if slope_start_x <= x < slope_end_x:
             for y in (top_b, top_b + 1, bot_b - 1, bot_b):
-                if 0 <= y < height:
+                if 0 <= y < height and grid[x][y] == 0:
                     terr[x][y] = tr.HILL
         # Éboulis boueux près du torrent, seulement si le couloir est
         # assez large pour laisser un passage sec au milieu
         if bot_b - top_b >= 6:
+            wob = int(round(marsh_n[min(x, width - 1 - x)]))
             if cx - 6 <= x <= cx - 3:
-                terr[x][top_b + 2] = tr.MARSH
+                terr[x][top_b + 2 + max(0, wob)] = tr.MARSH
             if cx - 9 <= x <= cx - 6:
-                terr[x][bot_b - 2] = tr.MARSH
+                terr[x][bot_b - 2 - max(0, wob)] = tr.MARSH
     _mirror_terrain(terr, width, height)
 
     # Torrent à l'étranglement: un pont et un gué à disputer
-    t_top = pass_top + throat_squeeze
-    t_bot = pass_bot - throat_squeeze
+    t_top = max(tops[cx - 1], tops[cx])
+    t_bot = min(bots[cx - 1], bots[cx])
     rcols = (cx - 1, cx)
     free = list(range(t_top, t_bot + 1))
     for x in rcols:
         for y in free:
-            grid[x][y] = 0          # les saillies cèdent la place au torrent
+            grid[x][y] = 0          # les éperons cèdent la place au torrent
             terr[x][y] = tr.RIVER
     if len(free) >= 4:
-        mid = len(free) // 2
-        bridge = free[mid - 2:mid]
-        ford = free[mid + 1:mid + 3]
+        m = len(free) // 2
+        bridge = free[m - 2:m]
+        ford = free[m + 1:m + 3]
     else:
         bridge, ford = free, []
     for x in rcols:
@@ -1134,7 +1160,8 @@ def _add_river(map_name, grid, data, width, height, biome):
     amp = 1 if width < 90 else 2
     spans = procgen.river_spans_symmetric(width, height, amp)
     if map_name == "Village":
-        bed = {(x, y) for y, (x0, x1) in spans.items() for x in range(x0, x1 + 1)}
+        bed = {(x, y) for y, v in spans.items()
+               for x0, x1 in procgen._segs(v) for x in range(x0, x1 + 1)}
         _clear_village_houses_near(grid, width, height, bed)
     # Un pont là où l'on marche déjà (grand-rue du village, couloir central)
     forced = [cy]

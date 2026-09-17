@@ -57,7 +57,7 @@ Au lancement, un menu permet de :
 | `Tab` | Afficher/masquer la mini-carte (clic ou glissé dessus pour s'y rendre) |
 | Survol d'une unité | Fiche: PV, moral, sauvegarde, armes, sorts, état, ordre et rôle dans le plan |
 | `T` | Afficher/masquer les lignes de ciblage |
-| `I` | Afficher/masquer les intentions des plans de bataille (flèches, réserves, colline) |
+| `I` | Afficher/masquer les intentions des plans de bataille (flèches, aile refusée, colline) |
 | `L` | Afficher/masquer la légende du terrain |
 | `B` | Basculer plein écran / fenêtré sans bordure |
 | `R` | Relancer la bataille |
@@ -70,12 +70,12 @@ Au lancement, un menu permet de :
 
 | Carte | Description |
 |-------|-------------|
-| **Prairie** | Terrain ouvert, deux crêtes rocheuses dessinent trois couloirs. Favorise la cavalerie et les charges. Crêtes en collines, colline centrale, broussailles sur les flancs. |
+| **Prairie** | Campagne ouverte et vallonnée: collines éparses de formes et d'orientations variées au nord et au sud (parfois coiffées de rochers), butte irrégulière au centre, bosquets sur les flancs. Le couloir central reste dégagé: favorise la cavalerie et les charges. |
 | **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. Bosquets à cœur impénétrable et sous-bois traversable, ruisseau à deux gués. |
 | **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. Bourg sur une butte, jardins, mare. |
 | **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. Fossé boueux au pied du mur (chaussée devant la porte), glacis derrière les escaliers, palissades inflammables côté assaillant, mur que les machines de guerre peuvent percer. |
 | **Citadelle** | Double enceinte. L'armée 2 défend. Mur extérieur à **deux portes** (fossé, glacis, palissades côté assaillant), **basse-cour** avec maisons, jardins et butte, puis **donjon** à une porte. Quand l'enceinte extérieure est sur le point de tomber, la défense **se replie sur le donjon**. |
-| **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. Pentes, éboulis, torrent avec pont et gué. |
+| **Défilé** | Goulet montagneux aux parois découpées et éperons rocheux, qui se resserre en douceur vers un étranglement central. Pentes, éboulis, torrent avec pont et gué. |
 | **Désert** | Reg ouvert: affleurements rocheux destructibles, longues dunes (collines) et oasis centrale (mare boueuse, palmeraie). |
 
 ### Thèmes procéduraux
@@ -88,7 +88,7 @@ des couches procédurales (`src/procgen.py`, politique dans `maps.apply_theme`):
 
 | Couche | Batailles rangées (symétriques) | Siège / Citadelle |
 |--------|--------------------------------|-------------------|
-| **Rivière** | Nord-sud au centre, berges irrégulières en miroir, pont sur l'axe central (grand-rue du village) + 1 à 2 gués; berges boisées | Serpente devant le fossé, un pont devant chaque porte + 1 à 2 gués |
+| **Rivière** | Nord-sud au centre, en miroir: largeur qui respire, îlots çà et là, pont sur l'axe central (grand-rue du village) + 1 à 2 gués; berges boisées | Serpente en courbes douces devant le fossé, un pont devant chaque porte + 1 à 2 gués |
 | **Collines** | Buttes semées entre les fronts, recopiées en miroir; *Plat* retire crêtes, butte du bourg et dunes | Buttes côté assaillant (hors axes des portes); glacis et butte du donjon restent des ouvrages |
 | **Biome Forêt** | Bosquets traversables dans les champs, décor boisé, sol plus sombre | Bosquets côté assaillant |
 | **Biome Désert** | Jardins et vergers disparus (palmiers seulement près de l'eau), mare du village en oasis, décor sec, sol sable | Idem, décor sec |
@@ -366,7 +366,8 @@ python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
 python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental
 python src/test_citadelle.py                # double enceinte: portes par case, bascule, repli, rendu
-python src/test_battle_plan.py              # plans de bataille: choix, phases, réserve, intentions
+python src/test_battle_plan.py              # plans de bataille: choix, phases, colline, intentions
+python src/test_formation.py                # formations en bloc: géométrie, marche, rupture, cas exclus
 python src/test_ui.py                       # interface: zoom, mini-carte, fiche d'unité, bandeau, boucle réelle
 python src/test_themes.py                   # thèmes: biome × relief, symétrie, passages, déploiement
 python src/test_determinism.py              # une graine rejoue la même bataille
@@ -402,11 +403,32 @@ pas forcément pareil.
 | **Tenir la colline** | Les tireurs prennent une colline (+1 portée), la mêlée tient devant | prise → tenue → contre-attaque |
 | **Assaut direct** | Petite armée, terrain boisé entre les armées, ou plan abandonné | — |
 
-Une **réserve** (≈ 20 % de la mêlée, les plus robustes) attend derrière le
-centre et s'engage quand une unité de première ligne tombe, qu'un ennemi
-perce le front, ou que l'ennemi saigne plus vite que nous. Les réflexes
-restent prioritaires (fuir le feu, décrocher à l'agonie, achever un isolé,
-escorter ses tireurs, percer une brèche).
+Pas de réserve: toute l'armée marche au combat, et les phases d'attente sont
+courtes (feinte ≤ 3 rounds, aile refusée ≤ 4, colline: contre-attaque dès que
+l'ennemi refuse de venir). Les réflexes restent prioritaires (fuir le feu,
+décrocher à l'agonie, achever un isolé, escorter ses tireurs, percer une
+brèche).
+
+### Formations en bloc (`formation.py`)
+
+Chaque groupe d'armée marche en **bloc**: la mêlée en rangs serrés devant,
+tireurs, mages et officiers en rangs derrière, la cavalerie de mêlée en bloc
+distinct sur l'aile (la cavalerie à javelots reste derrière l'infanterie). Le
+bloc avance au pas de son membre le plus lent, penche vers le secteur visé,
+puis **rompt les rangs et charge** dès qu'un ennemi est à deux mouvements de
+son front. Au corps-à-corps, les unités préfèrent frapper ensemble la même
+cible (sans s'entasser sur une cible déjà cernée). Pas de blocs en siège, en
+charge générale, pour l'écran d'urgence, ni quand des bois séparent les
+armées: on s'y faufile en ordre dispersé.
+
+Mesuré par `bench_ai_feel.py` (armées miroir, 30 graines par carte, 178×64,
+avant → après): unités « en paquet » (≥ 2 alliés à 2 cases) 52,5 → 54,5 %
+(pendant la marche 73 → 79 %), unités qui piétinent sans ennemi à portée
+6,8 → 2,0 %, premier contact au round 10,9 → 9,8, bataille 29,6 → 27,2
+rounds. Face à l'ancienne IA, la nouvelle gagne 50 % des parties (180
+parties, côtés alternés): elle est plus vive et plus lisible sans jouer moins
+bien. Un tireur à portée mais masqué par un rocher se décale désormais pour
+dégager sa ligne de tir (il restait planté jusqu'au plafond de rounds).
 
 Les intentions s'affichent sur le champ de bataille (touche `I`) et les
 changements de phase s'annoncent en bannière (« Armée 1 : le marteau
@@ -422,7 +444,8 @@ chargeaient seuls tombait à 27 %; en sous-bois, les manœuvres cèdent la place
   manœuvrier, brutal) : il déforme tous les seuils de décision, donc deux
   parties identiques ne se jouent pas de la même façon.
 - **Postures** avec inertie (on ne change pas d'avis à chaque dé) :
-  `balanced`, `rush`, `hold_line`, `screen` (couvrir ses tireurs),
+  `balanced`, `rush`, `hold_line` (bornée: 3 rounds + patience),
+  `screen` (couvrir ses tireurs),
   `exploit` (achever un ennemi qui craque), `regroup`, plus `hold_walls`,
   `sortie` et `recall` en siège.
 - **Manœuvres** : concentration contre un ennemi scindé, débordement par

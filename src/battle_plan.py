@@ -13,10 +13,11 @@ Plans:
   • oblique  — ordre oblique: l'aile forte engage, l'aile refusée se tient en
                retrait jusqu'à ce que le choc ait eu lieu
   • colline  — les tireurs prennent une colline, la mêlée tient devant, on
-               contre-attaque quand l'ennemi arrive au pied
+               contre-attaque quand l'ennemi arrive au pied — ou dès qu'il
+               refuse de venir (deux armées retranchées ne se battent pas)
   • direct   — pas de manœuvre (petite armée, ou plan abandonné)
-Tous (sauf direct) gardent une RÉSERVE derrière le centre, lancée au moment
-critique.
+Pas de réserve: toute l'armée marche au combat. Les phases d'attente sont
+courtes — l'IA doit rester agressive.
 
 Module pur (sans Pygame). Les ordres sont rendus sous forme de tuples
 (type, unité cible, position cible, priorité) que CommanderAI convertit en
@@ -78,14 +79,11 @@ class BattlePlan:
         self.lane_bias = (0.0, 0.0)  # décalage du centre des couloirs (cases)
         self.points = {}             # points nommés (grille) pour ordres et rendu
         self.hill_slots = {}         # id(unit) -> case assignée (colline)
-        self.reserve_target = None
-        self.reserve_committed = False
         self._arrived = set()
         self._engaged_streak = 0
         self._hurting_streak = 0
-        self._hurting_streak_res = 0
-        self._last_melee = None
         self._enemy_lat0 = 0.0
+        self._enemy_proj0 = None
         self._geo = None
 
     # ─── Lecture ───
@@ -228,11 +226,8 @@ class BattlePlan:
         fast = [u for u in melee if u.vitesse >= 6]
         scores = {}
         closed = self._contact_zone_is_close(cmd, alive, enemies)
-        # Dominés au tir: manœuvrer sous les traits est un luxe. Assaut direct,
-        # sans réserve qui attendrait sous le feu.
+        # Dominés au tir: manœuvrer sous les traits est un luxe. Assaut direct.
         outgunned = s['en_ranged'] > 1.0 and s['my_ranged'] < s['en_ranged'] * 0.6
-        if outgunned:
-            self.reserve_committed = True
         if len(alive) >= 6 and not closed and not outgunned:
             if (len(fast) >= 2 or len(melee) >= 8) and self._flank_is_open(cmd, alive, enemies):
                 scores["marteau"] = 0.8 + 0.3 * min(3, len(fast)) + 0.3 * cmd.aggression + 0.3 * cmd.ruse
@@ -260,13 +255,7 @@ class BattlePlan:
         self._engaged_streak = 0
         self.lane_bias = (0.0, 0.0)
         self.hill_slots = {}
-        melee = sorted((u for u in alive if _is_melee(u)), key=lambda u: u.uid)
-
-        if kind != "direct" and len(melee) >= 7 and not self.reserve_committed:
-            robust = sorted(melee, key=lambda u: (-u.max_hp * (8 - u.sauvegarde), u.uid))
-            for u in robust[:max(1, len(melee) // 5)]:
-                self.roles[id(u)] = "reserve"
-        free = [u for u in melee if id(u) not in self.roles]
+        free = sorted((u for u in alive if _is_melee(u)), key=lambda u: u.uid)
 
         if kind == "marteau":
             self.side = self._weaker_side(cmd, enemies)
@@ -356,7 +345,6 @@ class BattlePlan:
         melee_main = [u for u in by_role.get(None, []) if _is_melee(u)]
 
         getattr(self, '_update_' + self.kind)(cmd, alive, enemies, s, by_role, melee_main)
-        self._update_reserve(cmd, alive, enemies, s, by_role)
 
     def _in_contact(self, units, enemies, reach=2):
         if not units:
@@ -377,9 +365,7 @@ class BattlePlan:
         hammer = by_role.get("hammer", [])
         if not hammer:
             self.events.append(("le marteau est brisé, assaut direct", _EVENT_COLOR))
-            reserve = {k for k, v in self.roles.items() if v == "reserve"}
             self._start("direct", cmd, alive, enemies, announce=False)
-            self.roles.update({k: "reserve" for k in reserve})
             return
         half = self._geo[5]
         self.points['attente'] = self._point(cmd, self.side * (half + 7), -5)
@@ -387,7 +373,7 @@ class BattlePlan:
         if self.phase == "approche":
             anvil_contact = self._in_contact(melee_main, enemies)
             ready = sum(1 for u in hammer if _dist(u.position, self.points['attente']) <= 4) * 2 >= len(hammer)
-            if (anvil_contact >= 0.4 and (ready or self.rounds >= 3)) or self.rounds >= 10:
+            if (anvil_contact >= 0.4 and (ready or self.rounds >= 2)) or self.rounds >= 7:
                 self._set_phase("frappe", "le marteau frappe !")
         for u in hammer:
             if _dist(u.position, self.points['revers']) <= 4:
@@ -405,7 +391,7 @@ class BattlePlan:
         self.lane_bias = (px * self.side * push, py * self.side * push)
         if self.phase == "feinte":
             shift = (self._enemy_lat(enemies) - self._enemy_lat0) * side_a
-            if (shift >= 2.0 or self.rounds >= 4 or not lures
+            if (shift >= 2.0 or self.rounds >= 3 or not lures
                     or self._in_contact(melee_main, enemies, 3) > 0):
                 self._set_phase("assaut", "assaut principal sur l'autre aile !")
                 self.roles = {k: v for k, v in self.roles.items() if v != "lure"}
@@ -420,7 +406,7 @@ class BattlePlan:
                 self._engaged_streak += 1
             else:
                 self._engaged_streak = 0
-            if self._engaged_streak >= 1 or self.rounds >= 8 or not melee_main:
+            if self._engaged_streak >= 1 or self.rounds >= 4 or not melee_main:
                 self._set_phase("engagement", "l'aile refusée entre dans la bataille")
                 self.roles = {k: v for k, v in self.roles.items() if v != "refused"}
 
@@ -429,44 +415,28 @@ class BattlePlan:
         holders = by_role.get("hill", [])
         if self.phase == "prise":
             on = sum(1 for u in holders if _dist(u.position, self.hill_slots[id(u)]) <= 1)
-            if not holders or on * 10 >= len(holders) * 6 or self.rounds >= 6:
+            if not holders or on * 10 >= len(holders) * 6 or self.rounds >= 3:
                 self._set_phase("tenue", "tient la colline")
+                self._enemy_proj0 = self._enemy_front(cmd, enemies)
         elif self.phase == "tenue":
-            foes = [e for e in enemies if e._max_range < 4 and _dist(e.position, hill) <= 6]
+            foes = [e for e in enemies if e._max_range < 4 and _dist(e.position, hill) <= 7]
             if s['bleeding'] > s['hurting_them'] + 0.05:
                 self._hurting_streak += 1
             else:
                 self._hurting_streak = 0
-            if foes or self._hurting_streak >= 2 or self.rounds >= 8:
+            # L'ennemi refuse de venir (il tient lui aussi sa hauteur): on ne
+            # le regarde pas pendant dix rounds, on va le chercher.
+            stalled = (self.rounds >= 1 and self._enemy_proj0 is not None
+                       and self._enemy_front(cmd, enemies) >= self._enemy_proj0 - 1.5)
+            if foes or stalled or self._hurting_streak >= 2 or self.rounds >= 3:
                 self._set_phase("contre", "contre-attaque depuis la colline !")
-                self.roles = {k: v for k, v in self.roles.items() if v == "reserve"}
+                self.roles = {}
                 self.hill_slots = {}
 
-    def _update_reserve(self, cmd, alive, enemies, s, by_role):
-        reserve = by_role.get("reserve", [])
-        front = [u for u in alive if _is_melee(u) and self.roles.get(id(u)) != "reserve"]
-        mcen = cmd._melee_center or cmd._mc
-        ax, ay = cmd._axis
-        self.points['reserve'] = cmd._clamp_pos(mcen[0] - ax * 5, mcen[1] - ay * 5)
-        n_front = len(front)
-        dropped = self._last_melee is not None and n_front < self._last_melee
-        self._last_melee = n_front
-        if not reserve or self.reserve_committed or self.kind in (None, "direct"):
-            return
-        engaged = self._in_contact(front, enemies, 3) > 0
-        if s['hurting_them'] > s['bleeding'] and engaged:
-            self._hurting_streak_res += 1
-        else:
-            self._hurting_streak_res = 0
-        rp = self.points['reserve']
-        breach = [e for e in enemies
-                  if cmd._melee_front is not None
-                  and cmd._proj(e.position) < cmd._melee_front - 3 and _dist(e.position, rp) <= 10]
-        if (dropped and engaged) or breach or self._hurting_streak_res >= 2:
-            pool = breach or [e for e in enemies if _dist(e.position, mcen) <= 10] or enemies
-            self.reserve_target = min(pool, key=lambda e: (_dist(e.position, rp), e.uid))
-            self.reserve_committed = True
-            self.events.append(("la réserve s'engage !", (255, 190, 110)))
+    def _enemy_front(self, cmd, enemies):
+        """Projection, sur notre axe, de l'ennemi le plus proche de nous
+        (plus petit = plus proche)."""
+        return min(cmd._proj(e.position) for e in enemies)
 
     # ─── Ordres ───
 
@@ -476,14 +446,6 @@ class BattlePlan:
             return None
         role = self.roles.get(id(unit))
         up = unit.position
-        if role == "reserve":
-            if self.reserve_committed:
-                t = self.reserve_target
-                if t is None or not t.is_alive:
-                    t = min(enemies, key=lambda e: (_dist(e.position, up), e.uid))
-                    self.reserve_target = t
-                return ("attack", t, None, 6)
-            return ("support", None, self.points.get('reserve', up), 4)
         if role == "hammer":
             if self.phase == "approche":
                 return ("support", None, self.points['attente'], 5)
@@ -577,13 +539,4 @@ class BattlePlan:
                             'label': "aile refusée"})
         elif self.kind == "colline" and self.phase in ("prise", "tenue"):
             out.append({'type': 'flag', 'pos': self.points['colline'], 'label': "colline"})
-        reserve = group("reserve")
-        if reserve:
-            if (self.reserve_committed and self.reserve_target is not None
-                    and self.reserve_target.is_alive):
-                out.append({'type': 'arrow', 'points': [_center(reserve), self.reserve_target.position],
-                            'label': "réserve"})
-            elif not self.reserve_committed and 'reserve' in self.points:
-                out.append({'type': 'zone', 'center': self.points['reserve'], 'radius': 2.5,
-                            'label': "réserve"})
         return out
