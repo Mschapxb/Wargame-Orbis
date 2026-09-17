@@ -42,6 +42,7 @@ POSTURE_LABELS = {
     "screen":     ("Écran protecteur", (120, 220, 200)),
     "exploit":    ("Exploitation !",   (255, 120, 90)),
     "regroup":    ("Regroupement",     (200, 170, 120)),
+    "fall_back":  ("Repli sur le donjon", (230, 190, 120)),
 }
 
 # Bannières d'annonce lors d'un changement de posture
@@ -52,6 +53,7 @@ _POSTURE_BANNERS = {
     "screen":    ("couvre ses tireurs !",         (120, 220, 200)),
     "exploit":   ("EXPLOITE LA PERCÉE !",         (255, 120, 90)),
     "regroup":   ("se regroupe",                  (200, 170, 120)),
+    "fall_back": ("se replie sur le donjon !",    (230, 190, 120)),
 }
 
 # Dossier des tokens (à côté des fichiers .py)
@@ -367,9 +369,25 @@ def _building_components(bf):
     return comps
 
 
-def draw_hedge(surf, cells, cs):
+def _in_region(region, x0, y0, x1, y1):
+    """Le rectangle de cases (x0..x1, y0..y1) touche-t-il la région ?"""
+    if region is None:
+        return True
+    rx0, ry0, rx1, ry1 = region
+    return not (x1 < rx0 or x0 > rx1 or y1 < ry0 or y0 > ry1)
+
+
+def _burnt_tint(surf, rect, strength):
+    """Assombrit une zone déjà peinte (structure qui brûle)."""
+    k = max(0, min(255, int(255 * (1.0 - strength))))
+    shade = pygame.Surface((max(1, rect[2]), max(1, rect[3])))
+    shade.fill((k, int(k * 0.92), int(k * 0.85)))
+    surf.blit(shade, rect[:2], special_flags=pygame.BLEND_RGB_MULT)
+
+
+def draw_hedge(surf, cells, cs, cset=None, burning=()):
     """Haie vive: touffes de feuillage reliées d'une case à l'autre."""
-    cset = set(cells)
+    cset = set(cells) if cset is None else cset
     dark, mid, light = (26, 58, 24), (40, 84, 34), (60, 108, 46)
     r = max(3, int(cs * 0.42))
     # Ombre et liaison entre cases voisines d'abord, touffes ensuite
@@ -384,81 +402,137 @@ def draw_hedge(surf, cells, cs):
     for (x, y) in cells:
         cxp, cyp = x * cs + cs // 2, y * cs + cs // 2
         sd = _detail_seed(x, y)
-        pygame.draw.circle(surf, mid, (cxp, cyp), r)
-        pygame.draw.circle(surf, light, (cxp - r // 3 + (sd & 3) - 1, cyp - r // 3), max(2, r // 2))
-        pygame.draw.circle(surf, mid, (cxp + r // 3, cyp + r // 4 - ((sd >> 2) & 3)), max(2, r // 2))
-        if (sd >> 4) % 5 == 0:
+        if (x, y) in burning:
+            m, l = (58, 46, 26), (80, 60, 30)
+        else:
+            m, l = mid, light
+        pygame.draw.circle(surf, m, (cxp, cyp), r)
+        pygame.draw.circle(surf, l, (cxp - r // 3 + (sd & 3) - 1, cyp - r // 3), max(2, r // 2))
+        pygame.draw.circle(surf, m, (cxp + r // 3, cyp + r // 4 - ((sd >> 2) & 3)), max(2, r // 2))
+        if (sd >> 4) % 5 == 0 and (x, y) not in burning:
             pygame.draw.circle(surf, (220, 210, 230), (cxp + r // 4, cyp - r // 4), max(1, cs // 16))
 
 
-def draw_village_buildings(surf, bf, cs):
-    """Dessine les bâtiments d'un village comme des maisons entières."""
+def _draw_house(surf, x0, y0, x1, y1, cs, level=0, burning=False):
+    """Maison d'un seul tenant: mur, toit à faîtage, porte. `level` 1-2:
+    toit percé puis éventré; `burning`: charpente noircie."""
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+    w = bw * cs
+    h = bh * cs
+    px, py = x0 * cs, y0 * cs
+    sd = _detail_seed(x0, y0)
+    v = ((sd >> 3) & 7) - 3
+
+    sh = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.rect(sh, (0, 0, 0, 70), (0, 0, w, h), border_radius=2)
+    surf.blit(sh, (px + max(2, cs // 5), py + max(2, cs // 5)))
+
+    wall = (118 + v * 4, 104 + v * 3, 84 + v * 2)
+    wall_dark = _prop_shade(wall, -24)
+    roof = (128 + v * 5, 72 + v * 2, 48)
+    roof_dark = _prop_shade(roof, -26)
+    roof_hi = _prop_shade(roof, 22)
+
+    pygame.draw.rect(surf, wall, (px, py, w, h))
+    pygame.draw.rect(surf, wall_dark, (px, py, w, h), 1)
+
+    if w >= h:
+        ridge_y = py + int(h * 0.42)
+        pygame.draw.polygon(surf, roof, [(px, ridge_y), (px + w, ridge_y),
+                                         (px + w, py), (px, py)])
+        pygame.draw.polygon(surf, roof_dark,
+                            [(px, ridge_y), (px + w, ridge_y),
+                             (px + w - cs // 4, ridge_y + max(3, cs // 4)),
+                             (px + cs // 4, ridge_y + max(3, cs // 4))])
+        pygame.draw.line(surf, roof_hi, (px, ridge_y), (px + w, ridge_y), 2)
+        step = max(4, cs // 2)
+        for lx in range(px + step, px + w, step):
+            pygame.draw.line(surf, roof_dark, (lx, py + 1), (lx, ridge_y - 1), 1)
+    else:
+        ridge_x = px + int(w * 0.42)
+        pygame.draw.polygon(surf, roof, [(ridge_x, py), (ridge_x, py + h),
+                                         (px, py + h), (px, py)])
+        pygame.draw.polygon(surf, roof_dark,
+                            [(ridge_x, py), (ridge_x, py + h),
+                             (ridge_x + max(3, cs // 4), py + h - cs // 4),
+                             (ridge_x + max(3, cs // 4), py + cs // 4)])
+        pygame.draw.line(surf, roof_hi, (ridge_x, py), (ridge_x, py + h), 2)
+        step = max(4, cs // 2)
+        for ly in range(py + step, py + h, step):
+            pygame.draw.line(surf, roof_dark, (px + 1, ly), (ridge_x - 1, ly), 1)
+
+    if cs >= 16 and h > cs:
+        door_w = max(3, cs // 3)
+        door_h = max(4, int(cs * 0.55))
+        dx = px + w // 2 - door_w // 2
+        dy = py + h - door_h
+        pygame.draw.rect(surf, (62, 44, 28), (dx, dy, door_w, door_h))
+        pygame.draw.rect(surf, (40, 28, 18), (dx, dy, door_w, door_h), 1)
+        if w > 2 * cs:
+            win = max(3, cs // 4)
+            for wx in (px + cs // 2, px + w - cs // 2 - win):
+                pygame.draw.rect(surf, (72, 84, 92),
+                                 (wx, py + h - door_h - win - 2, win, win))
+                pygame.draw.rect(surf, (46, 34, 22),
+                                 (wx, py + h - door_h - win - 2, win, win), 1)
+
+    # ── Dégâts: le toit se perce, puis s'éventre sur la charpente ──
+    if level >= 1:
+        n_holes = max(1, 2 * bw * bh // 3 + (level - 1) * bw * bh)
+        for k in range(n_holes):
+            hx = px + int(w * (0.15 + 0.7 * (_hash3(x0, y0, k + 11) / 255)))
+            hy = py + int(h * (0.12 + 0.6 * (_hash3(x0, y0, k + 29) / 255)))
+            rw = max(3, int(cs * (0.22 + 0.18 * level)))
+            pygame.draw.ellipse(surf, (34, 24, 18), (hx - rw // 2, hy - rw // 3, rw, max(2, rw * 2 // 3)))
+            # tuiles tombées au pied du mur
+            pygame.draw.rect(surf, roof_dark, (hx - 4 + (k % 5), py + h + 1 + (k % 3),
+                                               max(2, cs // 8), max(2, cs // 10)))
+    if level >= 2:
+        beam = (58, 40, 24)
+        for k in range(bw + 1):
+            bx = px + k * w // max(1, bw)
+            pygame.draw.line(surf, beam, (bx, py + 2), (bx + cs // 4, py + h - 2), max(2, cs // 10))
+    if burning:
+        _burnt_tint(surf, (px, py, w, h), 0.45)
+
+
+def draw_village_buildings(surf, bf, cs, region=None):
+    """Maisons (d'un seul tenant) et haies du village.
+
+    Source: les structures du champ de bataille — une maison effondrée
+    disparaît, une maison entamée montre ses dégâts. Sans structures
+    (anciennes cartes, tests), la forme se déduit de la grille."""
+    fires = getattr(bf, 'fires', None) or {}
+    if getattr(bf, 'structures', None):
+        import structures as st
+        hedge_all = set()
+        for gid, cells in bf.structure_members.items():
+            if bf.structure_hp.get(gid, 0) <= 0:
+                continue
+            kind = bf.structure_kind[gid]
+            if kind == st.HEDGE:
+                hedge_all.update(cells)
+            elif kind == st.HOUSE:
+                xs = [c[0] for c in cells]
+                ys = [c[1] for c in cells]
+                if not _in_region(region, min(xs), min(ys), max(xs), max(ys)):
+                    continue
+                _draw_house(surf, min(xs), min(ys), max(xs), max(ys), cs,
+                            st.damage_level(bf, gid), any(c in fires for c in cells))
+        hedges = [c for c in sorted(hedge_all) if _in_region(region, c[0], c[1], c[0], c[1])]
+        draw_hedge(surf, hedges, cs, hedge_all, fires)
+        return
     for (x0, y0, x1, y1, n_cells, cells) in _building_components(bf):
         bw, bh = x1 - x0 + 1, y1 - y0 + 1
+        if not _in_region(region, x0, y0, x1, y1):
+            continue
         # Une maison est un bloc plein d'au moins 2×2. Tout le reste (arcs,
         # alignements d'une case) est une HAIE: la dessiner comme un toit
         # couvrirait son rectangle englobant, rues comprises.
         if n_cells != bw * bh or bw < 2 or bh < 2:
             draw_hedge(surf, cells, cs)
             continue
-        w = bw * cs
-        h = bh * cs
-        px, py = x0 * cs, y0 * cs
-        sd = _detail_seed(x0, y0)
-        v = ((sd >> 3) & 7) - 3
-
-        sh = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(sh, (0, 0, 0, 70), (0, 0, w, h), border_radius=2)
-        surf.blit(sh, (px + max(2, cs // 5), py + max(2, cs // 5)))
-
-        wall = (118 + v * 4, 104 + v * 3, 84 + v * 2)
-        wall_dark = _prop_shade(wall, -24)
-        roof = (128 + v * 5, 72 + v * 2, 48)
-        roof_dark = _prop_shade(roof, -26)
-        roof_hi = _prop_shade(roof, 22)
-
-        pygame.draw.rect(surf, wall, (px, py, w, h))
-        pygame.draw.rect(surf, wall_dark, (px, py, w, h), 1)
-
-        if w >= h:
-            ridge_y = py + int(h * 0.42)
-            pygame.draw.polygon(surf, roof, [(px, ridge_y), (px + w, ridge_y),
-                                             (px + w, py), (px, py)])
-            pygame.draw.polygon(surf, roof_dark,
-                                [(px, ridge_y), (px + w, ridge_y),
-                                 (px + w - cs // 4, ridge_y + max(3, cs // 4)),
-                                 (px + cs // 4, ridge_y + max(3, cs // 4))])
-            pygame.draw.line(surf, roof_hi, (px, ridge_y), (px + w, ridge_y), 2)
-            step = max(4, cs // 2)
-            for lx in range(px + step, px + w, step):
-                pygame.draw.line(surf, roof_dark, (lx, py + 1), (lx, ridge_y - 1), 1)
-        else:
-            ridge_x = px + int(w * 0.42)
-            pygame.draw.polygon(surf, roof, [(ridge_x, py), (ridge_x, py + h),
-                                             (px, py + h), (px, py)])
-            pygame.draw.polygon(surf, roof_dark,
-                                [(ridge_x, py), (ridge_x, py + h),
-                                 (ridge_x + max(3, cs // 4), py + h - cs // 4),
-                                 (ridge_x + max(3, cs // 4), py + cs // 4)])
-            pygame.draw.line(surf, roof_hi, (ridge_x, py), (ridge_x, py + h), 2)
-            step = max(4, cs // 2)
-            for ly in range(py + step, py + h, step):
-                pygame.draw.line(surf, roof_dark, (px + 1, ly), (ridge_x - 1, ly), 1)
-
-        if cs >= 16 and h > cs:
-            door_w = max(3, cs // 3)
-            door_h = max(4, int(cs * 0.55))
-            dx = px + w // 2 - door_w // 2
-            dy = py + h - door_h
-            pygame.draw.rect(surf, (62, 44, 28), (dx, dy, door_w, door_h))
-            pygame.draw.rect(surf, (40, 28, 18), (dx, dy, door_w, door_h), 1)
-            if w > 2 * cs:
-                win = max(3, cs // 4)
-                for wx in (px + cs // 2, px + w - cs // 2 - win):
-                    pygame.draw.rect(surf, (72, 84, 92),
-                                     (wx, py + h - door_h - win - 2, win, win))
-                    pygame.draw.rect(surf, (46, 34, 22),
-                                     (wx, py + h - door_h - win - 2, win, win), 1)
+        _draw_house(surf, x0, y0, x1, y1, cs)
 
 
 def draw_ground_patches(surf, patches, cs, bg):
@@ -490,13 +564,13 @@ def draw_ground_patches(surf, patches, cs, bg):
         surf.blit(s_p, (int(fx * cs) - w // 2 - pad, int(fy * cs) - h // 2 - pad))
 
 
-def draw_rock_masses(surf, bf, cs):
+def draw_rock_masses(surf, bf, cs, region=None):
     """Dessine les masses rocheuses d'un seul tenant.
 
     Une falaise découpée en cases, chacune avec son propre contour, se lit
     comme un carrelage. Ici les cases connexes forment un bloc: remplissage
     continu, strates qui traversent, arêtes éclairées seulement en bordure
-    de la masse.
+    de la masse. `region` borne les cases peintes (repeint incrémental).
     """
     seen = set()
     W, H = bf.width, bf.height
@@ -525,6 +599,8 @@ def draw_rock_masses(surf, bf, cs):
             light = _prop_shade(base, 30)
 
             for (cx, cy) in cells:
+                if not _in_region(region, cx, cy, cx, cy):
+                    continue
                 px, py = cx * cs, cy * cs
                 sdc = _detail_seed(cx, cy)
                 tone = _prop_shade(base, ((sdc >> 2) & 3) - 1)
@@ -603,7 +679,8 @@ def draw_gate_cell(surf, bf, x, y, cs, gate_color, bg):
     courent sur toute la hauteur, jambages de pierre aux extrémités."""
     px, py = x * cs, y * cs
     hp = bf.gate_hp.get((x, y), 0)
-    gates_open = getattr(bf, 'gates_open', False)
+    # Ouverture par case: le donjon peut être ouvert quand l'extérieur ne l'est pas
+    gates_open = (x, y) in getattr(bf, 'open_gate_cells', ())
     top_end = y == 0 or bf.grid[x][y - 1] != 3
     bot_end = y == bf.height - 1 or bf.grid[x][y + 1] != 3
     if hp > 0 and not gates_open:
@@ -667,15 +744,16 @@ def draw_rampart_cell(surf, bf, x, y, cs):
                 pygame.draw.rect(surf, _prop_shade(base, v), (x0, y0, x1 - x0, y1 - y0))
 
 
-def draw_wall_shadows(surf, bf, cs):
+def draw_wall_shadows(surf, bf, cs, region=None):
     """Ombre portée des murs sur le sol côté assaillant: donne de la hauteur."""
     shade = pygame.Surface((max(2, int(cs * 0.6)), cs), pygame.SRCALPHA)
     w = shade.get_width()
     for i in range(w):
         a = int(90 * (1 - i / w) ** 1.5)
         pygame.draw.line(shade, (0, 0, 0, a), (w - 1 - i, 0), (w - 1 - i, cs))
-    for x in range(1, bf.width):
-        for y in range(bf.height):
+    x0, y0, x1, y1 = region if region is not None else (0, 0, bf.width - 1, bf.height - 1)
+    for x in range(max(1, x0), min(bf.width, x1 + 2)):
+        for y in range(max(0, y0), min(bf.height, y1 + 1)):
             if bf.grid[x][y] in (2, 3) and bf.grid[x - 1][y] in (0, 5):
                 surf.blit(shade, (x * cs - w, y * cs))
 
@@ -688,7 +766,7 @@ def gate_visual_state(bf):
             return -1
         pct = hp / 10
         return 0 if pct >= 0.75 else (1 if pct >= 0.5 else (2 if pct >= 0.25 else 3))
-    return (bool(getattr(bf, 'gates_open', False)),
+    return (tuple(sorted(getattr(bf, 'open_gate_cells', ()))),
             tuple(sorted((pos, level(hp)) for pos, hp in bf.gate_hp.items())))
 
 
@@ -714,178 +792,322 @@ def repaint_gates(surface, battle, cell_size, previous_state):
     return new_state
 
 
-def build_grid_surface(battle, cell_size):
-    """Pré-rend la surface de la grille avec le thème de la map."""
+def _draw_forest_tree(surf, x, y, cs, level=0, burning=False):
+    """Arbre de cœur de bosquet. Chaque arbre diffère (taille, teinte,
+    décalage, essence): une forêt de tampons identiques alignés sur la
+    grille se lit comme du papier peint, pas comme un bois. Roussi par les
+    dégâts, brun-noir quand il brûle."""
+    sd = _detail_seed(x, y)
+    cx = x * cs + cs // 2 + ((sd & 3) - 1) * cs // 10
+    cy_tree = y * cs + cs // 2 + (((sd >> 2) & 3) - 1) * cs // 10
+    rt = max(2, int(cs * (0.30 + ((sd >> 4) & 3) * 0.035)))
+    hue = ((sd >> 6) & 7) - 3
+    scorch = 44 if burning else 16 * level
+    if sd % 5 == 0 and cs >= 16:
+        pygame.draw.ellipse(surf, (14, 34, 12),
+                            (cx - rt, cy_tree + rt - max(2, rt // 3), rt * 2, max(3, rt // 2)))
+        pygame.draw.rect(surf, (58, 42, 26),
+                         (cx - max(1, cs // 14), cy_tree, max(2, cs // 7), rt))
+        for k in range(3):
+            w_t = max(2, int(rt * (1.05 - 0.26 * k)))
+            top = cy_tree - int(rt * (0.35 + 0.52 * k))
+            pygame.draw.polygon(surf, (16 + scorch, max(20, 54 + hue + k * 7 - scorch), 22),
+                                [(cx, top), (cx - w_t, top + int(rt * 0.62)),
+                                 (cx + w_t, top + int(rt * 0.62))])
+    else:
+        pygame.draw.circle(surf, (12, 30, 10), (cx + 1, cy_tree + 3), rt + 1)
+        pygame.draw.circle(surf, (26 + hue + scorch, max(20, 74 + hue * 3 - scorch), 22),
+                           (cx, cy_tree), rt)
+        pygame.draw.circle(surf, (42 + hue + scorch, max(24, 98 + hue * 3 - scorch), 34),
+                           (cx - rt // 3, cy_tree - rt // 3), max(1, rt // 2))
+        pygame.draw.circle(surf, (16, 52, 14), (cx, cy_tree), rt, 1)
+
+
+def _draw_palisade_cell(surf, bf, x, y, cs, level=0, burning=False):
+    """Pan de palissade: pieux taillés en pointe, liés par une traverse aux
+    pieux voisins; fendu puis éventré selon les dégâts, noirci s'il brûle."""
+    px, py = x * cs, y * cs
+    wood = (122, 88, 52) if not burning else (70, 50, 34)
+    dark = _prop_shade(wood, -34)
+    n = 3
+    pw = max(2, cs // 5)
+    sh = pygame.Surface((cs, max(2, cs // 5)), pygame.SRCALPHA)
+    sh.fill((0, 0, 0, 60))
+    surf.blit(sh, (px + cs // 6, py + cs - cs // 6))
+    for k in range(n):
+        if level >= 2 and k == 1:
+            continue  # pieu arraché
+        sx = px + (k + 1) * cs // (n + 1) - pw // 2
+        top = py + cs // 6 + (_hash3(x, y, k) % 3) + (cs // 5 if level >= 1 and k == 2 else 0)
+        pygame.draw.rect(surf, wood, (sx, top, pw, py + cs - 2 - top))
+        pygame.draw.polygon(surf, wood, [(sx, top), (sx + pw // 2, top - cs // 6), (sx + pw, top)])
+        pygame.draw.line(surf, dark, (sx + pw - 1, top), (sx + pw - 1, py + cs - 2), 1)
+    bar_y = py + cs // 2
+    pygame.draw.line(surf, dark, (px + 2, bar_y), (px + cs - 2, bar_y), max(1, cs // 12))
+    structs = getattr(bf, 'structures', {})
+    for dy in (-1, 1):
+        entry = structs.get((x, y + dy))
+        if entry is not None and entry[0] == "palissade":
+            pygame.draw.line(surf, dark, (px + cs // 2, py + cs // 2),
+                             (px + cs // 2, py + cs // 2 + dy * cs // 2), max(1, cs // 10))
+
+
+def _draw_rock_outcrop(surf, x, y, cs, level=0):
+    """Affleurement rocheux: facettes anguleuses et teinte minérale; fendu
+    quand une machine l'a entamé."""
+    sd = _detail_seed(x, y)
+    cx = x * cs + cs // 2 + ((sd & 3) - 1) * cs // 12
+    cyo = y * cs + cs // 2 + (((sd >> 2) & 3) - 1) * cs // 12
+    rr = max(2, int(cs * (0.34 + ((sd >> 4) & 3) * 0.04)))
+    v = ((sd >> 6) & 7) - 3
+    stone = (max(0, min(255, 104 + v * 5)),
+             max(0, min(255, 99 + v * 5)),
+             max(0, min(255, 90 + v * 4)))
+    dark = _prop_shade(stone, -26)
+    light = _prop_shade(stone, 26)
+    pts = []
+    for k in range(6):
+        ang = k * math.pi / 3 + ((sd >> k) & 3) * 0.12
+        rad = rr * (0.74 + ((sd >> (k + 2)) & 3) * 0.09)
+        pts.append((cx + rad * math.cos(ang), cyo + rad * math.sin(ang)))
+    pygame.draw.polygon(surf, dark, [(p0 + 1, p1 + 2) for p0, p1 in pts])
+    pygame.draw.polygon(surf, stone, pts)
+    pygame.draw.line(surf, light, (cx - rr // 2, cyo - rr // 3),
+                     (cx + rr // 4, cyo - rr // 2), max(1, cs // 16))
+    pygame.draw.polygon(surf, dark, pts, 1)
+    for k in range(level * 2):
+        a = _hash3(x, y, k + 5) / 255.0 * math.tau
+        pygame.draw.line(surf, _prop_shade(stone, -50), (cx, cyo),
+                         (cx + math.cos(a) * rr * 0.9, cyo + math.sin(a) * rr * 0.9), 1)
+
+
+def _draw_wall_damage(surf, x, y, cs, level):
+    """Mur entamé par les machines: lézardes, puis moellons arrachés et
+    crénelage éboulé au pied du mur."""
+    if level <= 0:
+        return
+    px, py = x * cs, y * cs
+    crack = (40, 36, 34)
+    for k in range(1 + level):
+        sx = px + cs * (0.2 + 0.6 * (_hash3(x, y, k + 40) / 255))
+        sy = py + cs * 0.1
+        pts = [(sx, sy)]
+        for j in range(3):
+            sx += (_hash3(x, y, k * 7 + j) % 7 - 3) * cs / 14
+            sy += cs * 0.28
+            pts.append((sx, min(py + cs - 1, sy)))
+        pygame.draw.lines(surf, crack, False, pts, max(1, cs // 14))
+    if level >= 2:
+        for k in range(3):
+            hx = px + int(cs * (0.15 + 0.6 * (_hash3(x, y, k + 60) / 255)))
+            hy = py + int(cs * (0.15 + 0.6 * (_hash3(x, y, k + 80) / 255)))
+            w = max(3, cs // 4)
+            pygame.draw.rect(surf, (52, 48, 46), (hx, hy, w, max(2, w * 2 // 3)))
+        # moellons tombés côté assaillant
+        for k in range(3):
+            pygame.draw.rect(surf, (118, 112, 104),
+                             (px - cs // 3 + (k * cs) // 5, py + (k * 11) % max(1, cs - 4),
+                              max(2, cs // 7), max(2, cs // 8)))
+
+
+def build_ground_layer(battle, cell_size):
+    """Couche de SOL: fond, petits détails, repères, grain, taches organiques
+    et traces permanentes (cratères). Construite une fois; le repeint d'une
+    région y reprend le sol avant de redessiner ce qui repose dessus."""
     from maps import get_map_info
-    
     bf = battle.battlefield
-    W = bf.width * cell_size
-    grid_h = bf.height * cell_size
-    grid_surface = pygame.Surface((W, grid_h))
-    
-    theme = get_map_info(bf.map_name)
-    bg = theme["bg_color"]
-    obs_color = theme["obstacle_color"]
-    grid_color = theme["grid_color"]
-    wall_color = theme.get("wall_color", (100, 100, 110))
-    gate_color = theme.get("gate_color", (140, 100, 50))
-    
+    cs = cell_size
+    W, H = bf.width * cs, bf.height * cs
+    bg = get_map_info(bf.map_name)["bg_color"]
+    ground = pygame.Surface((W, H))
+    ground.fill(bg)
     # Couleur de grille très discrète (proche du fond) — l'ancienne grille
     # par case donnait un aspect "tableur"
     subtle_grid = (max(0, bg[0] - 3), max(0, bg[1] - 3), max(0, bg[2] - 3))
-    
-    for x in range(bf.width):
-        for y in range(bf.height):
-            r = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
-            cell = bf.grid[x][y]
-            
-            if cell == 2:  # Mur
-                draw_wall_cell(grid_surface, bf, x, y, cell_size, wall_color)
-            elif cell == 3:  # Porte
-                draw_gate_cell(grid_surface, bf, x, y, cell_size, gate_color, bg)
-            elif cell == 1:  # Obstacle
-                if bf.map_name == "Forêt":
-                    # Chaque arbre diffère (taille, teinte, décalage, essence):
-                    # une forêt de tampons identiques alignés sur la grille
-                    # se lit comme du papier peint, pas comme un bois.
-                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
-                    sd = _detail_seed(x, y)
-                    cx = x * cell_size + cell_size // 2 + ((sd & 3) - 1) * cell_size // 10
-                    cy_tree = (y * cell_size + cell_size // 2
-                               + (((sd >> 2) & 3) - 1) * cell_size // 10)
-                    tr = max(2, int(cell_size * (0.30 + ((sd >> 4) & 3) * 0.035)))
-                    hue = ((sd >> 6) & 7) - 3
-                    if sd % 5 == 0 and cell_size >= 16:
-                        pygame.draw.ellipse(grid_surface, (14, 34, 12),
-                                            (cx - tr, cy_tree + tr - max(2, tr // 3),
-                                             tr * 2, max(3, tr // 2)))
+    if cs >= 14:
+        grassy = bf.map_name in ("Prairie", "Forêt")
+        gc = (min(255, bg[0] + 14), min(255, bg[1] + 22), min(255, bg[2] + 10))
+        sc = (min(255, bg[0] + 16), min(255, bg[1] + 14), min(255, bg[2] + 12))
+        for x in range(bf.width):
+            for y in range(bf.height):
+                if bf.grid[x][y] != 0:
+                    continue
+                seed = _detail_seed(x, y)
+                if seed < 14:  # ~5% des cases: touffe d'herbe / caillou
+                    px_d = x * cs + 2 + (seed % max(1, cs - 6))
+                    py_d = y * cs + 2 + ((seed * 7) % max(1, cs - 6))
+                    if grassy:
+                        pygame.draw.line(ground, gc, (px_d, py_d + 3), (px_d, py_d), 1)
+                        pygame.draw.line(ground, gc, (px_d + 2, py_d + 3), (px_d + 3, py_d + 1), 1)
                     else:
-                        pygame.draw.circle(grid_surface, (12, 30, 10),
-                                           (cx + 1, cy_tree + 3), tr + 1)
-                    if sd % 5 == 0 and cell_size >= 16:
-                        # Conifère: étages triangulaires
-                        pygame.draw.rect(grid_surface, (58, 42, 26),
-                                         (cx - max(1, cell_size // 14), cy_tree,
-                                          max(2, cell_size // 7), tr))
-                        for k in range(3):
-                            w_t = max(2, int(tr * (1.05 - 0.26 * k)))
-                            top = cy_tree - int(tr * (0.35 + 0.52 * k))
-                            pygame.draw.polygon(
-                                grid_surface, (16, 54 + hue + k * 7, 22),
-                                [(cx, top), (cx - w_t, top + int(tr * 0.62)),
-                                 (cx + w_t, top + int(tr * 0.62))])
-                    else:
-                        pygame.draw.circle(grid_surface, (26 + hue, 74 + hue * 3, 22),
-                                           (cx, cy_tree), tr)
-                        pygame.draw.circle(grid_surface, (42 + hue, 98 + hue * 3, 34),
-                                           (cx - tr // 3, cy_tree - tr // 3), max(1, tr // 2))
-                        pygame.draw.circle(grid_surface, (16, 52, 14), (cx, cy_tree), tr, 1)
-                elif bf.map_name == "Village":
-                    # Le sol passe dessous: les maisons sont dessinées
-                    # ensuite, d'un seul tenant (cf. draw_village_buildings)
-                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
-                elif bf.map_name == "Défilé":
-                    # Le sol passe dessous: les masses rocheuses sont
-                    # dessinées ensuite d'un seul tenant
-                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
-                else:
-                    # Affleurement rocheux: facettes anguleuses, pas une
-                    # bulle uniforme — et une teinte minérale, pas la
-                    # couleur du pré.
-                    pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
-                    sd = _detail_seed(x, y)
-                    cx = x * cell_size + cell_size // 2 + ((sd & 3) - 1) * cell_size // 12
-                    cyo = y * cell_size + cell_size // 2 + (((sd >> 2) & 3) - 1) * cell_size // 12
-                    rr = max(2, int(cell_size * (0.34 + ((sd >> 4) & 3) * 0.04)))
-                    v = ((sd >> 6) & 7) - 3
-                    stone = (max(0, min(255, 104 + v * 5)),
-                             max(0, min(255, 99 + v * 5)),
-                             max(0, min(255, 90 + v * 4)))
-                    dark = _prop_shade(stone, -26)
-                    light = _prop_shade(stone, 26)
-                    pts = []
-                    for k in range(6):
-                        ang = k * math.pi / 3 + ((sd >> k) & 3) * 0.12
-                        rad = rr * (0.74 + ((sd >> (k + 2)) & 3) * 0.09)
-                        pts.append((cx + rad * math.cos(ang), cyo + rad * math.sin(ang)))
-                    pygame.draw.polygon(grid_surface, dark,
-                                        [(p0 + 1, p1 + 2) for p0, p1 in pts])
-                    pygame.draw.polygon(grid_surface, stone, pts)
-                    pygame.draw.line(grid_surface, light,
-                                     (cx - rr // 2, cyo - rr // 3),
-                                     (cx + rr // 4, cyo - rr // 2), max(1, cell_size // 16))
-                    pygame.draw.polygon(grid_surface, dark, pts, 1)
-            elif cell == 4:  # Rempart marchable
-                draw_rampart_cell(grid_surface, bf, x, y, cell_size)
-            elif cell == 5:  # Escalier
-                stair_color = (104, 98, 88)
-                pygame.draw.rect(grid_surface, stair_color, r)
-                step_h = max(2, cell_size // 4)
-                for sy in range(y * cell_size + 2, (y + 1) * cell_size - 1, step_h):
-                    pygame.draw.line(grid_surface, (95, 85, 70),
-                                     (x * cell_size + 2, sy),
-                                     (x * cell_size + cell_size - 2, sy), 1)
-                    pygame.draw.line(grid_surface, (55, 50, 42),
-                                     (x * cell_size + 2, sy + 1),
-                                     (x * cell_size + cell_size - 2, sy + 1), 1)
-            else:
-                # Sol avec pseudo-bruit + petits détails épars
-                pygame.draw.rect(grid_surface, _ground_color(bg, x, y), r)
-                if cell_size >= 14:
-                    seed = _detail_seed(x, y)
-                    if seed < 14:  # ~5% des cases: touffe d'herbe / caillou
-                        dx = 2 + (seed % max(1, cell_size - 6))
-                        dy = 2 + ((seed * 7) % max(1, cell_size - 6))
-                        px_d = x * cell_size + dx
-                        py_d = y * cell_size + dy
-                        if bf.map_name in ("Prairie", "Forêt"):
-                            gc = (min(255, bg[0] + 14), min(255, bg[1] + 22), min(255, bg[2] + 10))
-                            pygame.draw.line(grid_surface, gc, (px_d, py_d + 3), (px_d, py_d), 1)
-                            pygame.draw.line(grid_surface, gc, (px_d + 2, py_d + 3), (px_d + 3, py_d + 1), 1)
-                        else:
-                            sc = (min(255, bg[0] + 16), min(255, bg[1] + 14), min(255, bg[2] + 12))
-                            pygame.draw.circle(grid_surface, sc, (px_d, py_d), 1)
-            
-            # Repères d'échelle: un point tous les 5 croisements, au lieu
-            # d'un contour sur chaque case (qui faisait « tableur »)
-            if cell == 0 and x % 5 == 0 and y % 5 == 0 and cell_size >= 14:
-                pygame.draw.rect(grid_surface, subtle_grid,
-                                 (x * cell_size, y * cell_size, 1, 1))
+                        pygame.draw.circle(ground, sc, (px_d, py_d), 1)
+                # Repères d'échelle: un point tous les 5 croisements, au lieu
+                # d'un contour sur chaque case (qui faisait « tableur »)
+                if x % 5 == 0 and y % 5 == 0:
+                    pygame.draw.rect(ground, subtle_grid, (x * cs, y * cs, 1, 1))
 
-    # ─── Grain de texture (mouchetures), cuit une fois dans le terrain ───
+    # ─── Grain de texture (mouchetures) ───
     grain = sprites.ground_grain(128, 77 + len(bf.map_name))
     for gx in range(0, W, 128):
-        for gy in range(0, grid_h, 128):
-            grid_surface.blit(grain, (gx, gy))
+        for gy in range(0, H, 128):
+            ground.blit(grain, (gx, gy))
 
-    # ─── Ombre portée des fortifications ───
-    if bf.walls or bf.gate_hp:
-        draw_wall_shadows(grid_surface, bf, cell_size)
-
-    # ─── Taches de sol organiques (sous tout le reste) ───
+    # ─── Taches de sol organiques ───
     patches = getattr(bf, 'ground_patches', ())
-    if patches and cell_size >= 12:
-        draw_ground_patches(grid_surface, patches, cell_size, bg)
+    if patches and cs >= 12:
+        draw_ground_patches(ground, patches, cs, bg)
+    return ground
 
-    # ─── Terrain à effets: teinte + motif (colline, bois, eau, marais) ───
+
+def paint_region(surf, battle, cell_size, ground, x0, y0, x1, y1):
+    """Peint tout ce qui est statique sur les cases [x0..x1]×[y0..y1]: sol,
+    fortifications, obstacles, terrain, bâtiments, décor. La carte entière
+    et le repeint après destruction passent par ici: même résultat."""
+    from maps import get_map_info
+    import structures as st
+    import terrain as tr_mod
     import terrain_render
-    terrain_render.draw_terrain(grid_surface, bf, cell_size)
+    bf = battle.battlefield
+    cs = cell_size
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(bf.width - 1, x1), min(bf.height - 1, y1)
+    if x1 < x0 or y1 < y0:
+        return
+    region = (x0, y0, x1, y1)
+    theme = get_map_info(bf.map_name)
+    bg = theme["bg_color"]
+    wall_color = theme.get("wall_color", (100, 100, 110))
+    gate_color = theme.get("gate_color", (140, 100, 50))
 
-    # ─── Reliefs d'un seul tenant ───
-    if bf.map_name == "Village":
-        draw_village_buildings(grid_surface, bf, cell_size)
+    area = pygame.Rect(x0 * cs, y0 * cs, (x1 - x0 + 1) * cs, (y1 - y0 + 1) * cs)
+    surf.blit(ground, area.topleft, area)
+
+    structs = getattr(bf, 'structures', None) or {}
+    fires = getattr(bf, 'fires', None) or {}
+    for x in range(x0, x1 + 1):
+        for y in range(y0, y1 + 1):
+            cell = bf.grid[x][y]
+            if cell == 0:
+                continue
+            if cell == 2:
+                draw_wall_cell(surf, bf, x, y, cs, wall_color)
+                entry = structs.get((x, y))
+                if entry is not None:
+                    _draw_wall_damage(surf, x, y, cs, st.damage_level(bf, entry[1]))
+            elif cell == 3:
+                draw_gate_cell(surf, bf, x, y, cs, gate_color, bg)
+            elif cell == 4:
+                draw_rampart_cell(surf, bf, x, y, cs)
+            elif cell == 5:
+                pygame.draw.rect(surf, (104, 98, 88), (x * cs, y * cs, cs, cs))
+                step_h = max(2, cs // 4)
+                for sy in range(y * cs + 2, (y + 1) * cs - 1, step_h):
+                    pygame.draw.line(surf, (95, 85, 70), (x * cs + 2, sy), (x * cs + cs - 2, sy), 1)
+                    pygame.draw.line(surf, (55, 50, 42), (x * cs + 2, sy + 1), (x * cs + cs - 2, sy + 1), 1)
+            else:
+                entry = structs.get((x, y))
+                kind = entry[0] if entry is not None else None
+                if kind in (st.HOUSE, st.HEDGE) or bf.map_name in ("Village", "Défilé"):
+                    continue  # dessinés d'un seul tenant plus bas
+                level = st.damage_level(bf, entry[1]) if entry is not None else 0
+                if kind == st.PALISADE:
+                    _draw_palisade_cell(surf, bf, x, y, cs, level, (x, y) in fires)
+                elif kind == st.GROVE or bf.map_name == "Forêt":
+                    _draw_forest_tree(surf, x, y, cs, level, (x, y) in fires)
+                else:
+                    _draw_rock_outcrop(surf, x, y, cs, level)
+
+    if bf.walls or bf.gate_hp:
+        draw_wall_shadows(surf, bf, cs, region)
+
+    terrain_render.draw_terrain(surf, bf, cs, region)
+
+    if bf.map_name == "Village" or getattr(bf, '_has_buildings', False):
+        draw_village_buildings(surf, bf, cs, region)
     elif bf.map_name == "Défilé":
-        draw_rock_masses(grid_surface, bf, cell_size)
+        draw_rock_masses(surf, bf, cs, region)
 
     # ─── Décor: végétation, cailloux, matériel abandonné ───
-    # Posé par-dessus le sol, sous les unités. Aucune incidence de jeu.
-    if cell_size >= 12:
+    # Posé par-dessus le sol, sous les unités. Aucune incidence de jeu. Le
+    # feu et l'effondrement l'emportent: rien ne pousse sur des décombres.
+    if cs >= 12:
+        terr = bf.terrain
+        gone = (tr_mod.RUBBLE, tr_mod.BURNT)
         for (dx_p, dy_p, kind, seed_p) in getattr(bf, 'decor', ()):
+            if not (x0 <= dx_p <= x1 and y0 <= dy_p <= y1):
+                continue
             if bf.grid[dx_p][dy_p] != 0:
                 continue  # une case devenue mur/obstacle perd son décor
-            draw_prop(grid_surface, kind, dx_p, dy_p, cell_size, seed_p, bg)
+            if terr is not None and terr[dx_p][dy_p] in gone:
+                continue
+            draw_prop(surf, kind, dx_p, dy_p, cs, seed_p, bg)
 
-    return grid_surface
+
+def build_grid_surface(battle, cell_size):
+    """Pré-rend la surface statique de la carte. La couche de sol est gardée
+    sur la bataille (`_ground_layer`) pour les repeints de région."""
+    bf = battle.battlefield
+    import structures as st
+    # Maisons et haies se dessinent d'un seul tenant sur toute carte qui en a
+    bf._has_buildings = any(k in (st.HOUSE, st.HEDGE)
+                            for k in getattr(bf, 'structure_kind', {}).values())
+    ground = build_ground_layer(battle, cell_size)
+    battle._ground_layer = ground
+    surf = pygame.Surface(ground.get_size())
+    paint_region(surf, battle, cell_size, ground, 0, 0, bf.width - 1, bf.height - 1)
+    return surf
+
+
+def repaint_region(surface, battle, cell_size, cells):
+    """Repeint UNIQUEMENT le voisinage des cases dont l'aspect a changé
+    (effondrement, feu, dégâts). Reconstruire toute la carte coûtait ~90 ms.
+
+    Le clip couvre les cases + 1 de marge (ombres, débordements); le contenu
+    est redessiné sur + 2 pour que ce qui déborde des voisines revienne."""
+    ground = getattr(battle, '_ground_layer', None)
+    if ground is None or not cells:
+        return
+    cs = cell_size
+    xs = [c[0] for c in cells]
+    ys = [c[1] for c in cells]
+    bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
+    clip = pygame.Rect((bx0 - 1) * cs, (by0 - 1) * cs,
+                       (bx1 - bx0 + 3) * cs, (by1 - by0 + 3) * cs)
+    clip = clip.clip(surface.get_rect())
+    previous = surface.get_clip()
+    surface.set_clip(clip)
+    paint_region(surface, battle, cs, ground, bx0 - 2, by0 - 2, bx1 + 2, by1 + 2)
+    surface.set_clip(previous)
+
+
+def bake_crater(surface, battle, x, y, radius, seed):
+    """Trace permanente (boule de feu): cuite dans le sol ET dans la surface
+    affichée, elle survit aux repeints et ne s'efface jamais."""
+    decal = sprites.decal("scorch", max(3, radius * 0.8), seed)
+    pos = (int(x - decal.get_width() / 2), int(y - decal.get_height() / 2))
+    ground = getattr(battle, '_ground_layer', None)
+    if ground is not None:
+        ground.blit(decal, pos)
+    surface.blit(decal, pos)
+
+
+def apply_destruction(surface, battle, cell_size, round_frame):
+    """Applique les repeints et cratères dont l'instant est venu (listes
+    horodatées remplies par le moteur, cf. Battle._flush_structure_changes)."""
+    pending = getattr(battle, 'pending_repaints', None)
+    if pending:
+        due = [cells for d, cells in pending if d <= round_frame]
+        if due:
+            battle.pending_repaints = [(d, c) for d, c in pending if d > round_frame]
+            for cells in due:
+                repaint_region(surface, battle, cell_size, cells)
+    craters = getattr(battle, 'pending_craters', None)
+    if craters:
+        due = [c for c in craters if c[0] <= round_frame]
+        if due:
+            battle.pending_craters = [c for c in craters if c[0] > round_frame]
+            for (d, x, y, r) in due:
+                bake_crater(surface, battle, x, y, r, int(x * 3 + y * 7))
 
 
 def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
@@ -1251,6 +1473,9 @@ def run_visual(battle, cell_size):
             frames = ROUND_FRAMES_FAST if simulation_speed == "fast" else ROUND_FRAMES_NORMAL
 
             if round_frame >= frames:
+                # Ce que la destruction a changé au round précédent est
+                # appliqué en entier avant d'en simuler un nouveau.
+                apply_destruction(grid_surface, battle, cell_size, 10 ** 6)
                 round_frame = 0
                 battle.fx_frames_per_round = frames
                 battle.simulate_round()
@@ -1326,6 +1551,9 @@ def run_visual(battle, cell_size):
                 for e in lst:
                     e.age += 1
                 battle.visual_effects[key] = [e for e in lst if e.is_alive()]
+        # Repeints et cratères horodatés: au moment de l'action, pas avant
+        apply_destruction(grid_surface, battle, cell_size, round_frame)
+        fxr.round_frame = round_frame
         fxr.update(battle, paused=pause)
 
         # ── Secousse de caméra: juste un frémissement sur les chocs les
@@ -1380,6 +1608,8 @@ def run_visual(battle, cell_size):
         
         # Décalques au sol et animations de mort (sous les vivants)
         fxr.draw_ground(screen, battle, ox, oy, SCREEN_W, view_h, move_anim_progress)
+        # Incendies: sous les unités, au-dessus du sol
+        fxr.draw_fires(screen, battle, ox, oy, SCREEN_W, view_h, now)
 
         # Unités
         ur_base = max(3, cell_size // 2 - 4)

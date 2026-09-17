@@ -513,10 +513,8 @@ def test_render_terrain_smoke():
         surf = build_grid_surface(b, 16)
         assert surf.get_width() == 60 * 16
         leg = trr.legend_surface(b.battlefield, pygame.font.SysFont("arial", 14))
-        if name == "Siège":
-            assert leg is None
-        else:
-            assert leg is not None and leg.get_height() > 20
+        # Le Siège a lui aussi son terrain (fossé, glacis) depuis le lot B2
+        assert leg is not None and leg.get_height() > 20
     # Une case de rivière est dessinée en bleu
     random.seed(5)
     b = Battle(a, a, 178, 64, 8, map_name="Défilé")

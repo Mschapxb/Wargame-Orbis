@@ -37,7 +37,7 @@ Au lancement, un menu permet de :
   d'une pastille de couleur sur le terrain et **comptée à part dans le rapport de
   bataille**. Les boutons `+/-` alimentent le groupe sélectionné.
 - Ajouter/retirer des unités individuellement avec les boutons **+/-**
-- Choisir la **carte** (Prairie, Forêt, Village, Siège)
+- Choisir la **carte** (Prairie, Forêt, Village, Siège, Citadelle, Défilé)
 - Lancer la bataille avec **COMBAT!**
 
 ### Contrôles en bataille
@@ -65,7 +65,8 @@ Au lancement, un menu permet de :
 | **Prairie** | Terrain ouvert, deux crêtes rocheuses dessinent trois couloirs. Favorise la cavalerie et les charges. Crêtes en collines, colline centrale, broussailles sur les flancs. |
 | **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. Bosquets à cœur impénétrable et sous-bois traversable, ruisseau à deux gués. |
 | **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. Bourg sur une butte, jardins, mare. |
-| **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. |
+| **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. Fossé boueux au pied du mur (chaussée devant la porte), glacis derrière les escaliers, palissades inflammables côté assaillant, mur que les machines de guerre peuvent percer. |
+| **Citadelle** | Double enceinte. L'armée 2 défend. Mur extérieur à **deux portes** (fossé, glacis, palissades côté assaillant), **basse-cour** avec maisons, jardins et butte, puis **donjon** à une porte. Quand l'enceinte extérieure est sur le point de tomber, la défense **se replie sur le donjon**. |
 | **Défilé** | Goulet montagneux: chokepoint central, flancs impraticables. Pentes, éboulis, torrent avec pont et gué. |
 
 ### Terrain
@@ -82,12 +83,77 @@ les couleurs. `L` affiche la légende en bataille.
 | **Gué** | ×2 | — | sauvegarde -1; pas de charge |
 | **Pont** | normal | — | passage étroit |
 | **Marais** | ×3 | — | sauvegarde -1; pas de charge |
+| **Décombres** | ×2 | — | tirs reçus: +1 au seuil de toucher (couvert); pas de charge |
+| **Brûlé** | normal | — | — (le bois consumé ne couvre ni ne masque plus rien) |
 
 Une unité fait toujours au moins un pas par round, même en marais.
 
 Les cartes sont larges (~2,6 écrans × 64 cases): les armées marchent un moment
 avant le choc — premier corps-à-corps vers le 7e round en prairie, 9e en forêt et
 au village. Le siège conserve son placement historique.
+
+Hors siège, chaque carte est **symétrique** (la moitié ouest est recopiée à
+l'est) et les deux armées se déploient en reflet exact: aucun camp ne part
+avec plus de couverts. Mesuré sur 300 duels miroir par carte, l'armée de
+gauche gagne 50 % des parties (contre 61 à 68 % auparavant).
+
+Les **obstacles** — rochers, maisons, haies, cœurs de bosquet — sont
+infranchissables et **coupent la ligne de tir**, comme les murs.
+
+### Environnement destructible
+
+Les obstacles de la Prairie (rochers), de la Forêt (cœurs de bosquet) et du
+Village (maisons, haies) sont des **structures** qui ont des points de vie.
+Une maison est une seule structure: on l'entame en frappant n'importe
+laquelle de ses cases, et elle s'effondre d'un bloc.
+
+| Structure | PV | Brûle | Laisse |
+|-----------|----|-------|--------|
+| Maison | 14 | oui (4 rounds) | décombres |
+| Haie | 4 | oui, vite (2 rounds) | brûlé |
+| Bosquet | 6 | oui (3 rounds) | brûlé |
+| Rocher | 16 | non — seule une arme lourde (catapulte) l'entame | décombres |
+| Palissade (siège) | 8 | oui (3 rounds) | décombres |
+| Mur (siège, tronçon de 3 cases) | 24 | non — catapulte (dégâts pleins) ou baliste (moitié) | brèche en décombres |
+
+- **Boule de feu**: entame les structures de sa zone et allume le combustible
+  (une chance sur deux par case). Elle laisse un **cratère permanent**.
+- **Incendie**: une case en feu brûle son occupant (1 dégât par round,
+  sauvegarde normale), ébranle son moral, et sa fumée masque les tirs comme
+  une case de bois. Le feu gagne les cases voisines combustibles, mais ni
+  l'eau, ni les marais, ni les rues ou sentiers ne le transmettent, et au
+  plus 8 nouveaux foyers s'allument par round.
+- **Effondrement**: une maison qui s'écroule blesse les unités collées à ses
+  murs (1d3) dans un nuage de poussière. Elle devient des **décombres**
+  franchissables où l'on se met à couvert.
+- **Machines de guerre**: une baliste ou une catapulte dont la cible est
+  cachée derrière une structure **abat la structure** pour dégager son champ
+  de tir.
+- **Couvert**: une cible postée juste derrière un obstacle (palissade, haie,
+  maison, rocher), du côté du tireur, reçoit +1 au seuil de toucher. C'est ce
+  qui protège l'assaillant des tireurs du rempart, qui voient par-dessus.
+- **Brèches**: quand un tronçon de mur tombe, le chemin de ronde et l'escalier
+  de ces rangées s'écroulent avec lui (les défenseurs qui s'y tenaient
+  chutent: 1d3) et une **entrée** s'ouvre. Tant que la porte tient, la
+  catapulte assaillante vise le tronçon le moins défendu; la baliste, qui
+  perce lentement, seulement quand elle n'a rien d'autre à viser. Dès qu'une
+  brèche s'ouvre, l'assaut y bascule et la défense quitte ses positions pour
+  aller au contact.
+- **Double enceinte (Citadelle)**: seule l'enceinte *active* se défend et
+  s'assaille. Elle tombe quand ses portes sont forcées (ou une brèche ouverte)
+  et qu'au moins 3 assaillants — ou la moitié des vivants — sont passés, ou
+  quand plus aucun défenseur ne tient devant le donjon. Avant cela, dès que
+  les portes faiblissent (≤ 30 % des PV) sous la pression, la défense ouvre le
+  donjon et **se replie**: tireurs et mages vers ses remparts, une
+  **arrière-garde** (un tiers de la mêlée, les plus solides) tient deux
+  rounds devant l'enceinte, le reste rentre; les portes se referment derrière
+  les derniers. Bannière « L'ENCEINTE EXTÉRIEURE EST TOMBÉE ! ».
+- **IA**: les unités fuient les flammes, les replis évitent les cases en feu
+  et leurs abords, et un mage préfère embraser le couvert d'un ennemi plutôt
+  qu'un bois où se tiennent ses propres troupes.
+
+Le fond de carte n'est jamais reconstruit: seules les cases touchées sont
+repeintes, au moment exact de l'action.
 
 Chaque carte est habillée d'un **décor** généré (arbres, buissons, fougères,
 fleurs, rochers, caisses, tonneaux, gravats…) et de taches de sol organiques.
@@ -203,6 +269,7 @@ cache, rotations comprises.
 | **Impacts** | Étincelles, gouttes de sang, poussière ou débris selon le coup; éclairs lumineux en mélange additif |
 | **Morts** | Le token reste debout jusqu'à l'instant du coup fatal, recule sous le choc, chute dans le sens du coup, s'assombrit puis s'efface en laissant une dépouille au sol |
 | **Cartes** | Grain de texture, taches de terrain organiques, décor semé (arbres, buissons, rochers, caisses…), maisons d'un seul tenant, falaises stratifiées, remparts crénelés avec ombre portée, portes qui se fissurent |
+| **Destruction** | Flammes animées et variées, halo qui palpite, braises et colonnes de fumée qui dérivent; maisons au toit percé puis éventré; effondrement dans un nuage de poussière; décombres, sol calciné et souches noires; cratères permanents |
 | **Ambiance** | Ombres de nuages qui dérivent, vignettage des bords de l'écran |
 
 Les décalques au sol (sang, brûlures, dépouilles) s'estompent au bout d'une
@@ -267,11 +334,17 @@ modification de mécanique ne fait pas basculer l'équilibre.
 
 ```bash
 python src/test_terrain.py                  # terrain: règles, cartes, rendu
+python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
+python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental
+python src/test_citadelle.py                # double enceinte: portes par case, bascule, repli, rendu
 python src/test_determinism.py              # une graine rejoue la même bataille
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
 python src/measure_contact.py               # round du premier contact par carte
 python src/bench_balance.py 60              # équilibrage sur 60 graines par affrontement
+python src/bench_maps.py 60                 # équilibrage Village et Défilé
+python src/bench_sides.py 300               # biais de côté: une armée contre son double, par carte
+python src/bench_fire.py 60                 # incendies: part du combustible consumé, durée des batailles
 ```
 
 ### Pathfinding (`battlefield.py`)

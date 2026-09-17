@@ -12,9 +12,11 @@ from unit import Unit
 FAILS = []
 
 
-def run_case(label, a1, a2, w=60, h=40, map_name="Prairie", rounds=40):
+def run_case(label, a1, a2, w=60, h=40, map_name="Prairie", rounds=40, setup=None):
     try:
         b = Battle(a1, a2, w, h, 8, map_name=map_name)
+        if setup is not None:
+            setup(b)
         # Aucune unité ne doit être hors carte ni empilée
         for army in (b.army1, b.army2):
             for u in army:
@@ -84,6 +86,25 @@ run_case("siège attaquants vides", [], sk({"Infanterie régulière": 5}), map_n
 run_case("siège normal", sk({"Infanterie régulière": 6, "Arbaletrier régulier": 3}),
          sk({"Infanterie régulière": 4, "Arbaletrier régulier": 3}), map_name="Siège")
 
+
+def _raze_walls(b):
+    """Tout le mur s'écroule d'emblée: plus que des brèches."""
+    import structures as st
+    bf = b.battlefield
+    for gid, kind in list(bf.structure_kind.items()):
+        if kind == st.WALL:
+            cells = list(bf.structure_members[gid])
+            if st.damage(bf, gid, 999, heavy=True):
+                b._structure_collapsed(gid, kind, cells)
+
+
+run_case("siège où tout le mur tombe", sk({"Infanterie régulière": 6, "Arbaletrier régulier": 3}),
+         sk({"Infanterie régulière": 4, "Arbaletrier régulier": 3}), map_name="Siège",
+         setup=_raze_walls)
+run_case("siège avec catapulte",
+         ul.build_army("Armée Orlandar", [("Fantassin covaliir", 6), ("Catapulte covaliir", 2)]),
+         sk({"Infanterie régulière": 4, "Arbaletrier régulier": 3}), map_name="Siège", rounds=60)
+
 # Groupes: 4 corps, dont un vide de mêlée
 g = []
 for gi, comp in enumerate([{"Infanterie régulière": 6}, {"Arbaletrier régulier": 6},
@@ -100,7 +121,11 @@ for u in large:
     u.size = 3
 run_case("unités size 3", large, sk({"Infanterie régulière": 6}))
 
-for m in ("Prairie", "Forêt", "Village", "Siège", "Défilé"):
+run_case("citadelle sans défenseurs", sk({"Infanterie régulière": 5}), [], map_name="Citadelle")
+run_case("citadelle minuscule", sk({"Infanterie régulière": 4}),
+         sk({"Infanterie régulière": 3}), w=24, h=16, map_name="Citadelle")
+
+for m in ("Prairie", "Forêt", "Village", "Siège", "Défilé", "Citadelle"):
     run_case(f"carte {m}", sk({"Infanterie régulière": 5, "Arbaletrier régulier": 3}),
              ul.build_army("Armée Orlandar", [("Fantassin covaliir", 5), ("Archer covaliir", 3)]),
              map_name=m)

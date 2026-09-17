@@ -2,6 +2,7 @@ import random
 import heapq
 
 import terrain as tr
+import structures as st
 
 
 class Battlefield:
@@ -25,23 +26,39 @@ class Battlefield:
         # Terrain à effets (colline, bois, rivière…): grille parallèle à
         # `grid`. Extrait AVANT siege_data pour la même raison que le décor.
         self.terrain = _raw.pop('terrain', None)
+        # Structures destructibles (maisons, haies, bosquets, rochers):
+        # extraites AVANT siege_data, installées une fois la grille connue.
+        _structures = _raw.pop('structures', None)
 
         # Données de siège
         self.siege_data = _raw
         self.gate_hp = dict(self.siege_data.get('gates', {}))  # {(x,y): hp}
+        self.gate_max_hp = dict(self.gate_hp)
         self.gate_save = self.siege_data.get('gate_save', 7)   # Sauvegarde des portes
         self.walls = set(tuple(w) for w in self.siege_data.get('walls', []))
         self.ramparts = set(tuple(r) for r in self.siege_data.get('ramparts', []))
         self.stairs = set(tuple(s) for s in self.siege_data.get('stairs', []))
-        # Portes ouvertes volontairement par les défenseurs (sortie).
-        # Une porte ouverte est traversable par TOUT le monde (risque assumé).
-        self.gates_open = False
+        # Enceintes, de l'extérieur vers l'intérieur. Le Siège n'en a qu'une
+        # (construite depuis les clés historiques), la Citadelle deux. Seule
+        # l'enceinte ACTIVE se défend et s'assaille; `gate_hp`, `walls`,
+        # `ramparts` décrivent la géométrie physique de toutes.
+        rings = self.siege_data.get('rings')
+        if rings is None and self.siege_data.get('wall_x') is not None:
+            rings = [{'wall_x': self.siege_data['wall_x'], 'gates': list(self.gate_hp.keys())}]
+        self.rings = [{'wall_x': r['wall_x'], 'gates': [tuple(g) for g in r['gates']]}
+                      for r in (rings or [])]
+        self.active_ring = 0
+        # Portes ouvertes volontairement par les défenseurs (sortie, repli).
+        # Ouvertes PAR CASE: ouvrir le donjon n'ouvre pas l'enceinte
+        # extérieure. Une porte ouverte est traversable par TOUT le monde.
+        self.open_gate_cells = set()
         
         if grid is not None:
             self.grid = grid
         else:
             self.grid = [[0] * height for _ in range(width)]
             self.add_obstacles(obstacle_count)
+        st.attach(self, _structures)
 
     def add_obstacles(self, count):
         placed = 0
@@ -81,26 +98,90 @@ class Battlefield:
         if cell == 5:  # Escalier: marchable
             return True
         if cell == 3:  # Porte: traversable si détruite (hp <= 0) ou ouverte
-            return self.gates_open or self.gate_hp.get((x, y), 0) <= 0
+            return (x, y) in self.open_gate_cells or self.gate_hp.get((x, y), 0) <= 0
         return False  # 1=obstacle, 2=mur
 
+    # ─── Enceintes ───
+
+    @property
+    def is_siege(self):
+        return bool(self.rings)
+
+    @property
+    def wall_x(self):
+        """Colonne du mur de l'enceinte active (None hors siège)."""
+        return self.rings[self.active_ring]['wall_x'] if self.rings else None
+
+    @property
+    def has_next_ring(self):
+        return self.active_ring + 1 < len(self.rings)
+
+    @property
+    def active_gates(self):
+        """{position: PV} des portes de l'enceinte active."""
+        if not self.rings:
+            return {}
+        return {g: self.gate_hp.get(g, 0) for g in self.rings[self.active_ring]['gates']}
+
+    @property
+    def active_breaches(self):
+        """Brèches ouvertes dans le mur de l'enceinte active."""
+        wx = self.wall_x
+        return {b for b in getattr(self, 'breaches', ()) if b[0] == wx}
+
+    @property
+    def gates_open(self):
+        """Les portes de l'enceinte active sont-elles ouvertes ?"""
+        return bool(self.rings) and any(
+            g in self.open_gate_cells for g in self.rings[self.active_ring]['gates'])
+
+    @gates_open.setter
+    def gates_open(self, value):
+        if value:
+            self.open_gates()
+        elif self.rings:
+            self.open_gate_cells.difference_update(self.rings[self.active_ring]['gates'])
+
     def open_gates(self):
-        """Les défenseurs ouvrent les portes (sortie). Tout le monde passe."""
-        self.gates_open = True
+        """Les défenseurs ouvrent les portes de l'enceinte active (sortie).
+        Tout le monde passe."""
+        if self.rings:
+            self.open_ring_gates(self.active_ring)
+
+    def open_ring_gates(self, index):
+        """Ouvre les portes d'une enceinte donnée (repli vers le donjon)."""
+        if 0 <= index < len(self.rings):
+            self.open_gate_cells.update(self.rings[index]['gates'])
 
     def close_gates(self):
-        """Referme les portes — seulement si aucune unité ne se trouve
-        sur une case porte (on ne broie personne dans les battants)."""
-        for pos in self.gate_hp:
+        """Referme les portes de l'enceinte active — seulement si aucune unité
+        ne se trouve sur une case porte (on ne broie personne dans les
+        battants)."""
+        if not self.rings:
+            return True
+        gates = self.rings[self.active_ring]['gates']
+        for pos in gates:
             if pos in self.units:
                 return False
-        self.gates_open = False
+        self.open_gate_cells.difference_update(gates)
+        return True
+
+    def advance_ring(self):
+        """L'enceinte active est tombée: ses portes encore debout sont
+        forcées, l'enceinte suivante devient la ligne de défense."""
+        if not self.has_next_ring:
+            return False
+        for g in self.rings[self.active_ring]['gates']:
+            if self.gate_hp.get(g, 0) > 0:
+                self.gate_hp[g] = 0
+        self.active_ring += 1
         return True
 
     def has_line_of_fire(self, shooter, target):
         """Ligne de vue pour les tirs (armes portée >= 4).
 
-        Les murs et les portes fermées intactes BLOQUENT les tirs.
+        Les obstacles (rochers, maisons, haies, cœurs de bosquet), les murs
+        et les portes fermées intactes BLOQUENT les tirs.
         Exception: une unité sur un rempart est surélevée — elle peut tirer
         par-dessus le mur, et peut être visée par-dessus le mur (c'est tout
         l'intérêt et le risque d'être sur le rempart).
@@ -108,19 +189,16 @@ class Battlefield:
         """
         sx, sy = shooter.position
         tx, ty = target.position
-        if not self.walls and not self.gate_hp:
-            if self.terrain is None:
-                return True  # Ni fortifications ni terrain sur cette carte
-            return not tr.blocks_line(self, sx, sy, tx, ty)
-        if self.is_rampart(sx, sy) or self.is_rampart(tx, ty):
+        if (self.walls or self.gate_hp) and (self.is_rampart(sx, sy)
+                                             or self.is_rampart(tx, ty)):
             return True
         if not self._los_clear(sx, sy, tx, ty):
             return False
         return self.terrain is None or not tr.blocks_line(self, sx, sy, tx, ty)
 
     def _los_clear(self, x0, y0, x1, y1):
-        """Trace de Bresenham: False si un mur (2) ou une porte fermée
-        intacte (3) se trouve entre les deux points (exclus)."""
+        """Trace de Bresenham: False si un obstacle (1), un mur (2) ou une
+        porte fermée intacte (3) se trouve entre les deux points (exclus)."""
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
         step_x = 1 if x1 > x0 else -1
@@ -129,13 +207,13 @@ class Battlefield:
         x, y = x0, y0
         grid = self.grid
         gate_hp = self.gate_hp
-        gates_open = self.gates_open
+        open_cells = self.open_gate_cells
         while True:
             if (x != x0 or y != y0) and (x != x1 or y != y1):
                 c = grid[x][y]
-                if c == 2:
+                if c == 1 or c == 2:
                     return False
-                if c == 3 and not gates_open and gate_hp.get((x, y), 0) > 0:
+                if c == 3 and (x, y) not in open_cells and gate_hp.get((x, y), 0) > 0:
                     return False
             if x == x1 and y == y1:
                 return True
@@ -155,6 +233,20 @@ class Battlefield:
         """Retourne True si la case est un rempart marchable."""
         return (x, y) in self.ramparts
     
+    def on_active_rampart(self, x, y, unit=None, battle=None):
+        """Rempart de l'enceinte ACTIVE tenu par un DÉFENSEUR. Les anciens
+        remparts d'une enceinte tombée ne sont plus qu'un sol surélevé, et un
+        assaillant monté sur le chemin de ronde n'a aucune raison de s'y
+        figer: dans les deux cas, on ne s'y cramponne pas."""
+        wx = self.wall_x
+        if not ((x, y) in self.ramparts and wx is not None and wx < x <= wx + 2):
+            return False
+        if unit is not None and battle is not None:
+            attackers = getattr(battle, '_army1_ids', None)
+            if attackers is not None and id(unit) in attackers:
+                return False
+        return True
+
     def is_gate(self, x, y):
         """Retourne True si la case est une porte (intacte)."""
         return (0 <= x < self.width and 0 <= y < self.height 
@@ -268,7 +360,7 @@ class Battlefield:
         width = self.width
         height = self.height
         gate_hp = self.gate_hp
-        gates_open = self.gates_open
+        open_cells = self.open_gate_cells
         reserved = reserved_positions
         # Lu une seule fois ici, valable pour tout cet appel (le terrain ne
         # change jamais en cours de bataille). Pas de cache d'instance: si
@@ -277,6 +369,9 @@ class Battlefield:
         terr = self.terrain
         _move_elev = tr.MOVE_ELEV
         _uphill = tr.UPHILL_FACTOR
+        # Cases en feu: franchissables mais évitées (cf. terrain.step_cost)
+        fires = getattr(self, 'fires', None)
+        _fire_factor = tr.FIRE_MOVE_FACTOR
         
         open_set = []
         h0 = max(abs(gx - sx), abs(gy - sy))
@@ -337,7 +432,7 @@ class Battlefield:
                 cell = grid[nx][ny]
                 if cell == 1 or cell == 2:
                     continue
-                if cell == 3 and not gates_open and gate_hp.get((nx, ny), 0) > 0:
+                if cell == 3 and (nx, ny) not in open_cells and gate_hp.get((nx, ny), 0) > 0:
                     continue
 
                 neighbor = (nx, ny)
@@ -352,6 +447,8 @@ class Battlefield:
                     if n_elevated and not cur_elevated:
                         mc *= _uphill
                     base_cost *= mc
+                if fires and neighbor in fires:
+                    base_cost *= _fire_factor
 
                 if neighbor in ally_positions and neighbor != goal:
                     new_g = g + base_cost + ALLY_PENALTY
@@ -395,10 +492,10 @@ class Battlefield:
             return None
         
         # Siège: ne pas viser derrière le mur si portes intactes
-        wall_x = self.siege_data.get('wall_x') if self.siege_data else None
+        wall_x = self.wall_x
         unit_is_attacker = wall_x is not None and unit_pos[0] < wall_x
-        all_gates_open = (self.gates_open or
-                          (wall_x is not None and all(hp <= 0 for hp in self.gate_hp.values()))) if self.gate_hp else True
+        all_gates_open = (self.gates_open or bool(self.active_breaches) or
+                          (wall_x is not None and all(hp <= 0 for hp in self.active_gates.values()))) if self.gate_hp else True
         
         # Lane de l'unité pour l'étalement
         from ai_commander import get_lane_offset
@@ -434,7 +531,7 @@ class Battlefield:
                 cell = grid[px][py]
                 if cell == 1 or cell == 2:
                     continue
-                if cell == 3 and not self.gates_open and gate_hp_dict.get((px, py), 0) > 0:
+                if cell == 3 and (px, py) not in self.open_gate_cells and gate_hp_dict.get((px, py), 0) > 0:
                     continue
                 if terr is not None and tr.MOVE[terr[px][py]] is None:
                     continue
@@ -545,10 +642,14 @@ class Battlefield:
                 return None, t
             if unit.vitesse <= 0:
                 return None, None  # Immobile et rien d'atteignable: tenir, sans visée
+            _o = getattr(unit, '_tactical_order', None)
+            if _o is not None and _o.order_type == "demolish":
+                return None, None  # Elle abat ce qui masque sa cible: en place
             # Artillerie mobile sans cible visible: si elle est sur un rempart
             # en défense, elle y reste (descendre seule = suicide); sinon elle
             # se repositionne lentement via la logique normale ci-dessous.
-            if self.gate_hp and self.is_rampart(ux_a, uy_a):
+            if (self.gate_hp and self.on_active_rampart(ux_a, uy_a, unit, battle)
+                    and not (_o is not None and _o.order_type == "withdraw")):
                 return None, None
         
         enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
@@ -556,7 +657,10 @@ class Battlefield:
             return None, None
         
         # === Siège: tireurs/mages sur rempart ne bougent JAMAIS ===
-        if self.gate_hp and self.is_rampart(*unit.position):
+        # (sauf ordre de repli vers l'enceinte suivante)
+        _wd = getattr(unit, '_tactical_order', None)
+        if (self.gate_hp and self.on_active_rampart(*unit.position, unit, battle)
+                and not (_wd is not None and _wd.order_type == "withdraw")):
             if unit._max_range >= 4 or bool(unit.spells):
                 ux, uy = unit.position
                 in_range = [e for e in enemies
@@ -607,7 +711,7 @@ class Battlefield:
                 
                 # Exception siège: CaC séparé de sa cible par le mur (dans un sens
                 # comme dans l'autre) → la distance Manhattan ment, continuer le pathfinding
-                wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
+                wall_x_s = self.wall_x
                 if (wall_x_s and unit._max_range < 4
                         and ((ux < wall_x_s) != (best_target.position[0] < wall_x_s))
                         and not self.gates_open):
@@ -673,7 +777,7 @@ class Battlefield:
         
         if current_dist <= tr.effective_range(self, unit, target):
             # Siège: vérifier qu'un mur ne bloque pas le CaC
-            wall_x_s = self.siege_data.get('wall_x') if self.siege_data else None
+            wall_x_s = self.wall_x
             if wall_x_s and unit._max_range < 4 and unit.position[0] < wall_x_s and target.position[0] >= wall_x_s:
                 # CaC côté attaquant, cible derrière le mur → pas vraiment à portée
                 pass  # Continue vers le pathfinding porte
@@ -682,12 +786,12 @@ class Battlefield:
         
         # Siège: défenseurs TIREURS sur rempart restent TOUJOURS en place
         # Le rempart donne un avantage défensif trop précieux pour l'abandonner
-        if self.is_rampart(*unit.position) and self.gate_hp:
+        if self.on_active_rampart(*unit.position, unit, battle) and self.gate_hp:
             if unit._max_range >= 4 or bool(unit.spells):
                 # Tireur/mage sur rempart: ne jamais bouger
                 return None, target
             # CaC sur rempart: rester tant que portes intactes ET fermées
-            intact_gates = any(hp > 0 for hp in self.gate_hp.values()) and not self.gates_open
+            intact_gates = any(hp > 0 for hp in self.active_gates.values()) and not self.gates_open
             if intact_gates:
                 return None, target
         
@@ -700,7 +804,7 @@ class Battlefield:
         goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
         
         # Siège: si pas de position d'attaque valide côté attaquant, aller vers la porte
-        wall_x_siege = self.siege_data.get('wall_x') if self.siege_data else None
+        wall_x_siege = self.wall_x
         if goal is None and wall_x_siege and unit.position[0] < wall_x_siege:
             # Aller directement vers la porte
             pass  # Tombe dans le block siège ci-dessous
@@ -719,16 +823,19 @@ class Battlefield:
 
         # Siège: pas de chemin direct → passer par une porte
         if self.gate_hp:
-            wall_x = self.siege_data.get('wall_x', 0)
+            wall_x = self.wall_x
+            gates_now = self.active_gates
             ux = unit.position[0]
             
             # Unité côté attaquant (à gauche du mur)?
             if ux < wall_x:
                 # Chercher une porte franchissable (détruite OU ouverte)
                 if self.gates_open:
-                    destroyed_gates = list(self.gate_hp.keys())
+                    destroyed_gates = list(gates_now.keys())
                 else:
-                    destroyed_gates = [pos for pos, hp in self.gate_hp.items() if hp <= 0]
+                    destroyed_gates = [pos for pos, hp in gates_now.items() if hp <= 0]
+                # Une brèche est une porte qui ne se referme pas
+                destroyed_gates += sorted(self.active_breaches)
                 if destroyed_gates:
                     # Aller vers la porte désignée par le commandant (axe
                     # d'assaut choisi), à défaut la plus proche
@@ -744,7 +851,7 @@ class Battlefield:
                                 return candidate, target
                 
                 # Sinon aller adjacent à la porte intacte la plus proche (pour la détruire au CaC)
-                intact_gates = [pos for pos, hp in self.gate_hp.items() if hp > 0]
+                intact_gates = [pos for pos, hp in gates_now.items() if hp > 0]
                 if intact_gates:
                     nearest_gate = self._preferred_gate(unit, intact_gates)
                     gate_goal = self._find_adjacent_free(nearest_gate, unit, reserved_positions, side="left", wall_x=wall_x)
@@ -761,7 +868,7 @@ class Battlefield:
             
             # Longer le mur vers la porte la plus proche (ou lane)
             if ux < wall_x:
-                all_gates = list(self.gate_hp.keys())
+                all_gates = list(gates_now.keys())
                 if all_gates:
                     from ai_commander import get_lane_offset
                     lane_y = get_lane_offset(unit, self)

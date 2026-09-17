@@ -55,7 +55,10 @@ def expected_damage(attacker, target, dist=None, battlefield=None):
         anti_mod = -1
     extra_perf = 0
     if battlefield is not None and battlefield.is_rampart(*target.position):
-        extra_perf = -2  # Le rempart améliore la sauvegarde du défenseur
+        # Le rempart améliore la sauvegarde du défenseur de 2 crans, comme
+        # dans Unit.perform_attacks (seuil - 2). Ici le seuil vaut
+        # sauvegarde - perforation - extra_perf: il faut donc +2, pas -2.
+        extra_perf = 2
     for arme in attacker.armes:
         ranged = arme.porte >= 4
         if dist is not None:
@@ -123,7 +126,10 @@ class ThreatField:
     (quelques dizaines de cases candidates).
     """
 
-    __slots__ = ['enemies', 'battlefield', '_cache', '_melee', '_ranged']
+    __slots__ = ['enemies', 'battlefield', '_cache', '_melee', '_ranged', '_fires']
+
+    FIRE_THREAT = 1.5          # case en feu
+    FIRE_NEAR_THREAT = 0.5     # case voisine d'un foyer (chaleur, effondrement)
 
     def __init__(self, enemies, battlefield):
         self.battlefield = battlefield
@@ -131,6 +137,7 @@ class ThreatField:
         self._cache = {}
         self._melee = []
         self._ranged = []
+        self._fires = getattr(battlefield, 'fires', None) or {}
         for e in self.enemies:
             mp = sum(_avg_roll(a) * a.nb_attaque * p_d6_ge(a.toucher)
                      for a in e.armes if a.porte < 4)
@@ -163,6 +170,12 @@ class ThreatField:
             d = abs(ex - px) + abs(ey - py)
             if d <= span:
                 total += power * (0.55 + 0.45 * (1.0 - d / max(1, span)))
+        fires = self._fires
+        if fires:
+            if pos in fires:
+                total += self.FIRE_THREAT
+            elif any((px + dx, py + dy) in fires for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                total += self.FIRE_NEAR_THREAT
         self._cache[pos] = total
         return total
 

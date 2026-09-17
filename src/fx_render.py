@@ -40,10 +40,16 @@ class FxRenderer:
         self._snap_cache = {}
         self.clouds = []
         self._world = (1, 1)
+        # Instant du round en cours (fixé par le renderer): les flammes et
+        # les effondrements n'apparaissent qu'au moment de l'action.
+        self.round_frame = 10 ** 6
+        self._view = None
+        self._collapses_seen = set()
 
     def reset(self, world_w, world_h):
         self.particles.clear()
         self.decals.clear()
+        self._collapses_seen.clear()
         self._world = (world_w, world_h)
         rng = random.Random(99)
         self.clouds = [[rng.uniform(0, world_w), rng.uniform(0, world_h),
@@ -123,7 +129,8 @@ class FxRenderer:
                 self._spray(x, y, 34, r * 0.16, 34, 3.5, (255, 160, 50), 'ember', drag=0.9, grav=-0.02)
                 self._spray(x, y, 12, r * 0.05, 70, r * 0.30, (150, 142, 132), 'smoke', drag=0.96)
                 self._spray(x, y, 10, r * 0.14, 40, 3, (70, 50, 35), 'debris', grav=0.12)
-                self.add_decal(x, y, "scorch", r * 0.8, int(x + y * 3))
+                # La brûlure au sol est désormais un cratère permanent, cuit
+                # dans la carte par le renderer (battle.pending_craters).
 
         for fx in ve.get('wall_effects', ()):
             if not fx.spawned and fx.is_visible():
@@ -187,6 +194,51 @@ class FxRenderer:
                 fx_, fy_ = math.cos(d.fall_angle), math.sin(d.fall_angle)
                 r = max(d.cells) * cs * 0.42
                 self.add_decal(x + fx_ * r * 0.5, y + fy_ * r * 0.5, "corpse", r, d.seed)
+
+        # ── Effondrements: nuage de poussière qui s'étend, débris projetés ──
+        rf = self.round_frame
+        for (d, x, y, size, kind) in ve.get('collapses', ()):
+            key = (battle.round, d, int(x), int(y))
+            if rf < d or key in self._collapses_seen:
+                continue
+            self._collapses_seen.add(key)
+            if kind in ("haie", "bosquet"):
+                self._spray(x, y, 12, cs * 0.06, 90, cs * 0.5, (70, 64, 58), 'smoke', drag=0.96, grav=-0.01)
+                self._spray(x, y, 14, cs * 0.10, 40, 3, (255, 140, 40), 'ember', drag=0.93, grav=-0.03)
+            else:
+                n = min(40, 14 + int(size / max(1, cs)) * 6)
+                self._spray(x, y, n, cs * 0.16, 80, size * 0.35, (158, 146, 124), 'dust', drag=0.94)
+                self._spray(x, y, n // 2, cs * 0.22, 46, max(2, cs // 8), (92, 76, 60), 'debris', grav=0.14)
+        if len(self._collapses_seen) > 400:
+            self._collapses_seen.clear()
+
+        # ── Incendies: fumée qui dérive avec les nuages, braises qui montent ──
+        fires = getattr(battle.battlefield, 'fires', None)
+        if fires:
+            reveal = getattr(battle, 'fire_reveal', {})
+            view = self._view
+            for (fx_, fy_) in fires:
+                if rf < reveal.get((fx_, fy_), 0):
+                    continue
+                x = fx_ * cs + cs / 2
+                y = fy_ * cs + cs / 2
+                if view is not None and not (view[0] < x < view[2] and view[1] < y < view[3]):
+                    continue
+                if rng.random() < 0.04:
+                    # Fumée claire (sur un sol sombre, une fumée grise foncée
+                    # ne se voyait pas) et en grosses volutes peu nombreuses:
+                    # chaque volute coûte un blit alpha, c'est le poste le
+                    # plus cher du rendu d'un incendie.
+                    grey = rng.randint(118, 150)
+                    self._emit(x + rng.uniform(-cs * 0.3, cs * 0.3), y - cs * 0.5,
+                               rng.uniform(0.18, 0.4), -rng.uniform(0.35, 0.7),
+                               rng.randint(80, 110), cs * rng.uniform(0.6, 0.9),
+                               (grey, grey - 6, grey - 12), 'smoke', 0.985)
+                if rng.random() < 0.16:
+                    self._emit(x + rng.uniform(-cs * 0.35, cs * 0.35), y,
+                               rng.uniform(-0.2, 0.3), -rng.uniform(0.6, 1.3),
+                               rng.randint(20, 36), rng.uniform(1.8, 3.0),
+                               (255, 150, 40), 'ember', 0.95, -0.01)
 
         # Physique des particules
         alive = []
@@ -296,6 +348,40 @@ class FxRenderer:
             x, y = d.to_pos
             if vx0 < x < vx1 and vy0 < y < vy1:
                 self._draw_death(screen, d, ox, oy, move_progress)
+
+    # ───────────────────────── incendies ─────────────────────────
+
+    def draw_fires(self, screen, battle, ox, oy, view_w, view_h, now):
+        """Flammes animées par case en feu, halo additif qui palpite.
+        Dessinées sous les unités: les combattants restent lisibles."""
+        cs = self.cs
+        vx0, vy0 = -ox - cs * 2, -oy - cs * 2
+        vx1, vy1 = vx0 + view_w + cs * 4, vy0 + view_h + cs * 4
+        self._view = (vx0, vy0, vx1, vy1)
+        fires = getattr(battle.battlefield, 'fires', None)
+        if not fires:
+            return
+        reveal = getattr(battle, 'fire_reveal', {})
+        rf = self.round_frame
+        for (fx_, fy_) in sorted(fires):
+            if rf < reveal.get((fx_, fy_), 0):
+                continue
+            x = fx_ * cs + cs / 2
+            y = fy_ * cs + cs / 2
+            if not (vx0 < x < vx1 and vy0 < y < vy1):
+                continue
+            seed = (fx_ * 7 + fy_ * 13) & 0xFF
+            flick = (math.sin(now * 0.013 + seed) + 1.0) * 0.5
+            g = S.glow(int(cs * 0.95), (255, 110, 30), 4 + int(3 * flick))
+            screen.blit(g, (x - g.get_width() / 2 + ox, y - g.get_height() / 2 + oy),
+                        special_flags=ADD)
+            frames = S.flame_frames(cs, 8, seed % 3)
+            img = frames[(now // (60 + seed % 25) + seed) % len(frames)]
+            # Décalage propre à la case: pas de rangée de flammes au cordeau
+            jx = ((seed >> 2) % 5 - 2) * cs * 0.08
+            jy = ((seed >> 4) % 3) * cs * 0.06
+            screen.blit(img, (x + jx - img.get_width() / 2 + ox,
+                              y + jy + cs * 0.42 - img.get_height() + oy))
 
     # ───────────────────────── couche surplomb ─────────────────────────
 

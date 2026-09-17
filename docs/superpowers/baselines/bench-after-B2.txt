@@ -1,0 +1,21 @@
+Melee vs Archers       A1=41 A2=19 nul= 0 | rounds moy= 13.1 | surv A1= 4.3 A2= 2.3
+Mixte miroir           A1=35 A2=25 nul= 0 | rounds moy= 10.9 | surv A1= 2.5 A2= 2.0
+Skald vs Orlandar      A1=59 A2= 1 nul= 0 | rounds moy= 12.7 | surv A1= 6.6 A2= 0.1
+Cavalerie vs Tir       A1=47 A2=13 nul= 0 | rounds moy= 11.4 | surv A1= 5.0 A2= 1.3
+Siege                  A1=16 A2=44 nul= 0 | rounds moy= 19.7 | surv A1= 1.9 A2= 4.7
+Siege baliste          A1=40 A2=18 nul= 2 | rounds moy= 24.6 | surv A1= 3.8 A2= 1.8
+Siege Orlandar         A1=14 A2=46 nul= 0 | rounds moy= 18.7 | surv A1= 1.6 A2= 4.2
+Siege catapulte        A1=25 A2=35 nul= 0 | rounds moy= 19.4 | surv A1= 2.9 A2= 3.3
+Foret mixte            A1=27 A2=33 nul= 0 | rounds moy= 14.3 | surv A1= 2.7 A2= 3.8
+(42.0s)
+Village mixte          A1=40 A2=20 nul= 0 | rounds moy= 15.0 | surv A1= 4.1 A2= 2.0
+Defile mixte           A1=32 A2=23 nul= 5 | rounds moy= 26.2 | surv A1= 2.9 A2= 2.8
+(11.2s)
+Prairie    A1=151 A2=143 nul=  6 | gauche gagne  51.4 %
+Forêt      A1=154 A2=144 nul=  2 | gauche gagne  51.7 %
+Village    A1=154 A2=145 nul=  1 | gauche gagne  51.5 %
+Défilé     A1=144 A2=146 nul= 10 | gauche gagne  49.7 %
+(86.5s)
+Forêt    A1=29 A2=31 nul= 0 | combustible consumé moy=  7.0 % max= 30.0 % | feux simultanés max=  9 | destructions=  6 | rounds moy=  8.4 | >90 rounds: 0
+Village  A1=29 A2=31 nul= 0 | combustible consumé moy=  7.3 % max= 30.6 % | feux simultanés max= 31 | destructions= 49 | rounds moy=  9.2 | >90 rounds: 0
+(4.0s)

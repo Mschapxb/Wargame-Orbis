@@ -2,6 +2,7 @@ import copy
 import math
 import random
 
+import structures as st
 import tactics
 import terrain as tr
 
@@ -102,6 +103,13 @@ class Battle:
         # Cache du rapport de forces (une evaluation par round suffit)
         self._force_cache = (0.0, 0.0)
         self._force_cache_round = -1
+        # Destruction → rendu, horodatés dans le round comme les autres effets:
+        # repeints de cases [(délai, {cases})], instant d'apparition des
+        # flammes {case: délai}, cratères permanents [(délai, x, y, rayon)].
+        # Le renderer les consomme; simulate_round les remet à zéro.
+        self.pending_repaints = []
+        self.fire_reveal = {}
+        self.pending_craters = []
 
         # Initialiser les positions d'animation (pas de transition au premier frame)
         for u in self.army1 + self.army2:
@@ -201,6 +209,9 @@ class Battle:
             elif t == 'wall':
                 self.visual_effects.setdefault('wall_effects', []).append(
                     WallEffect(evt['positions'], cs, 25, delay=d))
+            elif t == 'crater':
+                px = to_px(evt['at_grid'])
+                self.pending_craters.append((d, px[0], px[1], evt['radius_cells'] * cs))
 
     def log_event(self, text, color=(230, 220, 180), importance=1):
         """Fil d'événements du round (le HUD y puise ses bandeaux)."""
@@ -411,7 +422,7 @@ class Battle:
         # La forêt et le village imposent le leur: on se déploie dans les
         # champs, juste à l'extérieur du terrain central. Le siège garde son
         # placement historique.
-        if self.map_name == "Siège":
+        if bf.is_siege:
             gap = 12
         elif bf.deploy_gap:
             gap = int(bf.deploy_gap)
@@ -423,8 +434,9 @@ class Battle:
         a1_front = mid_x - gap
         deploy_contingents(self.army1, a1_front, -1)
         
-        if self.map_name == "Siège":
-            wall_x = bf.siege_data.get('wall_x', bf.width * 2 // 3)
+        if bf.is_siege:
+            # Les défenseurs se déploient sur l'enceinte EXTÉRIEURE
+            wall_x = bf.rings[0]['wall_x']
             defender_min_x = wall_x + 1
             gate_positions = bf.siege_data.get('gate_positions', [])
             gate_center = gate_positions[0] if gate_positions else center_y
@@ -562,7 +574,9 @@ class Battle:
             # canarder sans pouvoir répliquer — y compris si leurs tireurs
             # meurent en cours de partie.
         else:
-            a2_front = mid_x + gap
+            # Reflet exact de l'armée 1 (le terrain est mis en miroir par
+            # x → width-1-x): `mid_x + gap` la plaçait une colonne plus loin.
+            a2_front = bf.width - 1 - a1_front
             deploy_contingents(self.army2, a2_front, +1)
     
     def _place_column(self, units, x_col, center_y, bf, min_x=0):
@@ -810,9 +824,9 @@ class Battle:
             unit.morale_bonus += self._resolve_bonus(unit)
 
         # --- 0b) Siège: défenseurs derrière le mur intact → +1 bravoure ---
-        if self.map_name == "Siège":
-            wall_x = self.battlefield.siege_data.get('wall_x', 0)
-            has_intact_gates = (any(hp > 0 for hp in self.battlefield.gate_hp.values())
+        if self.battlefield.is_siege:
+            wall_x = self.battlefield.wall_x
+            has_intact_gates = (any(hp > 0 for hp in self.battlefield.active_gates.values())
                                 and not self.battlefield.gates_open)
             if has_intact_gates:
                 for unit in self.army2:
@@ -1216,7 +1230,8 @@ class Battle:
         bf = self.battlefield
         if not bf.gate_hp or bf.gates_open:
             return False
-        if not any(h > 0 for h in bf.gate_hp.values()):
+        gates_now = bf.active_gates
+        if not any(h > 0 for h in gates_now.values()):
             return False
         if not unit.is_alive or unit.fleeing:
             return False
@@ -1225,7 +1240,7 @@ class Battle:
 
         ux, uy = unit.position
         best_gate, best_gate_dist = None, 999
-        for gpos, ghp in bf.gate_hp.items():
+        for gpos, ghp in gates_now.items():
             if ghp <= 0:
                 continue
             d = bf.manhattan_distance((ux, uy), gpos)
@@ -1279,6 +1294,183 @@ class Battle:
             return True
         return False
 
+
+    # ─── Destruction: structures, effondrements, incendie ───
+
+    _COLLAPSE_LABELS = {
+        st.HOUSE: ("Une maison s'effondre !", (255, 170, 90), 2),
+        st.PALISADE: ("Une palissade cède !", (230, 170, 100), 2),
+        st.ROCK: ("Un rocher vole en éclats !", (200, 200, 190), 2),
+        st.HEDGE: ("Une haie part en fumée", (200, 150, 90), 1),
+        st.GROVE: ("Un bosquet est réduit en cendres", (200, 140, 80), 1),
+        st.WALL: ("BRÈCHE DANS LE MUR !", (255, 120, 60), 3),
+    }
+
+    def _flush_structure_changes(self):
+        """Horodate ce que la destruction a changé depuis le dernier appel:
+        le rendu repeint et allume au moment de l'action, pas en début de
+        round."""
+        bf = self.battlefield
+        now = FX_CLOCK.current_delay
+        if bf.dirty_cells:
+            self.pending_repaints.append((now, set(bf.dirty_cells)))
+            bf.dirty_cells.clear()
+        for c in bf.fires:
+            if c not in self.fire_reveal:
+                self.fire_reveal[c] = now
+        for c in [c for c in self.fire_reveal if c not in bf.fires]:
+            del self.fire_reveal[c]
+
+    def _structure_collapsed(self, gid, kind, cells):
+        """Conséquences d'un effondrement: blessures autour d'une maison,
+        journal, poussière et onde de choc."""
+        bf = self.battlefield
+        cset = set(cells)
+        if kind == st.HOUSE:
+            hit = set()
+            for (x, y) in cells:
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        u = bf.units.get((x + dx, y + dy))
+                        if u is not None and u.is_alive and (x + dx, y + dy) not in cset:
+                            hit.add(u)
+            for u in sorted(hit, key=lambda u: u.uid):
+                if random.randint(1, 6) >= u.sauvegarde:
+                    u.floating_texts.append(FloatingText("Esquive!", (200, 200, 160)))
+                    continue
+                u.take_damage(random.randint(1, 3))
+                u.floating_texts.append(FloatingText("Écrasé!", (255, 150, 90), 50))
+        elif kind == st.WALL:
+            # Les défenseurs du chemin de ronde chutent avec lui
+            fallen = set()
+            for (x, y) in cells:
+                for dx in (1, 2, 3):
+                    u = bf.units.get((x + dx, y))
+                    if u is not None and u.is_alive:
+                        fallen.add(u)
+            for u in sorted(fallen, key=lambda u: u.uid):
+                u._on_wall = False
+                if random.randint(1, 6) >= u.sauvegarde:
+                    continue
+                u.take_damage(random.randint(1, 3))
+                u.floating_texts.append(FloatingText("Chute!", (255, 150, 90), 50))
+        text, color, importance = self._COLLAPSE_LABELS.get(
+            kind, ("Effondrement", (220, 200, 160), 1))
+        self.log_event(text, color, importance)
+        cs = self.cell_size
+        xs = [c[0] for c in cells]
+        ys = [c[1] for c in cells]
+        cx = (min(xs) + max(xs) + 1) * cs / 2
+        cy = (min(ys) + max(ys) + 1) * cs / 2
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) + 1
+        d = FX_CLOCK.current_delay
+        if kind in (st.HOUSE, st.PALISADE, st.ROCK, st.WALL):
+            self.visual_effects.setdefault('shockwaves', []).append(
+                ShockWave((cx, cy), cs * (span + 1), (230, 210, 170), 30, delay=d))
+        for (x, y) in cells[::max(1, len(cells) // 4)]:
+            self.visual_effects.setdefault('impacts', []).append(
+                ImpactBurst((x * cs + cs // 2, y * cs + cs // 2), (200, 180, 140), 1.6,
+                            _FX_RNG.uniform(0, math.tau), 20, delay=d, kind="gate"))
+        self.visual_effects.setdefault('collapses', []).append((d, cx, cy, span * cs, kind))
+
+    def _attack_structure(self, unit):
+        """Machine de guerre sous ordre `demolish`: elle tire sur la
+        structure qui masque sa cible. Résolution calquée sur _attack_gate
+        (cible immobile: pas de jet de toucher)."""
+        order = getattr(unit, '_tactical_order', None)
+        if order is None or order.order_type != "demolish" or order.target_pos is None:
+            return False
+        if not unit.is_alive or unit.fleeing:
+            return False
+        bf = self.battlefield
+        tx, ty = order.target_pos
+        gid = st.group_at(bf, tx, ty)
+        if gid is None:
+            return False
+        kind = bf.structure_kind[gid]
+        ux, uy = unit.position
+        dist = abs(ux - tx) + abs(uy - ty)
+        save = st.KINDS[kind]['save']
+        total, fired = 0, False
+        events = []
+        for arme in unit.armes:
+            if arme.porte < 4 or dist > arme.porte:
+                continue
+            factor = st.weapon_factor(kind, arme)
+            if factor <= 0:
+                continue
+            fired = True
+            for _ in range(arme.nb_attaque):
+                events.append({'type': 'arrow', 'from_grid': unit.position,
+                               'to_grid': (tx, ty), 'proj': 'ballista', 'at': 0})
+                if random.randint(1, 6) >= min(7, save - arme.perforation):
+                    continue
+                total += int(max(1, arme.lancer_degats()) * factor)
+        if not fired:
+            return False
+        base = FX_CLOCK.current_delay
+        self._apply_combat_events(events)
+        FX_CLOCK.at(base + 18)
+        if total > 0:
+            self._apply_combat_events([{'type': 'impact', 'at_grid': (tx, ty),
+                                        'from_grid': unit.position, 'power': 1.6,
+                                        'ranged': True, 'fx': 'gate', 'at': 0}])
+            cells = list(bf.structure_members[gid])
+            unit.floating_texts.append(FloatingText(f"-{total} {kind}", (220, 170, 90), 40))
+            if st.damage(bf, gid, total, heavy=True):
+                self._structure_collapsed(gid, kind, cells)
+        else:
+            unit.floating_texts.append(FloatingText("Tient bon!", (170, 160, 130), 30))
+        self._flush_structure_changes()
+        FX_CLOCK.at(base)
+        return True
+
+    def _check_ring_fall(self):
+        """Chute de l'enceinte active (s'il en reste une derrière):
+          (a) ses portes sont tombées ou une brèche y est ouverte, ET au
+              moins 3 assaillants (ou la moitié des vivants) sont passés;
+          (b) plus aucun défenseur ne tient devant l'enceinte suivante."""
+        bf = self.battlefield
+        if not bf.is_siege or not bf.has_next_ring:
+            return False
+        wx = bf.wall_x
+        next_x = bf.rings[bf.active_ring + 1]['wall_x']
+        attackers = [u for u in self.army1 if u.is_alive and not u.fleeing]
+        defenders = [u for u in self.army2 if u.is_alive and not u.fleeing]
+        gates_down = (all(hp <= 0 for hp in bf.active_gates.values())
+                      or bool(bf.active_breaches))
+        inside = sum(1 for u in attackers if u.position[0] > wx)
+        fell_a = gates_down and attackers and (inside >= 3 or inside * 2 >= len(attackers))
+        fell_b = bool(defenders) and not any(u.position[0] < next_x for u in defenders)
+        if not (fell_a or fell_b):
+            return False
+        bf.advance_ring()
+        self.log_event("L'ENCEINTE EXTÉRIEURE EST TOMBÉE !", (255, 140, 60), 3)
+        for cmd in (self.commander1, self.commander2):
+            cmd.on_ring_fall()
+        return True
+
+    def _fire_phase(self):
+        """L'incendie agit entre deux rounds: brûlures, propagation,
+        effondrements. Les commandants le verront au round suivant."""
+        bf = self.battlefield
+        if not bf.fires:
+            return
+        FX_CLOCK.at(int(self.fx_frames_per_round * 0.92))
+        burning = bf.fires
+        for u in sorted((u for u in self.army1 + self.army2 if u.is_alive),
+                        key=lambda u: u.uid):
+            if not any(c in burning for c in bf.get_unit_cells(u)):
+                continue
+            u._suppression += 1
+            if random.randint(1, 6) >= u.sauvegarde:
+                continue
+            u.take_damage(1)
+            u.floating_texts.append(FloatingText("Brûlé!", (255, 140, 40), 45))
+        res = st.fire_step(bf, random)
+        for gid, kind, cells in res['collapsed']:
+            self._structure_collapsed(gid, kind, cells)
+        self._flush_structure_changes()
 
     def _choose_attack_target(self, unit):
         """Choix de la cible de l'action d'attaque.
@@ -1340,6 +1532,13 @@ class Battle:
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
         self.round_events = []
+        # Le renderer a consommé les changements du round précédent: ce qui
+        # brûlait est déjà à l'écran.
+        self.pending_repaints = []
+        self.pending_craters = []
+        self.visual_effects['collapses'] = []
+        for c in self.fire_reveal:
+            self.fire_reveal[c] = 0
 
         # Horloge du round: toutes les actions vont s'y positionner
         FX_CLOCK.frames_per_round = self.fx_frames_per_round
@@ -1388,7 +1587,7 @@ class Battle:
                 static_units.append(u)
                 continue
             # Siège: tireurs/mages sur rempart → toujours "engaged" (ne bougent pas)
-            if bf.gate_hp and bf.is_rampart(*u.position) and (u._max_range >= 4 or bool(u.spells)):
+            if bf.gate_hp and bf.on_active_rampart(*u.position, u, self) and (u._max_range >= 4 or bool(u.spells)):
                 engaged.append(u)
                 continue
             enemies = self.get_enemies(u)
@@ -1496,9 +1695,13 @@ class Battle:
         # DÉCLENCHER des réactions adverses (coups d'opportunité sur rupture
         # de contact, tirs d'arrêt quand on débouche dans une zone de feu).
         movers = {}
-        ordered_moves = sorted(
-            moves.items(),
-            key=lambda kv: (-kv[0].vitesse, kv[0].uid))
+        # À vitesse égale, départager au hasard: un départage par uid faisait
+        # toujours bouger l'armée 1 d'abord (uids plus petits), ce qui lui
+        # offrait les coups d'opportunité et les tirs de réaction — l'armée
+        # de gauche gagnait ~65 % des duels miroir.
+        ordered_moves = list(moves.items())
+        random.shuffle(ordered_moves)
+        ordered_moves.sort(key=lambda kv: -kv[0].vitesse)
         n_mv = max(1, len(ordered_moves))
         for i, (unit, new_pos) in enumerate(ordered_moves):
             if not unit.is_alive:
@@ -1532,6 +1735,9 @@ class Battle:
 
         # Phase de moral (pertes lourdes + auras + stress au combat)
         self.morale_phase()
+
+        # Citadelle: l'enceinte active tombe-t-elle ?
+        self._check_ring_fall()
 
         # Phase Rempart: mettre à jour _on_wall dynamiquement
         for unit in alive:
@@ -1583,6 +1789,11 @@ class Battle:
             if unit._acted_this_round:
                 continue  # a déjà tiré en réaction pendant le mouvement
 
+            # Machine de guerre: percer le mur ou dégager son champ de tir
+            # (avant la porte: une machine chargée de percer ne la vise pas)
+            if self._attack_structure(unit):
+                unit._acted_this_round = True
+                continue
             # Siège: enfoncer la porte compte comme action du round
             if self._attack_gate(unit):
                 unit._acted_this_round = True
@@ -1606,6 +1817,7 @@ class Battle:
         for unit in self.army1 + self.army2:
             unit.regenerate()
             unit.tick_armor_buff()
+        self._fire_phase()
         FX_CLOCK.at(0)
 
         # Murs temporaires: décrémenter et retirer

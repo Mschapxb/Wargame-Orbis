@@ -25,6 +25,7 @@ manquait pour qu'une bataille ne ressemble pas à la précédente:
 import random
 
 import tactics
+import structures as st
 import terrain as tr
 
 
@@ -119,6 +120,11 @@ class CommanderAI:
         self._prey = {}                 # id(unité) -> id(proie) : évite le zapping
         self.assault_gate = None        # Porte choisie pour l'assaut
         self._gate_lock = 0             # Inertie du choix de porte
+        self._known_breaches = 0        # Brèches connues (une nouvelle rouvre le choix)
+        self._breach_gid = None         # Tronçon de mur visé par nos machines
+        self._breach_lock = 0
+        self._fall_back_rounds = 0      # Rounds passés à se replier sur le donjon
+        self._rearguard = set()         # id des unités qui couvrent le repli
         self._line_hold_rounds = 0      # Rounds passés à dresser la ligne
         self._artillery_wait = 0        # Rounds passés à couvert des machines
         self.breach = None              # Faille repérée dans la ligne adverse
@@ -229,10 +235,16 @@ class CommanderAI:
         """Choisit la posture du round. Une posture engage: on ne la change
         pas tous les rounds pour un écart de dé — sauf urgence."""
         bf = self.battlefield
-        is_siege = bool(bf.siege_data)
+        is_siege = bf.is_siege
         is_siege_attacker = is_siege and self.is_army1
 
         if is_siege_defender:
+            # ── REPLI SUR LE DONJON: l'enceinte va tomber et il en reste une
+            # derrière. Mieux vaut rentrer en ordre que mourir sur les portes.
+            if bf.has_next_ring:
+                if self.posture == "fall_back" or self._ring_about_to_fall(s):
+                    self.committed_sortie = False
+                    return "fall_back"
             # ── SORTIE: l'ennemi nous arrose et on ne peut pas répliquer. ──
             seuil = 0.35 * self.prudence
             outgunned = (s['en_ranged'] > 0 and s['my_ranged'] < s['en_ranged'] * seuil)
@@ -265,7 +277,7 @@ class CommanderAI:
         if is_siege_attacker:
             # L'assaillant ne peut pas attendre: l'ennemi a une forteresse.
             defenders_out = bf.gates_open or any(
-                e.position[0] < bf.siege_data.get('wall_x', 0) for e in s['theirs'])
+                e.position[0] < bf.wall_x for e in s['theirs'])
             if not defenders_out:
                 if s['my_ranged'] <= 0.5 and s['en_ranged'] > 3.0:
                     return "rush"
@@ -411,7 +423,7 @@ class CommanderAI:
         self._line_held_this_round = False
 
         bf = self.battlefield
-        is_siege = bool(bf.siege_data)
+        is_siege = bf.is_siege
         is_defender = is_siege and not self.is_army1
 
         # Réévaluation chaque round (les pertes changent la donne)
@@ -429,6 +441,19 @@ class CommanderAI:
             if self.posture == "sortie" and not bf.gates_open:
                 bf.open_gates()
             elif self.posture == "recall":
+                self._try_close_gates(battle)
+            elif self.posture == "fall_back":
+                self._fall_back_rounds += 1
+                bf.open_ring_gates(bf.active_ring + 1)
+                if not self._rearguard:
+                    wx = bf.wall_x
+                    melee = sorted((u for u in alive
+                                    if u._max_range < 4 and not u.spells and u.vitesse > 0
+                                    and u.position[0] <= wx + 6),
+                                   key=lambda u: (-u.hp, u.uid))
+                    self._rearguard = {id(u) for u in melee[:max(1, len(melee) // 3)]}
+            elif self.posture == "hold_walls" and bf.gates_open:
+                # Après un repli: on referme dès que tout le monde est rentré
                 self._try_close_gates(battle)
 
         prio = self._rank_targets(enemies)
@@ -473,11 +498,14 @@ class CommanderAI:
         rush = (self.posture in ("rush", "exploit") or
                 (is_defender and self.posture == "sortie"))
 
+        taken_slots = set()
         for unit in alive:
             lane = lanes.get(id(unit), 0)
             unit._rush = rush  # battle.py: désactive le frein de cohésion
             if is_defender and is_siege:
-                if self.posture == "sortie":
+                if self.posture == "fall_back":
+                    order = self._fall_back_order(unit, enemies, taken_slots)
+                elif self.posture == "sortie":
                     order = self._sortie_order(unit, enemies, prio, s)
                 elif self.posture == "recall":
                     order = self._recall_order(unit, enemies)
@@ -488,6 +516,70 @@ class CommanderAI:
             order.lane = lane
             unit._tactical_order = order
 
+    def _ring_about_to_fall(self, s):
+        """Portes de l'enceinte active à bout (≤ 30 % des PV) ou brèche
+        ouverte, et l'ennemi au pied du mur."""
+        bf = self.battlefield
+        gates = bf.active_gates
+        max_hp = sum(bf.gate_max_hp.get(g, 10) for g in gates) or 1
+        weak = sum(gates.values()) / max_hp <= 0.3 or bool(bf.active_breaches)
+        pressed = any(abs(e.position[0] - bf.wall_x) <= 2 for e in s['theirs'])
+        return weak and pressed
+
+    def on_ring_fall(self):
+        """L'enceinte active vient de tomber: axes d'assaut, brèches visées
+        et repli repartent de zéro sur l'enceinte suivante."""
+        self.assault_gate = None
+        self._gate_lock = 0
+        self._breach_gid = None
+        self._breach_lock = 0
+        self._known_breaches = 0
+        self.committed_sortie = False
+        self._fall_back_rounds = 0
+        self._rearguard = set()
+        if self.posture == "fall_back":
+            self.posture = "hold_walls"
+
+    def _fall_back_order(self, unit, enemies, taken):
+        """Repli ordonné sur le donjon: tireurs et mages vers ses remparts,
+        arrière-garde qui tient deux rounds devant l'enceinte, le reste
+        rentre par la porte du donjon."""
+        bf = self.battlefield
+        keep = bf.rings[bf.active_ring + 1]
+        kx = keep['wall_x']
+        ux, uy = unit.position
+        gates = keep['gates'] or [(kx, bf.height // 2)]
+        gy = min(gates, key=lambda g: abs(g[1] - uy))[1]
+        fragile = unit._max_range >= 4 or bool(unit.spells)
+
+        if ux > kx:
+            # Déjà dans le donjon
+            if fragile and not bf.is_rampart(ux, uy):
+                slots = sorted(((abs(y - uy), (x, y)) for (x, y) in bf.ramparts
+                                if x in (kx + 1, kx + 2) and (x, y) not in taken
+                                and not bf.is_occupied(x, y)))
+                if slots:
+                    taken.add(slots[0][1])
+                    return TacticalOrder("withdraw", target_pos=slots[0][1], priority=6)
+            near = [e for e in enemies
+                    if abs(e.position[0] - ux) + abs(e.position[1] - uy) <= max(2, unit._max_range)]
+            if near:
+                t = min(near, key=lambda e: abs(e.position[0] - ux) + abs(e.position[1] - uy))
+                return TacticalOrder("attack", target_unit=t, priority=5)
+            return TacticalOrder("hold", target_pos=unit.position, priority=4)
+
+        if id(unit) in self._rearguard and self._fall_back_rounds <= 2:
+            near = [e for e in enemies
+                    if abs(e.position[0] - ux) + abs(e.position[1] - uy) <= 4]
+            if near:
+                t = min(near, key=lambda e: abs(e.position[0] - ux) + abs(e.position[1] - uy))
+                return TacticalOrder("attack", target_unit=t, priority=6)
+            unit.status_text = "ARRIÈRE-GARDE"
+            return TacticalOrder("hold", target_pos=unit.position, priority=5)
+
+        unit.status_text = "REPLI"
+        return TacticalOrder("withdraw", target_pos=(min(bf.width - 2, kx + 4), gy), priority=6)
+
     def _pick_assault_gate(self, alive):
         """Porte d'assaut: on entre là où l'on sera le moins arrosé.
 
@@ -496,10 +588,16 @@ class CommanderAI:
         beaucoup moins d'hommes. Le choix est verrouillé quelques rounds —
         une armée qui change d'axe tous les tours n'arrive jamais."""
         bf = self.battlefield
-        gates = [g for g, hp in bf.gate_hp.items() if hp > 0] or list(bf.gate_hp.keys())
+        breaches = sorted(bf.active_breaches)
+        gates_now = bf.active_gates
+        gates = breaches + ([g for g, hp in gates_now.items() if hp > 0]
+                            or list(gates_now.keys()))
         if not gates:
             self.assault_gate = None
             return
+        if len(breaches) > self._known_breaches:
+            self._known_breaches = len(breaches)
+            self._gate_lock = 0      # une brèche s'ouvre: on reconsidère l'axe
         if (self.assault_gate in gates and self._gate_lock > 0):
             self._gate_lock -= 1
             return
@@ -510,6 +608,8 @@ class CommanderAI:
             danger = self._threat.at(approach) if self._threat else 0.0
             march = abs(mc[0] - g[0]) + abs(mc[1] - g[1])
             score = danger * 1.6 + march * 0.8
+            if g in breaches:
+                score -= 10.0        # rien à enfoncer: on passe tout de suite
             if best_score is None or score < best_score:
                 best, best_score = g, score
         self.assault_gate = best
@@ -521,7 +621,7 @@ class CommanderAI:
         bf = self.battlefield
         if not bf.gates_open:
             return
-        wall_x = bf.siege_data.get('wall_x', 0)
+        wall_x = bf.wall_x
         all_inside = all(u.position[0] > wall_x
                          for u in self.army if u.is_alive and not u.fleeing)
         if all_inside:
@@ -834,13 +934,16 @@ class CommanderAI:
         gate_lane = None
         if bf.gate_hp and not bf.gates_open and self.is_army1:
             gate = self.assault_gate or min(
-                bf.gate_hp.keys(),
+                bf.active_gates.keys(),
                 key=lambda g: abs(g[1] - ec_y), default=None)
             if gate is not None:
                 gate_lane = gate[1]
         if gate_lane is not None:
             ec_y = gate_lane
-            enemy_spread = 8  # colonne serrée sur la porte
+            # Centré sur la porte, mais pas en colonne serrée: massés devant
+            # les battants, les assaillants encaissaient le feu croisé de
+            # tout le rempart (mesuré: 25 % → 12 % de victoires en siège).
+            enemy_spread = max(enemy_spread, 8)
         else:
             self._assign_soft_sector(enemies, ys)
             ec_y = self._lane_center if self._lane_center is not None else ec_y
@@ -869,139 +972,6 @@ class CommanderAI:
         melee_span = min(max(5, int(len(melee) * 1.25)), int(enemy_spread) + 6)
         spread(melee, melee_span)
         spread(others, max(melee_span, enemy_spread))
-        return lanes
-
-    def _hold_the_line_pos(self, unit, enemies, s):
-        """Discipline de ligne — on ne s'engage PAS tout seul.
-
-        Deux raisons de dresser la ligne avant de donner l'assaut:
-          • une unité qui déborde arrive isolée au contact, prise à revers
-            par trois adversaires pendant que le reste de l'armée marche
-            encore;
-          • tant que nos machines de guerre (baliste, scorpion) et nos
-            archers ont un champ de tir dégagé, chaque round d'attente est
-            une salve gratuite. Se précipiter, c'est masquer son propre feu.
-
-        Retourne la case où se ranger, ou None s'il n'y a pas lieu d'attendre.
-        """
-        if self.posture in ("rush", "exploit", "sortie", "recall"):
-            return None
-        if self._melee_front is None or unit.vitesse <= 0:
-            return None
-        ux, uy = unit.position
-
-        # Déjà engagé (ou sur le point de l'être): on ne se dérobe jamais
-        for e in enemies:
-            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range + 1:
-                return None
-
-        # L'attente a une limite: au bout de quelques rounds, l'assaut part
-        # de toute façon (sinon deux armées prudentes se regardent).
-        if self._line_hold_rounds > 6:
-            return None
-
-        proj_u = self._proj((ux, uy))
-        ahead = proj_u - self._melee_front
-
-        support = s.get('artillery_firing', 0)
-        if support:
-            tol = 0.5          # nos machines tirent: on serre les rangs
-        elif s.get('support_fire', 0) >= 2:
-            tol = 1.2          # nos archers travaillent: on avance groupé
-        else:
-            tol = 2.5          # sans appui, pas de raison de traîner
-
-        if ahead <= tol:
-            return None
-
-        # Assez de camarades autour pour encaisser le choc ? Alors on peut
-        # y aller — sauf si l'artillerie a encore besoin de son champ libre.
-        if (not support
-                and tactics.support_count((ux, uy), self.army, 3, exclude=unit) >= 2):
-            return None
-
-        unit.status_text = "EN LIGNE"
-        ax, ay = self._axis
-        delta = ahead - tol * 0.5
-        return self._clamp_pos(ux - ax * delta, uy - ay * delta)
-
-    def _find_breach(self, alive, enemies, ec):
-        """Repère une FAILLE dans la ligne ennemie.
-
-        Pousser là où ils sont denses, c'est payer plein tarif. Un trou
-        entre deux groupes, lui, ouvre sur leurs arrières — archers et
-        machines — et coupe leur ligne en deux.
-
-        Retourne (point_de_penetration, coordonnee_laterale) ou None.
-        """
-        if len(enemies) < 5:
-            return None
-        ax, ay = self._axis
-        px, py = -ay, ax  # perpendiculaire au front
-
-        lat = sorted(((e.position[0] - ec[0]) * px + (e.position[1] - ec[1]) * py, e.uid)
-                     for e in enemies)
-        if len(lat) < 4:
-            return None
-
-        # On ignore les deux extrémités: un trou au bout n'est pas une
-        # faille, c'est un flanc (traité par le débordement).
-        best_gap, best_mid = 0.0, None
-        for i in range(1, len(lat) - 2):
-            gap = lat[i + 1][0] - lat[i][0]
-            if gap > best_gap:
-                best_gap = gap
-                best_mid = (lat[i][0] + lat[i + 1][0]) / 2.0
-        if best_mid is None or best_gap < 5.0:
-            return None
-
-        # Le point de pénétration se situe juste DERRIÈRE leur ligne
-        depth = 2.0
-        bx = ec[0] + px * best_mid + ax * depth
-        by = ec[1] + py * best_mid + ay * depth
-        return self._clamp_pos(bx, by), best_mid
-
-    # ─── Manoeuvres: concentration, curée, débordement, gardes du corps ───
-
-    def _enemy_clusters(self, enemies):
-        """Deux groupes ennemis séparés latéralement ? Retourne le groupe
-        CIBLE (le plus faible) ou None."""
-        if len(enemies) < 6:
-            return None
-        es = sorted(enemies, key=lambda e: e.position[1])
-        best_gap, split = 0, None
-        for i in range(1, len(es)):
-            gap = es[i].position[1] - es[i - 1].position[1]
-            if gap > best_gap:
-                best_gap, split = gap, i
-        if best_gap < 12 or split is None:
-            return None
-        g1, g2 = es[:split], es[split:]
-        if min(len(g1), len(g2)) < 2:
-            return None
-        p1 = sum(unit_melee_power(e) + unit_ranged_power(e) for e in g1)
-        p2 = sum(unit_melee_power(e) + unit_ranged_power(e) for e in g2)
-        return g1 if p1 <= p2 else g2
-
-    def _assign_lanes(self, alive, enemies):
-        """Couloirs d'avance SANS croisement: on conserve l'ordre relatif
-        des unités du haut vers le bas. Les colonnes ne se traversent plus
-        et l'avance reste lisible — chacun garde sa place dans la ligne."""
-        bf = self.battlefield
-        mobile = [u for u in alive if u.vitesse > 0]
-        if not mobile:
-            return {}
-        ys = [e.position[1] for e in enemies] or [bf.height // 2]
-        ec_y = sum(ys) / len(ys)
-        spread = (max(ys) - min(ys)) + 6
-        span = max(6, min(bf.height - 6, spread))
-        mobile.sort(key=lambda u: (u.position[1], u.uid))
-        n = len(mobile)
-        lanes = {}
-        for i, u in enumerate(mobile):
-            frac = (i + 0.5) / n - 0.5
-            ty = int(round(ec_y + frac * span))
-            lanes[id(u)] = max(2, min(bf.height - 3, ty))
         return lanes
 
     def _plan_maneuvers(self, alive, enemies, ec, s):
@@ -1211,8 +1181,106 @@ class CommanderAI:
 
     # ─── Ordres champ ouvert ───
 
+    def _escape_fire(self, unit):
+        """Une unité dans les flammes en sort d'abord: aucun plan ne vaut
+        de brûler sur place."""
+        bf = self.battlefield
+        fires = getattr(bf, 'fires', None)
+        if not fires or unit.vitesse <= 0:
+            return None
+        if not any(c in fires for c in bf.get_unit_cells(unit)):
+            return None
+        ux, uy = unit.position
+        r = max(1, min(3, unit.vitesse))
+        cands = [(ux + dx, uy + dy)
+                 for dx in range(-r, r + 1) for dy in range(-r, r + 1)
+                 if (dx or dy) and bf.is_valid(ux + dx, uy + dy)
+                 and (ux + dx, uy + dy) not in fires]
+        if not cands:
+            return None
+        best = (self._threat.safest(cands, prefer=(ux, uy), weight=2.0)
+                if self._threat is not None else cands[0])
+        unit.status_text = "AU FEU!"
+        return TacticalOrder("withdraw", target_pos=best, priority=6)
+
+    def _breach_order(self, unit, enemies):
+        """Assaut de forteresse: nos machines percent le mur tant que la porte
+        tient et qu'aucune brèche n'est ouverte. La catapulte s'y consacre;
+        la baliste, qui perce lentement, seulement faute de cible visible.
+        On vise le tronçon le moins battu par les défenseurs, et on s'y tient."""
+        bf = self.battlefield
+        if (not self.is_army1 or not bf.gate_hp or bf.gates_open
+                or bf.active_breaches or not getattr(unit, 'is_artillery', False)
+                or not any(hp > 0 for hp in bf.active_gates.values())):
+            return None
+        best_f, reach = 0.0, 0
+        for a in unit.armes:
+            f = st.weapon_factor(st.WALL, a)
+            if f > 0:
+                best_f = max(best_f, f)
+                reach = max(reach, a.porte)
+        if best_f <= 0:
+            return None
+        ux, uy = unit.position
+        if best_f < 1.0 and any(
+                abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)
+                and bf.has_line_of_fire(unit, e) for e in enemies):
+            return None
+        segs = {}
+        for gid, cells in bf.structure_members.items():
+            if (bf.structure_kind[gid] != st.WALL or bf.structure_hp.get(gid, 0) <= 0
+                    or cells[0][0] != bf.wall_x):
+                continue
+            cell = cells[len(cells) // 2]
+            if abs(ux - cell[0]) + abs(uy - cell[1]) <= reach:
+                segs[gid] = cell
+        if not segs:
+            return None
+        if self._breach_gid in segs and self._breach_lock > 0:
+            self._breach_lock -= 1
+        else:
+            def danger(gid):
+                c = segs[gid]
+                d = self._threat.at((max(0, c[0] - 2), c[1])) if self._threat else 0.0
+                return (d + 0.05 * (abs(ux - c[0]) + abs(uy - c[1])), gid)
+            self._breach_gid = min(segs, key=danger)
+            self._breach_lock = 4
+        unit.status_text = "BRÈCHE"
+        return TacticalOrder("demolish", target_pos=segs[self._breach_gid], priority=5)
+
+    def _demolish_order(self, unit, enemies, prio):
+        """Machine de guerre sans cible visible: si sa cible prioritaire est à
+        portée mais cachée derrière une structure, elle abat la structure."""
+        bf = self.battlefield
+        if not getattr(unit, 'is_artillery', False) or not getattr(bf, 'structures', None):
+            return None
+        ux, uy = unit.position
+        in_reach = [e for e in enemies
+                    if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)]
+        if any(bf.has_line_of_fire(unit, e) for e in in_reach):
+            return None  # elle a mieux à faire: tirer
+        wanted = [self.focus_target] if self.focus_target is not None else []
+        wanted += [e for _, e in prio[:5]]
+        for e in wanted:
+            if e is None or not e.is_alive or e not in in_reach:
+                continue
+            cell = st.first_structure_on_line(bf, ux, uy, e.position[0], e.position[1])
+            if cell is None:
+                continue
+            kind = bf.structures[cell][0]
+            if max((st.weapon_factor(kind, a) for a in unit.armes if a.porte >= 4),
+                   default=0.0) <= 0:
+                continue
+            unit.status_text = "DÉMOLIT"
+            return TacticalOrder("demolish", target_unit=e, target_pos=cell, priority=4)
+        return None
+
     def _standard(self, unit, enemies, prio, ec, mc, battle, s):
         bf = self.battlefield
+
+        fire = self._escape_fire(unit)
+        if fire is not None:
+            return fire
 
         # ── Affectation de manoeuvre (curée / débordement / garde du corps) ──
         assign = self._assignments.get(id(unit))
@@ -1254,6 +1322,11 @@ class CommanderAI:
             unit.status_text = "REPLI"
             return TacticalOrder("withdraw", target_pos=wd, priority=6)
 
+        demolish = (self._breach_order(unit, enemies)
+                    or self._demolish_order(unit, enemies, prio))
+        if demolish is not None:
+            return demolish
+
         # ── Tireurs/mages: unités fragiles → discipline stricte ──
         if unit._max_range >= 4 or unit.spells:
             threat = self._kite_threat(unit, enemies)
@@ -1283,7 +1356,10 @@ class CommanderAI:
         # ── Postures de mêlée ──
         if self.posture in ("hold_line", "screen"):
             return self._screen_order(unit, enemies, mc)
-        if self.style == "ranged_heavy" and unit.role == "front":
+        # Armée de tireurs: l'infanterie fait écran... sauf à l'assaut d'une
+        # forteresse, où l'ennemi ne viendra jamais au contact de lui-même.
+        if (self.style == "ranged_heavy" and unit.role == "front"
+                and not (bf.is_siege and self.is_army1)):
             return self._screen_order(unit, enemies, mc)
 
         if self.posture == "regroup":
@@ -1470,13 +1546,13 @@ class CommanderAI:
         """Repli derrière les murs. Si un ennemi nous colle, on le combat
         en reculant (l'ordre attack du contact est géré par compute_move)."""
         bf = self.battlefield
-        wall_x = bf.siege_data.get('wall_x', 0)
+        wall_x = bf.wall_x
         ux, uy = unit.position
         if ux > wall_x:
             # Déjà à l'intérieur → tenir position défensive
             return TacticalOrder("hold", target_pos=unit.position, priority=3)
         # Dehors → rentrer par la porte la plus proche
-        gates = list(bf.gate_hp.keys())
+        gates = list(bf.active_gates.keys())
         if gates:
             g = min(gates, key=lambda p: abs(p[1] - uy))
             return TacticalOrder("protect", target_pos=(wall_x + 2, g[1]), priority=5)
@@ -1486,14 +1562,18 @@ class CommanderAI:
 
     def _siege_defense(self, unit, enemies, prio, battle):
         bf = self.battlefield
-        wall_x = bf.siege_data.get('wall_x', 0)
-        gates_intact = any(hp > 0 for hp in bf.gate_hp.values()) and not bf.gates_open
+        wall_x = bf.wall_x
+        gates_now = bf.active_gates
+        # Une brèche ouverte vaut une porte tombée: la défense positionnelle
+        # n'a plus de sens, on va au contact
+        gates_intact = (any(hp > 0 for hp in gates_now.values()) and not bf.gates_open
+                        and not bf.active_breaches)
         on_ramp = bf.is_rampart(*unit.position)
 
         inside = [e for e in enemies if e.position[0] > wall_x]
         near_wall = [e for e in enemies if e.position[0] >= wall_x - 10]
         gate_ys = set()
-        for (gx, gy), hp in bf.gate_hp.items():
+        for (gx, gy), hp in gates_now.items():
             if hp > 0:
                 gate_ys.add(gy)
         at_gate = [e for e in enemies if any(abs(e.position[1] - gy) <= 2 for gy in gate_ys)

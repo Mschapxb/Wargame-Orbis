@@ -2,6 +2,7 @@ import random
 from collections import deque
 
 from effects import FloatingText, FX_CLOCK
+import structures as st
 import terrain as tr
 
 import itertools
@@ -23,6 +24,30 @@ def reassign_uid(u):
     (army1 garde des uids plus petits que army2)."""
     u.uid = next(_UID)
     return u.uid
+
+
+def _fire_zone_bonus(bf, tx, ty, half, enemies_in_zone, allies):
+    """Intérêt incendiaire d'une zone de boule de feu: +1 par ennemi à couvert
+    près du combustible, -2 par allié collé à une case combustible de la zone."""
+    if not getattr(bf, 'structures', None) and bf.terrain is None:
+        return 0
+    fuel = set()
+    for gx in range(tx - half, tx + half + 1):
+        for gy in range(ty - half, ty + half + 1):
+            if 0 <= gx < bf.width and 0 <= gy < bf.height and st.flammability(bf, gx, gy) > 0:
+                fuel.add((gx, gy))
+    if not fuel:
+        return 0
+    bonus = 0
+    for e in enemies_in_zone:
+        ex, ey = e.position
+        if any((ex + dx, ey + dy) in fuel for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+            bonus += 1
+    for a in allies:
+        ax, ay = a.position
+        if any((ax + dx, ay + dy) in fuel for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+            bonus -= 2
+    return bonus
 
 
 class Unit:
@@ -538,17 +563,21 @@ class Unit:
         half = spell.aoe_size // 2
 
         # Trouver l'ennemi dont la zone AoE touche le plus d'ennemis à portée
+        # — en tenant compte du feu: brûler le couvert d'un ennemi est un
+        # gain durable, mettre le feu au bois où se tiennent nos hommes un
+        # désastre.
+        bf = battle.battlefield
+        allies = [a for a in battle.get_allies(self) if a.is_alive and a is not self]
         best_target = None
         best_count = -1
         for candidate in enemies:
-            dist = battle.battlefield.manhattan_distance(self.position, candidate.position)
+            dist = bf.manhattan_distance(self.position, candidate.position)
             if dist > spell.porte:
                 continue
             tx, ty = candidate.position
-            count = sum(
-                1 for e in enemies
-                if abs(e.position[0] - tx) <= half and abs(e.position[1] - ty) <= half
-            )
+            in_zone = [e for e in enemies
+                       if abs(e.position[0] - tx) <= half and abs(e.position[1] - ty) <= half]
+            count = len(in_zone) + _fire_zone_bonus(bf, tx, ty, half, in_zone, allies)
             if count > best_count:
                 best_count = count
                 best_target = candidate
@@ -596,6 +625,30 @@ class Unit:
                                'from_grid': target.position,
                                'power': min(2.5, dmg_f / max(1.0, enemy.max_pv * 0.25)),
                                'ranged': True, 'fx': 'fire', 'at': FLIGHT + 2})
+
+        # Le décor encaisse aussi: structures entamées, combustible allumé
+        if getattr(bf, 'structures', None) is not None:
+            hit = set()
+            for gx in range(tx - half, tx + half + 1):
+                for gy in range(ty - half, ty + half + 1):
+                    if not (0 <= gx < bf.width and 0 <= gy < bf.height):
+                        continue
+                    gid = st.group_at(bf, gx, gy)
+                    if gid is not None and gid not in hit:
+                        hit.add(gid)
+                        kind = bf.structure_kind[gid]
+                        cells = list(bf.structure_members[gid])
+                        if (random.randint(1, 6) < min(7, st.KINDS[kind]['save'] + spell.perforation)
+                                and st.damage(bf, gid, random.randint(1, 4))):
+                            battle._structure_collapsed(gid, kind, cells)
+                    if (st.flammability(bf, gx, gy) > 0
+                            and random.random() < st.FIREBALL_IGNITE):
+                        st.ignite(bf, gx, gy)
+            # Pas de brûlure au sol sur l'eau (rivière, gué, pont)
+            if bf.terrain is None or bf.terrain[tx][ty] not in (tr.RIVER, tr.FORD, tr.BRIDGE):
+                events.append({'type': 'crater', 'at_grid': target.position,
+                               'radius_cells': half + 0.5, 'at': FLIGHT + 2})
+            battle._flush_structure_changes()
 
         FX_CLOCK.at(base_t)
         return True
@@ -715,7 +768,7 @@ class Unit:
 
         for wx, wy in wall_positions:
             original = bf.grid[wx][wy]
-            if original in (2, 3, 4, 5):
+            if original in (1, 2, 3, 4, 5):
                 continue
             bf.grid[wx][wy] = 1  # Obstacle
             if not hasattr(bf, '_temp_walls'):

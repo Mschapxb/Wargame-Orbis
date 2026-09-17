@@ -73,6 +73,49 @@ def glow(radius, color, level=8):
     return s
 
 
+_FLAME_VARIANTS = (
+    ((0.30, 0.70, 0.0), (0.52, 1.00, 2.1), (0.72, 0.62, 4.0)),
+    ((0.26, 0.85, 1.0), (0.48, 0.60, 3.3), (0.70, 0.95, 5.2)),
+    ((0.40, 1.05, 0.5), (0.66, 0.72, 2.8)),
+)
+
+
+def flame_frames(cs, n=8, variant=0):
+    """Langues de flamme animées pour une case en feu (base en bas, centrée).
+
+    Deux ou trois langues qui ondulent en décalé: extérieur orangé
+    translucide, cœur jaune pâle. Plusieurs variantes pour qu'un incendie ne
+    ressemble pas à un tampon répété case après case. Les frames bouclent."""
+    variant %= len(_FLAME_VARIANTS)
+    k = ('flame', cs, n, variant)
+    frames = _cache.get(k)
+    if frames is not None:
+        return frames
+    w, h = max(8, cs), max(10, int(cs * 1.35))
+    frames = []
+    tongues = _FLAME_VARIANTS[variant]
+    for i in range(n):
+        s = _surf(w, h)
+        ph = i / n * math.tau
+        for cx_f, height, off in tongues:
+            wave = math.sin(ph + off)
+            hh = h * height * (0.78 + 0.18 * wave)
+            bx = w * cx_f
+            half = w * 0.16 * (1.0 + 0.15 * math.cos(ph * 2 + off))
+            tip_x = bx + w * 0.07 * math.sin(ph * 1.5 + off)
+            for scale, col in ((1.0, (255, 96, 20, 170)), (0.66, (255, 168, 40, 215)),
+                               (0.34, (255, 238, 150, 235))):
+                pts = [(bx - half * scale, h - 1),
+                       (bx - half * scale * 0.9, h - hh * scale * 0.45),
+                       (tip_x, h - hh * scale),
+                       (bx + half * scale * 0.9, h - hh * scale * 0.45),
+                       (bx + half * scale, h - 1)]
+                pygame.draw.polygon(s, col, pts)
+        frames.append(s)
+    _cache[k] = frames
+    return frames
+
+
 def soft_blob(radius, color, alpha):
     """Tache douce à bords fondus (fumée, poussière, ombre de nuage)."""
     radius = max(2, int(radius))

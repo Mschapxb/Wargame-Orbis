@@ -1,0 +1,5 @@
+Prairie    A1=101 A2= 49 nul=  0 | gauche gagne  67.3 %
+Forêt      A1=101 A2= 48 nul=  1 | gauche gagne  67.8 %
+Village    A1= 91 A2= 59 nul=  0 | gauche gagne  60.7 %
+Défilé     A1= 90 A2= 58 nul=  2 | gauche gagne  60.8 %
+(44.9s)

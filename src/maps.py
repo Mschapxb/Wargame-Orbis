@@ -2,16 +2,22 @@
 
 Types de cellules dans la grille:
     0 = vide (traversable)
-    1 = obstacle (infranchissable, ne bloque PAS la vision — seuls les murs,
-        les portes fermées intactes et le terrain à effets — bois, collines,
-        cf. terrain.blocks_line — coupent une ligne de tir)
+    1 = obstacle (infranchissable; rocher, maison, haie ou cœur de bosquet:
+        coupe la ligne de tir, comme les murs, les portes fermées intactes
+        et le terrain à effets — bois, collines, cf. terrain.blocks_line)
     2 = mur (infranchissable, unités dessus = +2 svg, CaC ne passe pas)
     3 = porte (destructible, a des PV)
+
+Les cartes de bataille rangée (Prairie, Forêt, Village, Défilé) sont
+symétriques: grille et terrain de la moitié ouest sont recopiés à l'est.
+Les obstacles `1` de Prairie, Forêt et Village sont des structures
+destructibles (cf. generate_structures et structures.py).
 """
 
 import math
 import random
 
+import structures as st
 import terrain as tr
 
 
@@ -43,6 +49,14 @@ MAP_TYPES = {
         "bg_color": (64, 62, 50),
         "obstacle_color": (92, 88, 80),
         "grid_color": (70, 68, 56),
+        "wall_color": (100, 100, 110),
+        "gate_color": (140, 100, 50),
+    },
+    "Citadelle": {
+        "description": "Double enceinte — mur extérieur à deux portes, basse-cour, donjon",
+        "bg_color": (60, 60, 50),
+        "obstacle_color": (92, 88, 80),
+        "grid_color": (68, 68, 56),
         "wall_color": (100, 100, 110),
         "gate_color": (140, 100, 50),
     },
@@ -127,6 +141,9 @@ def generate_prairie(width, height):
                 if 0 <= x < width and 0 < y < height - 1 and grid[x][y] == 1 \
                         and random.random() < 0.5:
                     grid[x][y] = 0
+    # Les groupes de roches se tassaient vers l'ouest (le dernier intervalle
+    # s'arrête avant ridge_end_x): la moitié gauche fait foi.
+    _mirror_grid(grid, width, height)
 
     terr = tr.make_grid(width, height)
     half = width // 2
@@ -202,6 +219,15 @@ def _bfs_path(grid, width, height, starts, goals, terrain=None, avoid=(), blocke
                     came[(nx, ny)] = cur
                     queue.append((nx, ny))
     return None
+
+
+def _mirror_grid(grid, width, height):
+    """Recopie la moitié ouest de la grille bâtie sur l'est (x → width-1-x).
+    Sans cela, les tirages aléatoires (rochers, maisons, saillies) donnent
+    à un camp plus de couverts qu'à l'autre."""
+    for x in range(width // 2):
+        for y in range(height):
+            grid[width - 1 - x][y] = grid[x][y]
 
 
 def _mirror_terrain(terr, width, height):
@@ -304,9 +330,7 @@ def generate_forest(width, height):
                 trail_ys.append(max(1, min(height - 2, y)))
 
     # ── Symétrie: l'ouest est recopié à l'est (terrain équitable) ──
-    for x in range(width // 2):
-        for y in range(height):
-            grid[width - 1 - x][y] = grid[x][y]
+    _mirror_grid(grid, width, height)
 
     # ── Bosquets: le cœur reste impénétrable, le pourtour devient un
     # sous-bois traversable (lent, à couvert). On coupe à travers bois. ──
@@ -477,6 +501,11 @@ def generate_village(width, height):
             if try_house(int(cx + math.cos(a) * d), int(cy + math.sin(a) * d), w, h, R + 3):
                 break
 
+    # ── Symétrie: maisons, haie et fermes de l'ouest recopiées à l'est ──
+    # (le terrain l'était déjà: des rues d'un côté face à des jardins de
+    # l'autre donnaient l'avantage à un camp)
+    _mirror_grid(grid, width, height)
+
     # ── Terrain ──
     terr = tr.make_grid(width, height)
     mx = (width - 1) / 2
@@ -500,31 +529,11 @@ def generate_village(width, height):
     return grid, {'deploy_gap': R + 5, 'terrain': terr}
 
 
-def generate_siege(width, height):
-    """Siège: mur vertical avec porte unique, remparts, et lignes de couverture attaquant.
-
-    Améliorations:
-      • 2 lignes de couverts côté attaquant (x ≈ wall_x//3 et 2*wall_x//3)
-      • Bunkers/redoutes aux angles du mur
-      • Répartition des couverts sur tout le front (haut/centre/bas)
-    """
-    grid = [[0] * height for _ in range(width)]
-
-    wall_x = width * 2 // 3
-
-    gate_center = height // 2
-    gate_half = 3
-    gate_positions = [gate_center]
-
-    walls = []
-    gates = []
-    ramparts = []
-    stairs = []
-
-    # Construire le mur
+def _build_wall(grid, wall_x, gate_rows, width, height, walls, gates, ramparts, stairs):
+    """Une enceinte: mur vertical percé de portes sur `gate_rows`, chemin de
+    ronde sur deux rangs, escalier, tours aux deux extrémités."""
     for y in range(1, height - 1):
-        is_gate = (gate_center - gate_half <= y < gate_center + gate_half)
-        if is_gate:
+        if y in gate_rows:
             grid[wall_x][y] = 3
             gates.append((wall_x, y))
         else:
@@ -552,9 +561,153 @@ def generate_siege(width, height):
                 grid[tx2][ty] = 2
                 walls.append((tx2, ty))
 
-    # ── Ligne 1 de couverture (proche des attaquants, x ≈ wall_x // 3) ──
+
+def generate_citadel(width, height):
+    """Citadelle: deux enceintes successives.
+
+    Structure:
+      • Mur extérieur (x ≈ 0,55 × largeur) percé de DEUX portes (1/3 et 2/3
+        de la hauteur), fossé boueux à son pied, palissades de l'assaillant
+      • Basse-cour: maisons, jardins, glacis derrière le mur extérieur et
+        butte devant le donjon; des chemins restent libres des portes
+        extérieures jusqu'à la porte du donjon
+      • Donjon (x ≈ 0,80 × largeur): une porte centrale, remparts, escalier
+
+    Quand l'enceinte extérieure tombe (cf. Battle._check_ring_fall), la
+    défense se replie sur le donjon.
+    """
+    grid = [[0] * height for _ in range(width)]
+    wx1 = int(width * 0.55)
+    wx2 = max(wx1 + 9, int(width * 0.80))
+    wx2 = min(wx2, width - 5)
+    walls, ramparts, stairs = [], [], []
+    outer_gates, keep_gates = [], []
+
+    outer_centers = [height // 3, 2 * height // 3]
+    outer_rows = set()
+    for c in outer_centers:
+        outer_rows.update(range(c - 2, c + 2))
+    keep_center = height // 2
+    keep_rows = set(range(keep_center - 2, keep_center + 2))
+    _build_wall(grid, wx1, outer_rows, width, height, walls, outer_gates, ramparts, stairs)
+    _build_wall(grid, wx2, keep_rows, width, height, walls, keep_gates, ramparts, stairs)
+
+    # ── Palissades de l'assaillant (comme le Siège) ──
+    for line_x, zones, n in ((wx1 // 3, [height // 5, height // 2, 4 * height // 5], (2, 4)),
+                             (2 * wx1 // 3, [height // 4, height // 2, 3 * height // 4], (2, 3))):
+        for zone_y in zones:
+            for _ in range(random.randint(*n)):
+                ox = line_x + random.randint(-3, 3)
+                oy = zone_y + random.randint(-2, 2)
+                if 1 < ox < wx1 - 5 and 1 < oy < height - 1 and grid[ox][oy] == 0:
+                    grid[ox][oy] = 1
+
+    terr = tr.make_grid(width, height)
+    # Fossé au pied du mur extérieur, chaussée devant chaque porte
+    for x in (wx1 - 2, wx1 - 1):
+        for y in range(1, height - 1):
+            if grid[x][y] == 0 and y not in outer_rows:
+                terr[x][y] = tr.MARSH
+    # Glacis derrière le mur extérieur, butte devant le donjon
+    for y in range(1, height - 1):
+        if grid[wx1 + 4][y] == 0:
+            terr[wx1 + 4][y] = tr.HILL
+    for x in range(wx2 - 3, wx2):
+        for y in range(keep_center - 5, keep_center + 5):
+            if 0 < y < height - 1 and grid[x][y] == 0:
+                terr[x][y] = tr.HILL
+
+    # ── Basse-cour: chemins protégés, maisons, jardins ──
+    bx0, bx1 = wx1 + 5, wx2 - 4
+    roads = set()
+    for c in outer_centers:
+        y = c
+        for x in range(wx1 + 1, wx2):
+            # la route glisse d'une porte extérieure vers la porte du donjon
+            if x >= bx0 and y != keep_center:
+                y += 1 if keep_center > y else -1
+            for dy in (-1, 0, 1):
+                roads.add((x, y + dy))
+    houses = []
+    if bx1 - bx0 >= 3:
+        for _ in range(max(1, (bx1 - bx0) * height // 60)):
+            for _try in range(20):
+                w, h = random.randint(2, 3), random.randint(2, 3)
+                hx = random.randint(bx0, max(bx0, bx1 - w))
+                hy = random.randint(2, height - 3 - h)
+                cells = [(hx + i, hy + j) for i in range(w) for j in range(h)]
+                if any(c in roads or grid[c[0]][c[1]] != 0 or c[0] > bx1 for c in cells):
+                    continue
+                if any(0 <= c[0] + dx < width and 0 <= c[1] + dy < height
+                       and grid[c[0] + dx][c[1] + dy] != 0
+                       for c in cells for dx in (-1, 0, 1) for dy in (-1, 0, 1)):
+                    continue
+                for (x, y) in cells:
+                    grid[x][y] = 1
+                houses.extend(cells)
+                break
+        for _ in range(max(1, (bx1 - bx0) * height // 120)):
+            gx = random.uniform(bx0, bx1)
+            gy = random.uniform(3, height - 4)
+            for x in range(int(gx) - 2, int(gx) + 3):
+                for y in range(int(gy) - 2, int(gy) + 3):
+                    if (bx0 <= x <= bx1 and 0 < y < height - 1 and grid[x][y] == 0
+                            and (x, y) not in roads and (x - gx) ** 2 + (y - gy) ** 2 <= 2.2):
+                        terr[x][y] = tr.WOOD
+
+    structs = {(x, y): st.PALISADE for x in range(wx1) for y in range(height) if grid[x][y] == 1}
+    for c in houses:
+        structs[c] = st.HOUSE
+    for (x, y) in walls:
+        if x in (wx1, wx2):
+            structs[(x, y)] = st.WALL
+
+    return grid, {
+        'walls': walls,
+        'ramparts': ramparts,
+        'stairs': stairs,
+        'gates': {pos: 10 for pos in outer_gates + keep_gates},
+        'gate_save': 3,
+        'gate_positions': outer_centers,
+        'wall_x': wx1,
+        'rings': [{'wall_x': wx1, 'gates': outer_gates},
+                  {'wall_x': wx2, 'gates': keep_gates}],
+        'terrain': terr,
+        'structures': structs,
+    }
+
+
+def generate_siege(width, height):
+    """Siège: mur vertical avec porte unique, remparts, et lignes de couverture attaquant.
+
+    Améliorations:
+      • 2 lignes de couverts côté attaquant (x ≈ wall_x//3 et 2*wall_x//3)
+      • Bunkers/redoutes aux angles du mur
+      • Répartition des couverts sur tout le front (haut/centre/bas)
+    """
+    grid = [[0] * height for _ in range(width)]
+
+    wall_x = width * 2 // 3
+
+    gate_center = height // 2
+    gate_half = 3
+    gate_positions = [gate_center]
+
+    walls = []
+    gates = []
+    ramparts = []
+    stairs = []
+    gate_rows = set(range(gate_center - gate_half, gate_center + gate_half))
+    _build_wall(grid, wall_x, gate_rows, width, height, walls, gates, ramparts, stairs)
+
+    # ── Palissades de l'assaillant: deux lignes de pieux épars ──
+    # Chaque pieu couvre le tireur posté juste derrière (cf. terrain.
+    # combat_mods) et brûle. Des pans continus de 2 à 4 pieux ont été
+    # essayés: la première ligne tombe sur la colonne de déploiement et
+    # bouchait l'avance de l'assaillant (23 % → 8 % de victoires); les
+    # pieux épars, qui se touchent parfois, laissent passer (33 %).
+    # Ligne 1 (proche des attaquants, x ≈ wall_x // 3)
     line1_x = wall_x // 3
-    # 3 groupes de couverts répartis haut/centre/bas
     for zone_y in [height // 5, height // 2, 4 * height // 5]:
         for _ in range(random.randint(2, 4)):
             ox = line1_x + random.randint(-3, 3)
@@ -562,7 +715,7 @@ def generate_siege(width, height):
             if 1 < ox < wall_x - 5 and 1 < oy < height - 1 and grid[ox][oy] == 0:
                 grid[ox][oy] = 1
 
-    # ── Ligne 2 de couverture (avancée, x ≈ 2*wall_x // 3) ──
+    # Ligne 2 (avancée, x ≈ 2*wall_x // 3)
     line2_x = 2 * wall_x // 3
     for zone_y in [height // 4, height // 2, 3 * height // 4]:
         for _ in range(random.randint(2, 3)):
@@ -570,6 +723,25 @@ def generate_siege(width, height):
             oy = zone_y + random.randint(-2, 2)
             if 1 < ox < wall_x - 5 and 1 < oy < height - 1 and grid[ox][oy] == 0:
                 grid[ox][oy] = 1
+
+    # ── Terrain: fossé boueux au pied du mur, chaussée devant la porte,
+    # glacis (butte) derrière les escaliers ──
+    terr = tr.make_grid(width, height)
+    for x in (wall_x - 2, wall_x - 1):
+        for y in range(1, height - 1):
+            if 0 <= x < width and grid[x][y] == 0 and y not in gate_rows:
+                terr[x][y] = tr.MARSH
+    glacis_x = wall_x + 4
+    if glacis_x < width:
+        for y in range(1, height - 1):
+            if grid[glacis_x][y] == 0:
+                terr[glacis_x][y] = tr.HILL
+
+    structs = {(x, y): st.PALISADE for x in range(wall_x) for y in range(height)
+               if grid[x][y] == 1}
+    for (x, y) in walls:
+        if x == wall_x:
+            structs[(x, y)] = st.WALL
 
     siege_data = {
         'walls': walls,
@@ -579,6 +751,8 @@ def generate_siege(width, height):
         'gate_save': 3,
         'gate_positions': gate_positions,
         'wall_x': wall_x,
+        'terrain': terr,
+        'structures': structs,
     }
 
     return grid, siege_data
@@ -674,6 +848,8 @@ def generate_defile(width, height):
     for x in range(5 * width // 6, width):
         for y in range(pass_top, pass_bot + 1):
             grid[x][y] = 0
+    # Saillies et rochers tirés au hasard: même goulet des deux côtés
+    _mirror_grid(grid, width, height)
 
     # ── Terrain ──
     terr = tr.make_grid(width, height)
@@ -772,6 +948,12 @@ _DECOR_TABLES = {
         'big':   [("caisse", 3), ("tonneau", 3), ("botte_foin", 2), ("charrette", 1),
                   ("buisson", 2)],
     },
+    "Citadelle": {
+        'density': 0.08,
+        'small': [("caillou", 3), ("gravats", 2), ("herbe", 2)],
+        'big':   [("caisse", 2), ("tonneau", 2), ("brasero", 1), ("pieux", 2),
+                  ("gravats_tas", 2)],
+    },
     "Siège": {
         'density': 0.09,
         'small': [("caillou", 3), ("gravats", 3), ("herbe", 1)],
@@ -869,6 +1051,7 @@ def generate_ground_patches(map_name, width, height):
         "Forêt":   [((-18, -14, -10), 74), ((4, 28, 2), 54), ((26, 12, -12), 44)],
         "Village": [((26, 16, -6), 60), ((-22, -18, -14), 62), ((10, 14, 18), 42)],
         "Siège":   [((-20, -20, -16), 60), ((22, 18, 14), 46), ((26, 10, -8), 38)],
+        "Citadelle": [((-20, -20, -16), 60), ((22, 18, 14), 46), ((26, 10, -8), 38)],
         "Défilé":  [((26, 18, 2), 56), ((-24, -22, -18), 58), ((14, 14, 18), 40)],
     }
     pal = palettes.get(map_name, palettes["Prairie"])
@@ -884,6 +1067,20 @@ def generate_ground_patches(map_name, width, height):
     return patches
 
 
+def generate_structures(map_name, grid, width, height):
+    """Ce que sont les obstacles `1` d'une carte, pour la destruction
+    (cf. structures.py). Calculé sur la grille finale, donc déjà en miroir.
+    Les masses rocheuses du Défilé restent indestructibles: pas de structure."""
+    obstacles = [(x, y) for x in range(width) for y in range(height) if grid[x][y] == 1]
+    if map_name == "Village":
+        return st.classify_village(grid, width, height)
+    if map_name == "Forêt":
+        return {c: st.GROVE for c in obstacles}
+    if map_name == "Prairie":
+        return {c: st.ROCK for c in obstacles}
+    return {}
+
+
 def generate_map(map_name, width, height):
     """Génère la grille et les données spéciales pour un type de map.
 
@@ -896,6 +1093,7 @@ def generate_map(map_name, width, height):
         "Forêt": generate_forest,
         "Village": generate_village,
         "Siège": generate_siege,
+        "Citadelle": generate_citadel,
         "Défilé": generate_defile,
     }
 
@@ -905,4 +1103,6 @@ def generate_map(map_name, width, height):
     map_data['decor'] = generate_decor(map_name, grid, width, height,
                                        map_data.get('terrain'))
     map_data['ground_patches'] = generate_ground_patches(map_name, width, height)
+    if 'structures' not in map_data:
+        map_data['structures'] = generate_structures(map_name, grid, width, height)
     return grid, map_data

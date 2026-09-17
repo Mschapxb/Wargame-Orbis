@@ -14,6 +14,9 @@ Convention des seuils (d6): un seuil plus HAUT est plus DIFFICILE.
 
 PLAIN, HILL, WOOD, RIVER, FORD, BRIDGE, MARSH = (
     "plaine", "colline", "bois", "riviere", "gue", "pont", "marais")
+# Laissés par la destruction (cf. structures.py): une maison effondrée
+# devient des décombres, un bosquet ou une haie consumés du brûlé.
+RUBBLE, BURNT = "decombres", "brule"
 
 TERRAINS = {
     PLAIN:  dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=False),
@@ -23,6 +26,8 @@ TERRAINS = {
     FORD:   dict(move=2.0,  passable=True,  charge=False, save_mod=-1, cover=0, blocks_los=0, elevated=False),
     BRIDGE: dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=False),
     MARSH:  dict(move=3.0,  passable=True,  charge=False, save_mod=-1, cover=0, blocks_los=0, elevated=False),
+    RUBBLE: dict(move=2.0,  passable=True,  charge=False, save_mod=0,  cover=1, blocks_los=0, elevated=False),
+    BURNT:  dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=False),
 }
 
 # Accès rapides pour les boucles chaudes (A*)
@@ -37,6 +42,9 @@ MOVE_ELEV = {name: (t['move'], t['elevated']) for name, t in TERRAINS.items()}
 
 UPHILL_FACTOR = 1.5     # monter sur une colline coûte plus cher
 WOODS_BLOCKING = 3      # nombre de cases de bois qui masquent un tir
+# Une case en feu reste franchissable mais coûte cher: l'A* la contourne dès
+# qu'un détour raisonnable existe. Sa fumée masque comme une case de bois.
+FIRE_MOVE_FACTOR = 4.0
 _NO_MODS = {'toucher': 0, 'save': 0}
 _INF = float('inf')
 
@@ -74,6 +82,9 @@ def step_cost(bf, frm, to):
         return _INF
     if dest in ELEVATED and bf.terrain[frm[0]][frm[1]] not in ELEVATED:
         m *= UPHILL_FACTOR
+    fires = getattr(bf, 'fires', None)
+    if fires and to in fires:
+        m *= FIRE_MOVE_FACTOR
     return m
 
 
@@ -153,6 +164,18 @@ def combat_mods(bf, attacker, target, ranged):
     toucher = 0
     if ranged:
         toucher += t['cover']
+        # À couvert derrière un obstacle (palissade, haie, maison, rocher):
+        # la case voisine de la cible, du côté du tireur, arrête une partie
+        # des traits. Le mur de siège n'en fait pas partie: le rempart a
+        # déjà sa propre protection.
+        structs = getattr(bf, 'structures', None)
+        if structs:
+            ax, ay = attacker.position
+            tx, ty = target.position
+            if max(abs(ax - tx), abs(ay - ty)) > 1:
+                entry = structs.get((tx + (ax > tx) - (ax < tx), ty + (ay > ty) - (ay < ty)))
+                if entry is not None and entry[0] != "mur":
+                    toucher += 1
     elif t['elevated'] and not is_elevated(bf, *attacker.position):
         toucher += 1
     return {'toucher': toucher, 'save': -t['save_mod']}
@@ -184,17 +207,18 @@ def line_cells(x0, y0, x1, y1):
 def blocks_line(bf, x0, y0, x1, y1):
     """Vrai si le terrain masque la cible. Un tireur en hauteur voit tout;
     sinon une colline intermédiaire (cible hors colline) ou 3 cases de bois
-    bloquent."""
+    bloquent. La fumée d'une case en feu compte comme une case de bois."""
     terr = getattr(bf, 'terrain', None)
     if terr is None or terr[x0][y0] in ELEVATED:
         return False
     target_up = terr[x1][y1] in ELEVATED
+    fires = getattr(bf, 'fires', None)
     woods = 0
     for x, y in line_cells(x0, y0, x1, y1):
         name = terr[x][y]
         if name in ELEVATED and not target_up:
             return True
-        if TERRAINS[name]['blocks_los']:
+        if TERRAINS[name]['blocks_los'] or (fires and (x, y) in fires):
             woods += 1
             if woods >= WOODS_BLOCKING:
                 return True
