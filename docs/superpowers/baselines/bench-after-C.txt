@@ -1,0 +1,25 @@
+Mixte Prairie      plans gagnent  52.5 % (21/40, nuls 0) | plans: {'colline': 23, 'oblique': 9, 'feinte': 8} | aile refusée engagée 6, contre-attaque colline 8, feinte puis assaut 7
+Cavalerie Prairie  plans gagnent  45.0 % (18/40, nuls 0) | plans: {'feinte': 10, 'colline': 21, 'oblique': 9} | aile refusée engagée 7, contre-attaque colline 6, feinte puis assaut 10, réserve engagée 19
+Infanterie Forêt   plans gagnent  50.0 % (20/40, nuls 0) | plans: {'direct': 39, 'feinte': 1} | feinte puis assaut 1, réserve engagée 1
+Mixte Village      plans gagnent  65.0 % (26/40, nuls 0) | plans: {'marteau': 22, 'colline': 12, 'direct': 1, 'feinte': 5} | contre-attaque colline 3, feinte puis assaut 5, marteau brisé 9, marteau frappe 3, réserve engagée 17
+Tir Défilé         plans gagnent  50.0 % (20/40, nuls 0) | plans: {'colline': 16, 'oblique': 8, 'feinte': 16} | aile refusée engagée 6, contre-attaque colline 6, feinte puis assaut 16
+TOTAL: plans gagnent 52.5 % des parties décidées (20s)
+Melee vs Archers       A1=27 A2=33 nul= 0 | rounds moy= 12.0 | surv A1= 2.8 A2= 4.7
+Mixte miroir           A1=26 A2=34 nul= 0 | rounds moy=  9.7 | surv A1= 1.8 A2= 2.5
+Skald vs Orlandar      A1=60 A2= 0 nul= 0 | rounds moy= 12.4 | surv A1= 6.3 A2= 0.0
+Cavalerie vs Tir       A1=52 A2= 8 nul= 0 | rounds moy= 10.1 | surv A1= 5.7 A2= 1.0
+Siege                  A1=17 A2=43 nul= 0 | rounds moy= 19.8 | surv A1= 1.9 A2= 4.5
+Siege baliste          A1=44 A2=16 nul= 0 | rounds moy= 23.4 | surv A1= 3.6 A2= 1.5
+Siege Orlandar         A1=14 A2=46 nul= 0 | rounds moy= 19.4 | surv A1= 1.4 A2= 4.1
+Siege catapulte        A1=28 A2=32 nul= 0 | rounds moy= 18.6 | surv A1= 3.1 A2= 3.0
+Citadelle              A1=35 A2=24 nul= 1 | rounds moy= 29.6 | surv A1= 3.0 A2= 2.2
+Foret mixte            A1=25 A2=35 nul= 0 | rounds moy= 14.4 | surv A1= 2.5 A2= 3.9
+(36.6s)
+Village mixte          A1=18 A2=41 nul= 1 | rounds moy= 15.0 | surv A1= 1.9 A2= 5.2
+Defile mixte           A1=16 A2=43 nul= 1 | rounds moy= 19.8 | surv A1= 1.6 A2= 5.3
+(9.7s)
+Prairie    A1=141 A2=157 nul=  2 | gauche gagne  47.3 %
+Forêt      A1=158 A2=140 nul=  2 | gauche gagne  53.0 %
+Village    A1=141 A2=156 nul=  3 | gauche gagne  47.5 %
+Défilé     A1=145 A2=136 nul= 19 | gauche gagne  51.6 %
+(86.2s)

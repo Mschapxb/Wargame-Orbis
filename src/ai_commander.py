@@ -26,6 +26,7 @@ import random
 
 import tactics
 import structures as st
+from battle_plan import BattlePlan
 import terrain as tr
 
 
@@ -85,6 +86,10 @@ _TEMPERAMENTS = {
 
 
 class CommanderAI:
+    # Plans de bataille multi-rounds (cf. battle_plan.py). Désactivables pour
+    # mesurer ce qu'ils apportent (bench_plans.py).
+    use_plans = True
+
     def __init__(self, army, enemy_army, battlefield, is_army1=True):
         self.army = army
         self.enemy_army = enemy_army
@@ -123,6 +128,7 @@ class CommanderAI:
         self._known_breaches = 0        # Brèches connues (une nouvelle rouvre le choix)
         self._breach_gid = None         # Tronçon de mur visé par nos machines
         self._breach_lock = 0
+        self.plan = BattlePlan()        # Intention stratégique sur plusieurs rounds
         self._fall_back_rounds = 0      # Rounds passés à se replier sur le donjon
         self._rearguard = set()         # id des unités qui couvrent le repli
         self._line_hold_rounds = 0      # Rounds passés à dresser la ligne
@@ -463,6 +469,10 @@ class CommanderAI:
 
         # ── Formation: axe du front + ligne de mêlée (discipline arrière) ──
         self._compute_formation(alive, ec)
+
+        # ── Plan de bataille: l'intention qui dure (hors siège) ──
+        if self.use_plans and not is_siege:
+            self.plan.update(self, alive, enemies, s)
 
         # ── CONCENTRATION: ennemi scindé en deux groupes → battre en
         # détail le plus faible avec toute l'armée ──
@@ -947,6 +957,9 @@ class CommanderAI:
         else:
             self._assign_soft_sector(enemies, ys)
             ec_y = self._lane_center if self._lane_center is not None else ec_y
+            if self.use_plans and self.plan.active():
+                # Feinte, ordre oblique: l'avance penche vers l'aile choisie
+                ec_y += self.plan.lane_bias[1]
 
 
         melee = [u for u in mobile
@@ -1103,6 +1116,7 @@ class CommanderAI:
         seuil = 1.4 / max(0.7, self.ruse)
         if (self.posture in ("balanced", "exploit")
                 and self.maneuver not in ("concentrate", "collapse")
+                and not (self.use_plans and self.plan.has_hammer())
                 and len(free_melee) >= 6
                 and en_melee_n > 0 and len(free_melee) >= en_melee_n * seuil
                 and len(free_melee) - max(2, len(free_melee) // 4) >= 4):
@@ -1321,6 +1335,12 @@ class CommanderAI:
         if wd is not None:
             unit.status_text = "REPLI"
             return TacticalOrder("withdraw", target_pos=wd, priority=6)
+
+        # ── Rôle dans le plan de bataille (marteau, leurre, réserve…) ──
+        if self.use_plans:
+            po = self.plan.order_for(self, unit, enemies)
+            if po is not None:
+                return TacticalOrder(po[0], target_unit=po[1], target_pos=po[2], priority=po[3])
 
         demolish = (self._breach_order(unit, enemies)
                     or self._demolish_order(unit, enemies, prio))

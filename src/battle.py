@@ -1566,6 +1566,10 @@ class Battle:
         # === PHASE DE COMMANDEMENT: les IA assignent les ordres ===
         self.commander1.issue_orders(self)
         self.commander2.issue_orders(self)
+        # Phases des plans de bataille: annoncées (bannières)
+        for side, cmd in ((1, self.commander1), (2, self.commander2)):
+            for text, color in cmd.plan.pop_events():
+                self.log_event(f"Armée {side} : {text}", color, 2)
 
         alive = self.get_all_alive()
 
@@ -1955,11 +1959,9 @@ class Battle:
         def army_report(roster, fled_list, name, is_winner):
             all_alive = [u for u in roster if u.is_alive and not u.fled]
             all_dead = [u for u in roster if not u.is_alive and not u.fled]
+            # Sortis de la carte seulement: les fuyards encore sur la carte
+            # sont déjà dans all_alive (les y ajouter les comptait deux fois)
             all_fled_off = fled_list[:]
-            # Fuyards encore sur la map
-            for u in roster:
-                if u.fleeing and u.is_alive and not u.fled:
-                    all_fled_off.append(u)
 
             if is_winner:
                 # Gagnant: vivants = ceux qui ne fuient pas, fuyants = ceux qui fuient

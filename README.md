@@ -48,8 +48,13 @@ Au lancement, un menu permet de :
 | `F` | Mode rapide |
 | `N` | Mode normal |
 | `ZQSD` / `Flèches` | Déplacer la caméra |
-| `Molette` / `Clic milieu` | Drag caméra |
+| `Molette` | Zoom (×0,5 à ×2) autour du curseur |
+| `+` / `-` / `0` | Zoomer / dézoomer / revenir à ×1 |
+| `Clic milieu` | Glisser la caméra |
+| `Tab` | Afficher/masquer la mini-carte (clic ou glissé dessus pour s'y rendre) |
+| Survol d'une unité | Fiche: PV, moral, sauvegarde, armes, sorts, état, ordre et rôle dans le plan |
 | `T` | Afficher/masquer les lignes de ciblage |
+| `I` | Afficher/masquer les intentions des plans de bataille (flèches, réserves, colline) |
 | `L` | Afficher/masquer la légende du terrain |
 | `B` | Basculer plein écran / fenêtré sans bordure |
 | `R` | Relancer la bataille |
@@ -270,6 +275,7 @@ cache, rotations comprises.
 | **Morts** | Le token reste debout jusqu'à l'instant du coup fatal, recule sous le choc, chute dans le sens du coup, s'assombrit puis s'efface en laissant une dépouille au sol |
 | **Cartes** | Grain de texture, taches de terrain organiques, décor semé (arbres, buissons, rochers, caisses…), maisons d'un seul tenant, falaises stratifiées, remparts crénelés avec ombre portée, portes qui se fissurent |
 | **Destruction** | Flammes animées et variées, halo qui palpite, braises et colonnes de fumée qui dérivent; maisons au toit percé puis éventré; effondrement dans un nuage de poussière; décombres, sol calciné et souches noires; cratères permanents |
+| **Interface** | Zoom ×0,5 à ×2 (le monde est dessiné à taille réelle puis mis à l'échelle: ≤ 3 ms par image), mini-carte cliquable, fiche d'unité au survol, bandeau à deux panneaux (jauges au combat / en fuite / tombés, posture, plan, tempérament), chevron d'orientation vers la cible, bannières limitées aux 3 plus récentes |
 | **Ambiance** | Ombres de nuages qui dérivent, vignettage des bords de l'écran |
 
 Les décalques au sol (sang, brûlures, dépouilles) s'estompent au bout d'une
@@ -337,6 +343,8 @@ python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
 python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental
 python src/test_citadelle.py                # double enceinte: portes par case, bascule, repli, rendu
+python src/test_battle_plan.py              # plans de bataille: choix, phases, réserve, intentions
+python src/test_ui.py                       # interface: zoom, mini-carte, fiche d'unité, bandeau, boucle réelle
 python src/test_determinism.py              # une graine rejoue la même bataille
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
@@ -345,6 +353,7 @@ python src/bench_balance.py 60              # équilibrage sur 60 graines par af
 python src/bench_maps.py 60                 # équilibrage Village et Défilé
 python src/bench_sides.py 300               # biais de côté: une armée contre son double, par carte
 python src/bench_fire.py 60                 # incendies: part du combustible consumé, durée des batailles
+python src/bench_plans.py 40                # IA avec plans contre la même IA sans plan
 ```
 
 ### Pathfinding (`battlefield.py`)
@@ -352,6 +361,36 @@ python src/bench_fire.py 60                 # incendies: part du combustible con
 - A* optimisé avec opérations inlinées (chebyshev, is_valid)
 - Les alliés sont **traversables** avec pénalité (pas de blocage permanent)
 - Mouvement latéral de secours quand le chemin est bloqué
+
+### Plans de bataille (`battle_plan.py`)
+
+Au-dessus des décisions round par round, chaque commandant joue un **plan**
+choisi au début de la bataille et mené en phases sur plusieurs rounds
+(hors siège). Le tirage se fait entre les deux plans les mieux notés selon
+l'armée, le terrain et le tempérament: deux batailles identiques ne se jouent
+pas forcément pareil.
+
+| Plan | Idée | Phases |
+|------|------|--------|
+| **Enclume et marteau** | Le centre accroche l'ennemi, un détachement de mêlée rapide contourne un flanc | approche (point d'attente hors de portée) → frappe (revers, sur les tireurs et officiers) |
+| **Feinte** | Deux leurres se montrent sur une aile, le corps principal se masse face à l'autre | feinte → assaut principal |
+| **Ordre oblique** | Concentration sur l'aile ennemie la plus faible; une petite aile refusée fixe l'autre | aile refusée → engagement |
+| **Tenir la colline** | Les tireurs prennent une colline (+1 portée), la mêlée tient devant | prise → tenue → contre-attaque |
+| **Assaut direct** | Petite armée, terrain boisé entre les armées, ou plan abandonné | — |
+
+Une **réserve** (≈ 20 % de la mêlée, les plus robustes) attend derrière le
+centre et s'engage quand une unité de première ligne tombe, qu'un ennemi
+perce le front, ou que l'ennemi saigne plus vite que nous. Les réflexes
+restent prioritaires (fuir le feu, décrocher à l'agonie, achever un isolé,
+escorter ses tireurs, percer une brèche).
+
+Les intentions s'affichent sur le champ de bataille (touche `I`) et les
+changements de phase s'annoncent en bannière (« Armée 1 : le marteau
+frappe ! »). Mesuré par `bench_plans.py`: l'IA avec plans gagne un peu plus
+de la moitié de ses parties contre la même IA sans plan — les plans rendent
+les batailles lisibles sans affaiblir l'IA (une feinte où les leurres
+chargeaient seuls tombait à 27 %; en sous-bois, les manœuvres cèdent la place
+à l'assaut direct).
 
 ### IA tactique (`ai_commander.py` + `tactics.py`)
 
