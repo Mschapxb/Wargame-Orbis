@@ -50,10 +50,7 @@ class TacticalOrder:
 
 def _avg_arme_damage(arme):
     """Dégâts moyens espérés d'une arme par round (approximation)."""
-    if getattr(arme, '_is_dice', False):
-        avg = arme._bonus + arme._nb_des * (arme._faces + 1) / 2.0
-    else:
-        avg = getattr(arme, '_fixed_damage', 1)
+    avg = arme.dice.average
     hit_p = max(0.1, min(1.0, (7 - arme.toucher) / 6.0))
     return arme.nb_attaque * avg * hit_p
 
@@ -1451,7 +1448,7 @@ class CommanderAI:
             f = st.weapon_factor(st.WALL, a)
             if f > 0:
                 best_f = max(best_f, f)
-                reach = max(reach, a.porte)
+                reach = max(reach, a.base_porte)   # un mur ne bouge pas
         if best_f <= 0:
             return None
         ux, uy = unit.position

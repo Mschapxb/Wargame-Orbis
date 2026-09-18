@@ -22,6 +22,7 @@ le terrain laissé par la structure (décombres ou brûlé).
 """
 
 import terrain as tr
+import weather
 
 HOUSE, HEDGE, GROVE, ROCK, PALISADE, WALL = (
     "maison", "haie", "bosquet", "rocher", "palissade", "mur")
@@ -305,6 +306,7 @@ def fire_step(bf, rng):
     # ── Propagation, depuis les foyers du début de round ──
     seen = set(burning)
     candidates = []
+    spread_dx = {}           # sens de propagation (vent: weather.py)
     for (x, y) in burning:
         for dx, dy in _N4:
             n = (x + dx, y + dy)
@@ -313,6 +315,8 @@ def fire_step(bf, rng):
             seen.add(n)
             if flammability(bf, *n) > 0:
                 candidates.append(n)
+                spread_dx[n] = dx
+    w = weather.of(bf)
     # Mélangés, pas triés: sous le plafond, un tri par position servirait
     # toujours l'ouest en premier et recréerait un biais de côté.
     rng.shuffle(candidates)
@@ -321,7 +325,7 @@ def fire_step(bf, rng):
             break
         if c in bf.fires:
             continue  # gagné entre-temps par l'allumage d'une maison entière
-        if rng.random() < flammability(bf, *c) and ignite(bf, *c):
+        if rng.random() < flammability(bf, *c) * w.ignite_factor(spread_dx[c]) and ignite(bf, *c):
             out['ignited'].append(c)
 
     # ── Combustion (les nouveaux foyers ne brûlent qu'au round suivant) ──
@@ -329,7 +333,7 @@ def fire_step(bf, rng):
     for c in burning:
         if c not in bf.fires:
             continue
-        bf.fires[c] -= 1
+        bf.fires[c] -= 1 + w.extra_burn()
         entry = bf.structures.get(c)
         if entry is not None and entry[1] not in hurt:
             hurt.append(entry[1])

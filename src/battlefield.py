@@ -1,8 +1,12 @@
 import random
 import heapq
 
+import facing
 import terrain as tr
 import structures as st
+
+# Obstacles qui masquent même un tireur posté sur un rempart
+TALL_OBSTACLES = frozenset((st.HOUSE, st.GROVE))
 
 
 class Battlefield:
@@ -186,21 +190,35 @@ class Battlefield:
         et les portes fermées intactes BLOQUENT les tirs.
         Exception: une unité sur un rempart est surélevée — elle peut tirer
         par-dessus le mur, et peut être visée par-dessus le mur (c'est tout
-        l'intérêt et le risque d'être sur le rempart).
+        l'intérêt et le risque d'être sur le rempart). Elle voit aussi
+        par-dessus les obstacles bas (haies, palissades, rochers) et le
+        terrain, mais une maison ou un bosquet reste un écran.
         Le terrain (bois, collines) peut aussi masquer la cible, cf. terrain.blocks_line.
         """
         sx, sy = shooter.position
         tx, ty = target.position
         if (self.walls or self.gate_hp) and (self.is_rampart(sx, sy)
                                              or self.is_rampart(tx, ty)):
-            return True
+            return self._los_clear(sx, sy, tx, ty, elevated=True)
         if not self._los_clear(sx, sy, tx, ty):
             return False
         return self.terrain is None or not tr.blocks_line(self, sx, sy, tx, ty)
 
-    def _los_clear(self, x0, y0, x1, y1):
+    def _los_clear(self, x0, y0, x1, y1, elevated=False):
         """Trace de Bresenham: False si un obstacle (1), un mur (2) ou une
-        porte fermée intacte (3) se trouve entre les deux points (exclus)."""
+        porte fermée intacte (3) se trouve entre les deux points (exclus).
+
+        elevated: tir depuis/vers un rempart — murs, portes et obstacles bas
+        ne comptent plus, seuls les obstacles hauts (TALL_OBSTACLES) coupent."""
+        if elevated:
+            structs = getattr(self, 'structures', None) or {}
+            for (x, y) in self._line_cells(x0, y0, x1, y1):
+                if self.grid[x][y] == 1:
+                    entry = structs.get((x, y))
+                    # Obstacle sans structure (générique): considéré haut
+                    if entry is None or entry[0] in TALL_OBSTACLES:
+                        return False
+            return True
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
         step_x = 1 if x1 > x0 else -1
@@ -227,6 +245,28 @@ class Battlefield:
                 err += dx
                 y += step_y
     
+    @staticmethod
+    def _line_cells(x0, y0, x1, y1):
+        """Cases strictement entre deux points (tracé de Bresenham)."""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        step_x = 1 if x1 > x0 else -1
+        step_y = 1 if y1 > y0 else -1
+        err = dx - dy
+        x, y = x0, y0
+        out = []
+        while not (x == x1 and y == y1):
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += step_x
+            if e2 < dx:
+                err += dx
+                y += step_y
+            if not (x == x1 and y == y1):
+                out.append((x, y))
+        return out
+
     def is_wall(self, x, y):
         """Retourne True si la case est un mur."""
         return 0 <= x < self.width and 0 <= y < self.height and self.grid[x][y] == 2
@@ -377,7 +417,13 @@ class Battlefield:
         
         open_set = []
         h0 = max(abs(gx - sx), abs(gy - sy))
-        heapq.heappush(open_set, (h0, 0.0, sx, sy))
+        # Départage des égalités de coût: par x ORIENTÉ selon le sens de
+        # marche, pour que deux armées en miroir suivent des chemins en
+        # miroir. Un départage par x brut favorisait toujours l'ouest: les
+        # deux camps n'abordaient pas l'ennemi sous les mêmes angles (biais
+        # de côté révélé par l'orientation, cf. facing.py).
+        xs = -1 if gx >= sx else 1
+        heapq.heappush(open_set, (h0, 0.0, xs * sx, sy, sx))
         g_score = {start: 0.0}
         came_from = {}
         best_node, best_h = start, h0
@@ -391,7 +437,7 @@ class Battlefield:
         _INF = 1e9
         
         while open_set:
-            _, g, cx, cy = _heappop(open_set)
+            _, g, _xk, cy, cx = _heappop(open_set)
             nodes_explored += 1
             
             if nodes_explored > max_nodes:
@@ -465,7 +511,7 @@ class Battlefield:
                     hdy = _abs(gy - ny)
                     if hdy > h:
                         h = hdy
-                    _heappush(open_set, (new_g + h, new_g, nx, ny))
+                    _heappush(open_set, (new_g + h, new_g, xs * nx, ny, nx))
 
         if partial and best_node != start:
             path = []
@@ -514,8 +560,15 @@ class Battlefield:
 
         best_priority = None
         best_pos = None
-        
-        for dx in range(-max_range, max_range + 1):
+        melee = max_range < 4
+        reach = unit.vitesse + 1
+
+        # Parcours orienté: à priorité égale, la première case trouvée
+        # l'emporte — du côté de l'unité, quel que soit son camp (miroir)
+        dxs = range(-max_range, max_range + 1)
+        if ux > tx:
+            dxs = reversed(dxs)
+        for dx in dxs:
             px = tx + dx
             if px < 0 or px >= width:
                 continue
@@ -544,7 +597,12 @@ class Battlefield:
                 occupied = 0 if pos not in units_dict else 1
                 dist = abs(ux - px) + abs(uy - py)
                 lane_dist = abs(py - lane_y) // 3
-                priority = (occupied, lane_dist, dist)
+                # Mêlée: déborder vers le flanc ou le dos de la cible, si la
+                # case est à portée de ce round (pas de grand détour)
+                arc_rank = 2
+                if melee and dist <= reach:
+                    arc_rank = facing.ARC_RANK[facing.arc_from(pos, target)]
+                priority = (occupied, lane_dist, arc_rank, dist)
                 
                 if best_priority is None or priority < best_priority:
                     best_priority = priority

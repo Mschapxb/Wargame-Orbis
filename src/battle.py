@@ -1,8 +1,12 @@
 import copy
+import weather as weather_mod
+import unit as unit_mod
+import facing
 import math
 import random
 
 import structures as st
+import maps
 import tactics
 import terrain as tr
 
@@ -50,7 +54,7 @@ T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
 class Battle:
     def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, 
-                 obstacle_count=8, map_name="Prairie", map_options=None):
+                 obstacle_count=8, map_name="Prairie", map_options=None, weather=None):
         self.army1 = copy.deepcopy(army1)
         self.army2 = copy.deepcopy(army2)
         # Des uids frais après le deepcopy: `Battle(a, a, …)` copierait sinon
@@ -70,6 +74,12 @@ class Battle:
                                       map_options)
         self.battlefield = Battlefield(battlefield_width, battlefield_height, 
                                         obstacle_count, map_name, grid, map_data)
+        # Météo: argument explicite, sinon choix du menu (map_options)
+        if weather is None and map_options:
+            weather = map_options.get('weather')
+        theme = getattr(self.battlefield, 'theme', None) or {}
+        self.battlefield.weather = weather_mod.resolve(
+            weather, theme.get('biome', "Prairie"), siege=self.battlefield.is_siege)
         self.round = 1
         self.visual_effects = {'projectiles': [], 'attack_lines': [], 'target_indicators': []}
         
@@ -89,6 +99,16 @@ class Battle:
 
         center_y = self.battlefield.height // 2
         self._place_armies(center_y)
+        if self.battlefield.is_siege:
+            for u in self.army1:
+                u.refill_ammo(unit_mod.SIEGE_TRAIN_FACTOR)
+        for u in self.army1 + self.army2:
+            self.battlefield.weather.apply_to_unit(u)
+        # Chaque armée regarde l'autre au déploiement
+        for u in self.army1:
+            u.facing = (1.0, 0.0)
+        for u in self.army2:
+            u.facing = (-1.0, 0.0)
         
         # Commandants IA
         self.commander1 = CommanderAI(self.army1, self.army2, self.battlefield, is_army1=True)
@@ -424,17 +444,10 @@ class Battle:
         # avant le choc (~7 rounds pour l'infanterie en terrain découvert).
         # La forêt et le village imposent le leur: on se déploie dans les
         # champs, juste à l'extérieur du terrain central. Le siège garde son
-        # placement historique.
-        if bf.is_siege:
-            gap = 12
-        elif bf.deploy_gap:
-            gap = int(bf.deploy_gap)
-        else:
-            gap = max(12, int(bf.width * 0.12))
-        # Jamais au point de pousser l'arrière-garde hors de la carte
-        gap = max(4, min(gap, mid_x - 8))
-
-        a1_front = mid_x - gap
+        # placement historique. Formule partagée avec la génération des
+        # cartes (rien de procédural ne doit tomber dans les zones de
+        # déploiement).
+        a1_front = maps.deploy_front(bf.width, bf.deploy_gap, bf.is_siege)
         deploy_contingents(self.army1, a1_front, -1)
         
         if bf.is_siege:
@@ -1013,7 +1026,8 @@ class Battle:
         bf = self.battlefield
         for shooter in list(self.get_all_alive()):
             if (not shooter.is_alive or shooter.fleeing
-                    or shooter._acted_this_round or shooter.spells):
+                    or shooter._acted_this_round or shooter.spells
+                    or shooter.reloading):
                 continue
             if shooter._max_range < 4:
                 continue
@@ -1038,6 +1052,7 @@ class Battle:
             if best is None:
                 continue
             shooter._acted_this_round = True
+            shooter.mark_fired()
             self._set_action_time(t01)
             shooter.floating_texts.append(
                 FloatingText("Tir de réaction!", (120, 210, 255), 55))
@@ -1116,7 +1131,7 @@ class Battle:
         """
         import tactics
         chargers = [u for u in alive
-                    if u.is_alive and not u.fleeing
+                    if u.is_alive and not u.fleeing and not u.exhausted
                     and (u.charge_montee or u.charge_aida)]
         if not chargers:
             return
@@ -1259,7 +1274,7 @@ class Battle:
         for arme in unit.armes:
             if arme.porte < 4 and best_gate_dist > 1:
                 continue
-            if arme.porte >= 4 and best_gate_dist > arme.porte:
+            if arme.porte >= 4 and best_gate_dist > arme.base_porte:
                 continue
             # Archers mobiles: priorité aux ennemis VISIBLES; s'il n'y en a
             # pas, autant marteler la porte.
@@ -1397,7 +1412,7 @@ class Battle:
         total, fired = 0, False
         events = []
         for arme in unit.armes:
-            if arme.porte < 4 or dist > arme.porte:
+            if arme.porte < 4 or dist > arme.base_porte:
                 continue
             factor = st.weapon_factor(kind, arme)
             if factor <= 0:
@@ -1532,6 +1547,48 @@ class Battle:
 
 
     def simulate_round(self):
+        """Joue un round complet. Les phases s'enchaînent dans cet ordre (et
+        l'ordre des tirages aléatoires en dépend: ne pas le permuter)."""
+        self._begin_round()
+        self._command_phase()
+        alive = self.get_all_alive()
+        movers = self._apply_moves(self._plan_moves(alive))
+        self._update_facings(movers)
+        self.morale_phase()            # pertes lourdes, auras, stress au combat
+        self._check_ring_fall()        # Citadelle: l'enceinte active tombe-t-elle ?
+        self._position_bonuses(alive)
+        # Charge (avant l'échange général)
+        charge_pool = [u for u in self.get_all_alive() if u.is_alive]
+        random.shuffle(charge_pool)
+        self._charge_phase(charge_pool)
+        self._exchange_phase()
+        self._end_of_round_effects(alive)
+        self._remove_casualties()
+        self._handle_routers()
+        self._close_round()
+
+    def _close_round(self):
+        """Vieillissement de la pression subie, plafonds d'effets, compteur."""
+        # Lu par la phase de moral du round suivant — d'où le fait de le
+        # faire ICI et pas au départ
+        for unit in self.army1 + self.army2:
+            unit.end_round()
+
+        # Garde-fou: c'est le renderer qui purge les effets visuels au fil
+        # des frames. Sans lui (tests headless, simulation accélérée), les
+        # listes grossiraient sans fin. On plafonne en jetant les plus vieux.
+        for _key, _lst in self.visual_effects.items():
+            if _key != 'target_indicators' and len(_lst) > _FX_MAX_QUEUE:
+                del _lst[:len(_lst) - _FX_MAX_QUEUE]
+
+        self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
+        self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
+        self.round += 1
+        self._alive_cache['dirty'] = True
+        FX_CLOCK.at(0)
+
+    def _begin_round(self):
+        """Remise à zéro des effets du round, déroute des armées sans combattant."""
         self._alive_cache['dirty'] = True
         self.visual_effects['target_indicators'] = []
         self.round_events = []
@@ -1566,6 +1623,8 @@ class Battle:
         self._army1_ids = {id(u) for u in self.army1}
         self._army2_ids = {id(u) for u in self.army2}
 
+    def _command_phase(self):
+        """Les commandants assignent les ordres; bannières des plans."""
         # === PHASE DE COMMANDEMENT: les IA assignent les ordres ===
         self.commander1.issue_orders(self)
         self.commander2.issue_orders(self)
@@ -1574,8 +1633,8 @@ class Battle:
             for text, color in cmd.plan.pop_events():
                 self.log_event(f"Armée {side} : {text}", color, 2)
 
-        alive = self.get_all_alive()
-
+    def _plan_moves(self, alive):
+        """Mouvement cohésif en 3 passes (statiques, engagées, approchantes): destinations réservées sans collision."""
         # Mélanger l'ordre de traitement du mouvement: les tris des passes
         # sont stables, donc à distance égale c'était toujours l'armée 1
         # qui réservait ses cases en premier (avantage cumulatif).
@@ -1703,7 +1762,11 @@ class Battle:
                     reserved.update(bf._get_reserved_cells(unit, unit.position))
 
             unit.vitesse = orig_speed
+        return moves
 
+    def _apply_moves(self, moves):
+        """Applique les déplacements échelonnés dans le temps, avec leurs réactions (opportunité, tir d'arrêt)."""
+        bf = self.battlefield
         # === APPLICATION DU MOUVEMENT + RÉACTIONS ===
         # Les déplacements sont échelonnés dans le temps et peuvent
         # DÉCLENCHER des réactions adverses (coups d'opportunité sur rupture
@@ -1746,13 +1809,57 @@ class Battle:
             movers[id(unit)] = (old_pos, new_pos)
 
         self._reaction_fire(movers, T_MOVE_END - 0.06)
+        return movers
 
-        # Phase de moral (pertes lourdes + auras + stress au combat)
-        self.morale_phase()
+    def _update_facings(self, movers):
+        """Orientation après le mouvement. Au contact, on fait face à un
+        ennemi collé à soi (sa cible s'il en est, sinon le plus dangereux):
+        personne ne tourne le dos à qui le touche pour regarder plus loin.
+        Sinon on fait face à sa cible à portée, ou on regarde où l'on
+        marche. Un fuyard tourne le dos. Sans mouvement ni adversaire,
+        l'orientation ne change pas."""
+        for u in self.get_all_alive():
+            if not u.is_alive or u.position is None:
+                continue
+            if u.fleeing:
+                look = None
+            else:
+                look = self._facing_target(u)
+            if look is not None:
+                facing.face_unit(u, look)
+            elif id(u) in movers:
+                old_pos, new_pos = movers[id(u)]
+                d = facing.direction(old_pos, new_pos)
+                if d is not None:
+                    u.facing = d
 
-        # Citadelle: l'enceinte active tombe-t-elle ?
-        self._check_ring_fall()
+    def _facing_target(self, u):
+        """Ennemi vers lequel une unité se tourne (None: garder son cap)."""
+        ux, uy = u.position
+        t = u.current_target
+        bf = self.battlefield
+        my_cells = bf.get_unit_cells(u) if u.size > 1 else ((ux, uy),)
+        adjacent = []
+        for e in self.get_enemies(u):
+            if not e.is_alive or e.position is None:
+                continue
+            if abs(e.position[0] - ux) > 5 or abs(e.position[1] - uy) > 5:
+                continue
+            e_cells = bf.get_unit_cells(e) if e.size > 1 else (e.position,)
+            if any(abs(a[0] - b[0]) <= 1 and abs(a[1] - b[1]) <= 1
+                   for a in my_cells for b in e_cells):
+                adjacent.append(e)
+        if adjacent:
+            if t in adjacent:
+                return t
+            return max(adjacent, key=lambda e: (tactics.expected_damage(e, u), -e.uid))
+        if (t is not None and t.is_alive and t.position is not None
+                and abs(ux - t.position[0]) + abs(uy - t.position[1]) <= u._max_range + 1):
+            return t
+        return None
 
+    def _position_bonuses(self, alive):
+        """Bonus de position du round: rempart et phalange."""
         # Phase Rempart: mettre à jour _on_wall dynamiquement
         for unit in alive:
             unit._on_wall = self.battlefield.is_rampart(*unit.position)
@@ -1772,11 +1879,8 @@ class Battle:
                         unit.sauvegarde = max(1, unit.sauvegarde - 1)
                     break
 
-        # === Phase de Charge (avant l'échange général) ===
-        charge_pool = [u for u in self.get_all_alive() if u.is_alive]
-        random.shuffle(charge_pool)
-        self._charge_phase(charge_pool)
-
+    def _exchange_phase(self):
+        """Échange général dans l'ordre d'initiative (sorts, machines, porte, attaque, élan)."""
         # ═══════════════════════════════════════════════════════════
         #   ÉCHANGE GÉNÉRAL — résolu dans l'ORDRE D'INITIATIVE
         # ═══════════════════════════════════════════════════════════
@@ -1804,7 +1908,9 @@ class Battle:
                 continue  # a déjà tiré en réaction pendant le mouvement
 
             # Machine de guerre: percer le mur ou dégager son champ de tir
-            # (avant la porte: une machine chargée de percer ne la vise pas)
+            # (avant la porte: une machine chargée de percer ne la vise pas).
+            # Battre un mur ou une porte garde le même réglage de tir: pas
+            # de rechargement, contrairement au tir sur des hommes.
             if self._attack_structure(unit):
                 unit._acted_this_round = True
                 continue
@@ -1813,13 +1919,24 @@ class Battle:
                 unit._acted_this_round = True
                 continue
 
+            if unit.reloading:
+                unit._acted_this_round = True
+                unit.floating_texts.append(
+                    FloatingText("Recharge…", (170, 170, 190), 30))
+                continue
             target = self._choose_attack_target(unit)
+            if target and unit._max_range >= 4 and unit.spares_ammo(target, self.battlefield):
+                unit._acted_this_round = True
+                continue
             if target:
                 self._apply_combat_events(
                     unit.perform_attacks(target, self.battlefield, self))
                 unit._acted_this_round = True
+                unit.mark_fired()
                 self._momentum_followup(unit, t01 + 0.05)
 
+    def _end_of_round_effects(self, alive):
+        """Fin de round: phalange, régénération, buffs, incendie, murs temporaires."""
         # Reset phalange bonus en fin de round
         for unit in alive:
             if unit._phalange_bonus_active:
@@ -1849,6 +1966,8 @@ class Battle:
                     remaining.append((wx, wy, dur - 1, original))
             self.battlefield._temp_walls = remaining
 
+    def _remove_casualties(self):
+        """Retire les morts de la grille (animation de chute, camarades témoins)."""
         # Nettoyer les unités mortes de la grille (+ effet de mort en fondu)
         self._refresh_army_sets()
         cs_fx = self.cell_size
@@ -1886,6 +2005,9 @@ class Battle:
                                    seed=id(unit) & 0xFFFF))
                 self.battlefield.remove_unit(unit)
 
+    def _handle_routers(self):
+        """Fuyards qui quittent la carte et fin de partie enlisée."""
+        bf = self.battlefield
         # Fuyards qui atteignent le bord → quittent la map
         for army_list, fled_list in [(self.army1, self.army1_fled), (self.army2, self.army2_fled)]:
             for unit in army_list[:]:
@@ -1921,24 +2043,6 @@ class Battle:
                             u.floating_texts.append(FloatingText("Déroute!", (255, 100, 50), 80))
                     self.log_event("Les derniers survivants abandonnent le terrain !", (255, 120, 60), 2)
                     self._quiet_rounds = 0
-
-        # Vieillissement de la pression subie (lu par la phase de moral du
-        # round suivant — d'où le fait de le faire ICI et pas au départ)
-        for unit in self.army1 + self.army2:
-            unit.end_round()
-
-        # Garde-fou: c'est le renderer qui purge les effets visuels au fil
-        # des frames. Sans lui (tests headless, simulation accélérée), les
-        # listes grossiraient sans fin. On plafonne en jetant les plus vieux.
-        for _key, _lst in self.visual_effects.items():
-            if _key != 'target_indicators' and len(_lst) > _FX_MAX_QUEUE:
-                del _lst[:len(_lst) - _FX_MAX_QUEUE]
-
-        self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
-        self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
-        self.round += 1
-        self._alive_cache['dirty'] = True
-        FX_CLOCK.at(0)
 
     def is_battle_over(self):
         """La bataille est finie quand une armée n'a plus personne sur la map."""

@@ -11,6 +11,8 @@ joue exactement comme avant: toutes les fonctions rendent la valeur neutre.
 Convention des seuils (d6): un seuil plus HAUT est plus DIFFICILE.
 `combat_mods` renvoie des valeurs à AJOUTER aux seuils.
 """
+import facing
+import weather
 
 PLAIN, HILL, WOOD, RIVER, FORD, BRIDGE, MARSH = (
     "plaine", "colline", "bois", "riviere", "gue", "pont", "marais")
@@ -128,7 +130,8 @@ def can_charge(bf, frm, to):
 
 
 def range_bonus(bf, shooter, target):
-    """+1 de portée pour un tireur en hauteur visant une cible en contrebas.
+    """Modificateur de portée d'un tireur: +1 en hauteur visant une cible
+    en contrebas, plus la météo (vent, crépuscule, brouillard: weather.py).
 
     Appelé très souvent (par ennemi, par unité, par round): le corps est
     inliné (au lieu de deux appels à is_elevated -> at -> getattr) pour
@@ -137,14 +140,17 @@ def range_bonus(bf, shooter, target):
     entre deux appels."""
     if shooter._max_range < 4:
         return 0
+    w = getattr(bf, 'weather', None)
+    bonus = (w.range_mod(shooter.position, target.position, shooter._max_range)
+             if w is not None and w.name != weather.CLEAR else 0)
     terr = getattr(bf, 'terrain', None)
-    if terr is None:
-        return 0
+    if terr is None or (w is not None and not w.height_helps_range()):
+        return bonus
     sx, sy = shooter.position
     if terr[sx][sy] not in ELEVATED:
-        return 0
+        return bonus
     tx, ty = target.position
-    return 0 if terr[tx][ty] in ELEVATED else 1
+    return bonus + (0 if terr[tx][ty] in ELEVATED else 1)
 
 
 def effective_range(bf, shooter, target):
@@ -158,10 +164,20 @@ def weapon_reach(bf, arme, shooter, target):
 
 
 def combat_mods(bf, attacker, target, ranged):
+    """Modificateurs de terrain, d'orientation (flanc, dos: facing.py), de
+    fatigue de l'attaquant et de météo (weather.py)."""
+    f_toucher, f_save = facing.arc_mods(attacker, target, ranged)
+    # Fatigue de l'attaquant (Unit.fatigue_toucher)
+    fat = getattr(attacker, 'fatigue_toucher', None)
+    if fat is not None:
+        f_toucher += fat(ranged)
+    # Météo (pluie: tirs moins précis)
+    if ranged:
+        f_toucher += weather.of(bf).ranged_toucher(attacker.position, target.position)
     if getattr(bf, 'terrain', None) is None:
-        return dict(_NO_MODS)
+        return {'toucher': f_toucher, 'save': f_save}
     t = TERRAINS[at(bf, *target.position)]
-    toucher = 0
+    toucher = f_toucher
     if ranged:
         toucher += t['cover']
         # À couvert derrière un obstacle (palissade, haie, maison, rocher):
@@ -178,7 +194,7 @@ def combat_mods(bf, attacker, target, ranged):
                     toucher += 1
     elif t['elevated'] and not is_elevated(bf, *attacker.position):
         toucher += 1
-    return {'toucher': toucher, 'save': -t['save_mod']}
+    return {'toucher': toucher, 'save': -t['save_mod'] + f_save}
 
 
 def line_cells(x0, y0, x1, y1):

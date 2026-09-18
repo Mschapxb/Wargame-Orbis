@@ -74,7 +74,11 @@ def unit_at(battle, wx, wy, cell_size):
 # ─── Chevron d'orientation ───
 
 def facing_angle(unit):
-    """Direction vers la cible courante, sinon vers le dernier déplacement."""
+    """Orientation réelle de l'unité (facing.py) — celle qui décide des
+    coups de flanc et de dos. À défaut: cible courante, dernier pas."""
+    f = getattr(unit, 'facing', None)
+    if f is not None:
+        return math.atan2(f[1], f[0])
     ux, uy = unit.position
     t = getattr(unit, 'current_target', None)
     if t is not None and t.is_alive and t.position is not None and t.position != unit.position:
@@ -215,6 +219,13 @@ def unit_card_lines(unit, battle):
     hp_c = (90, 210, 90) if hp_r > 0.6 else ((230, 200, 60) if hp_r > 0.3 else (235, 90, 70))
     lines.append((f"PV {unit.hp}/{unit.max_hp}   Moral {unit.get_effective_morale()}   "
                   f"Sauvegarde {unit.sauvegarde}+   Vitesse {unit.vitesse}", hp_c))
+    extra = []
+    if getattr(unit, 'max_ammo', None):
+        extra.append(f"Munitions {unit.ammo}/{unit.max_ammo}")
+    if getattr(unit, 'fatigue', 0):
+        extra.append(f"Fatigue {unit.fatigue}")
+    if extra:
+        lines.append(("   ".join(extra), (200, 190, 150)))
     for a in unit.armes:
         kind = "tir" if a.porte >= 4 else ("allonge" if a.porte >= 2 else "mêlée")
         lines.append((f"• {a.name} ({kind}, portée {a.porte}): {a.nb_attaque}× "
@@ -231,6 +242,12 @@ def unit_card_lines(unit, battle):
         states.append("sous le feu")
     if getattr(unit, '_on_wall', False):
         states.append("sur le rempart")
+    if getattr(unit, 'reloading', False):
+        states.append("recharge")
+    if getattr(unit, 'exhausted', False):
+        states.append("épuisée")
+    elif getattr(unit, 'tired', False):
+        states.append("fatiguée")
     if states:
         lines.append(("État: " + ", ".join(states), (255, 170, 90)))
     order = getattr(unit, '_tactical_order', None)
@@ -334,7 +351,9 @@ def draw_bottom_hud(screen, battle, screen_w, top, height, fonts, status, status
     cx = screen_w // 2
     st = bold.render(status, True, status_color)
     screen.blit(st, (cx - st.get_width() // 2, top + 6))
-    info = tiny.render(f"Round {battle.round - 1}   ·   zoom ×{zoom:g}   ·   {fps} i/s",
+    sky = getattr(battle.battlefield, 'weather', None)
+    sky_txt = f"   ·   {sky.label}" if sky is not None and sky.name != "Clair" else ""
+    info = tiny.render(f"Round {battle.round - 1}{sky_txt}   ·   zoom ×{zoom:g}   ·   {fps} i/s",
                        True, (170, 175, 185))
     screen.blit(info, (cx - info.get_width() // 2, top + 30))
     hint = tiny.render(help_text, True, (130, 150, 180))

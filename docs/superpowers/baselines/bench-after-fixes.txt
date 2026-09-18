@@ -1,0 +1,13 @@
+Melee vs Archers       A1= 21 A2= 39 nul=  0 | rounds moy= 12.1 | surv A1= 1.9 A2= 5.4
+Mixte miroir           A1= 29 A2= 31 nul=  0 | rounds moy= 10.6 | surv A1= 2.5 A2= 2.3
+Skald vs Orlandar      A1= 59 A2=  1 nul=  0 | rounds moy= 12.4 | surv A1= 6.4 A2= 0.1
+Cavalerie vs Tir       A1= 52 A2=  8 nul=  0 | rounds moy= 11.1 | surv A1= 5.7 A2= 0.8
+Siege                  A1= 17 A2= 43 nul=  0 | rounds moy= 19.7 | surv A1= 1.6 A2= 5.0
+Siege baliste          A1= 35 A2= 25 nul=  0 | rounds moy= 25.3 | surv A1= 3.0 A2= 2.4
+Siege Orlandar         A1= 13 A2= 47 nul=  0 | rounds moy= 18.8 | surv A1= 1.4 A2= 4.8
+Siege catapulte        A1= 31 A2= 29 nul=  0 | rounds moy= 20.0 | surv A1= 3.2 A2= 2.5
+Citadelle              A1= 32 A2= 27 nul=  1 | rounds moy= 27.9 | surv A1= 2.8 A2= 2.3
+Foret mixte            A1= 24 A2= 36 nul=  0 | rounds moy= 14.9 | surv A1= 2.2 A2= 4.2
+Village mixte          A1= 20 A2= 40 nul=  0 | rounds moy= 13.6 | surv A1= 2.0 A2= 5.0
+Defile mixte           A1= 21 A2= 38 nul=  1 | rounds moy= 18.0 | surv A1= 2.1 A2= 4.3
+(53.8s, N=60, off=1000, 40x30)

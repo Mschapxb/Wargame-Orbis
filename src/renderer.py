@@ -6,6 +6,7 @@ import sys
 import sprites
 import ui
 from fx_render import FxRenderer
+from weather_render import WeatherFx
 
 
 simulation_speed = "normal"
@@ -1380,6 +1381,7 @@ def run_visual(battle, cell_size):
     # Moteur d'effets: particules, décalques, morts, sprites de combat
     fxr = FxRenderer(cell_size, load_token, tiny_font)
     fxr.reset(bf_w * cell_size, bf_h * cell_size)
+    wfx = WeatherFx(getattr(battle.battlefield, 'weather', None))
     gate_state = gate_visual_state(battle.battlefield)
     pause_font = pygame.font.SysFont("arial", 30, bold=True)
 
@@ -1520,6 +1522,7 @@ def run_visual(battle, cell_size):
                     battle.cell_size = cell_size
                     grid_surface = build_grid_surface(battle, cell_size)
                     fxr.reset(_bf_w * cell_size, _bf_h * cell_size)
+                    wfx = WeatherFx(getattr(battle.battlefield, 'weather', None))
                     gate_state = gate_visual_state(battle.battlefield)
                     world_w = _bf_w * cell_size
                     world_h = _bf_h * cell_size
@@ -1687,6 +1690,7 @@ def run_visual(battle, cell_size):
         apply_destruction(grid_surface, battle, cell_size, round_frame)
         fxr.round_frame = round_frame
         fxr.update(battle, paused=pause)
+        wfx.update(paused=pause)
 
         # ── Secousse de caméra: juste un frémissement sur les chocs les
         # plus lourds. Au-delà de 2 px ça devient illisible et laid. ──
@@ -2031,6 +2035,7 @@ def run_visual(battle, cell_size):
             screen.blit(scaled, (0, 0))
             screen.set_clip(None)
         view_h = VIEW_H_SCREEN
+        wfx.draw(screen, SCREEN_W, view_h)
         fxr.draw_screen(screen, SCREEN_W, view_h)
 
         # ═══ BANDEAU SUPÉRIEUR: rapport de forces + postures IA ═══

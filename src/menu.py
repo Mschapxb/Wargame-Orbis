@@ -223,15 +223,15 @@ class ArmyState:
                     if b["perforation"] != 0:
                         arme.perforation = arme.perforation + b["perforation"]
                     if b["degats"] != 0:
-                        arme._bonus = arme._bonus + b["degats"]
+                        arme.dice = arme.dice.plus(b["degats"])
 
         return all_units
 
 
 def run_army_menu(screen_w=None, screen_h=None):
     """Lance le menu de composition. Retourne (army1_list, army2_list,
-    map_name, map_options) ou None si quit. map_options: {'biome', 'relief'}
-    (cf. maps.resolve_options)."""
+    map_name, map_options) ou None si quit. map_options: {'biome', 'relief',
+    'weather'} (cf. maps.resolve_options, weather.resolve)."""
     
     if screen_w is None or screen_h is None:
         info = pygame.display.Info()
@@ -257,9 +257,12 @@ def run_army_menu(screen_w=None, screen_h=None):
     import maps as maps_mod
     selected_biome = "Prairie"
     selected_relief = maps_mod.natural_relief_name(selected_map)
+    import weather as weather_mod
+    selected_weather = weather_mod.CLEAR
 
     def map_options():
-        return {'biome': selected_biome, 'relief': selected_relief}
+        return {'biome': selected_biome, 'relief': selected_relief,
+                'weather': selected_weather}
     
     # ─── Fond dégradé pré-rendu (une seule fois) ───
     bg_surface = pygame.Surface((screen_w, screen_h))
@@ -334,7 +337,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         panel_margin = 15
         panel_top = 50
         panel_w = (screen_w - panel_margin * 3) // 2
-        panel_h = screen_h - panel_top - 150
+        panel_h = screen_h - panel_top - 182   # + rangée Météo
         
         for i, state in enumerate(states):
             px = panel_margin + i * (panel_w + panel_margin)
@@ -667,7 +670,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         from maps import get_map_names, get_map_info
         map_names = get_map_names()
         
-        map_y = screen_h - 132
+        map_y = screen_h - 164
         map_label = small_font.render("Carte:", True, TEXT)
         screen.blit(map_label, (panel_margin, map_y + 6))
         
@@ -712,6 +715,20 @@ def run_army_menu(screen_w=None, screen_h=None):
         else:
             draw_text(screen, "Relief fixe: le goulet et son torrent sont la carte.",
                       small_font, (panel_margin, opt_y + 6), TEXT_DIM)
+
+        # ─── MÉTÉO ───
+        sky_y = opt_y + 32
+        draw_text(screen, "Météo:", small_font, (panel_margin, sky_y + 6), TEXT)
+        skies = list(weather_mod.WEATHERS) + [weather_mod.RANDOM_WEATHER]
+        selected_weather, x = choice_row(skies, selected_weather, panel_margin + 48, sky_y)
+        sky_desc = weather_mod.DESCRIPTIONS.get(selected_weather,
+                                                "Tirée au sort selon le biome.")
+        if (selected_map in maps_mod.SIEGE_MAPS
+                and selected_weather in (weather_mod.FOG, weather_mod.DUSK)):
+            sky_desc += " Très dur pour l'assaillant d'un siège."
+        screen.set_clip(pygame.Rect(x + 10, sky_y, max(0, screen_w - x - 20), 26))
+        draw_text(screen, sky_desc, small_font, (x + 10, sky_y + 6), TEXT_DIM)
+        screen.set_clip(None)
         
         # ─── BOUTON ÉDITEUR D'UNITÉS ───
         custom_btn = pygame.Rect(screen_w - 180, map_y, 160, 26)

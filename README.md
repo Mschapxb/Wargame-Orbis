@@ -17,7 +17,7 @@ cd battle-simulator
 pip install -r requirements.txt
 
 # Lancer le jeu
-python main.py
+python src/main.py
 ```
 
 > **Prérequis** : Python 3.10+ et Pygame 2.5+. Aucune autre dépendance externe.
@@ -41,6 +41,8 @@ Au lancement, un menu permet de :
 - Choisir le **thème** (Prairie, Forêt, Désert — pour Village, Siège et Citadelle)
   et le **relief**: Plat, Rivière, Collines, Rivière + collines ou Aléatoire
   (cf. *Thèmes procéduraux* ci-dessous)
+- Choisir la **météo**: Clair, Pluie, Brouillard, Vent, Crépuscule, Chaleur ou
+  Aléatoire (cf. *Météo* ci-dessous)
 - Lancer la bataille avec **COMBAT!**
 
 ### Contrôles en bataille
@@ -159,7 +161,9 @@ laquelle de ses cases, et elle s'effondre d'un bloc.
   de tir.
 - **Couvert**: une cible postée juste derrière un obstacle (palissade, haie,
   maison, rocher), du côté du tireur, reçoit +1 au seuil de toucher. C'est ce
-  qui protège l'assaillant des tireurs du rempart, qui voient par-dessus.
+  qui protège l'assaillant des tireurs du rempart, qui voient par-dessus les
+  obstacles bas (haies, palissades, rochers) — mais pas à travers une maison
+  ou un bosquet.
 - **Brèches**: quand un tronçon de mur tombe, le chemin de ronde et l'escalier
   de ces rangées s'écroulent avec lui (les défenseurs qui s'y tenaient
   chutent: 1d3) et une **entrée** s'ouvre. Tant que la porte tient, la
@@ -212,7 +216,7 @@ phases figées : les actions sont **horodatées** et s'enchaînent.
 | **Attaque d'opportunité** | Une unité rompt le contact (recul, kiting, fuite) | L'adversaire au contact porte un coup gratuit (1 par round et par unité) |
 | **Tir de réaction** | Un ennemi débouche dans la zone de feu d'un tireur immobile | Le tireur lâche sa volée pendant le mouvement, pas trois phases plus tard |
 | **Élan** | Une unité de mêlée abat son adversaire | Elle enchaîne aussitôt sur une autre cible à portée (1 par round) |
-| **Prise à revers** | La cible est déjà accrochée par un camarade | **-1 au toucher** (le débordement devient réellement payant) |
+| **Flanc / dos** | L'attaquant frappe hors de l'arc avant de la cible | Flanc: **-1 au toucher**; dos: -1 au toucher, **sauvegarde -1** et choc (cf. *Orientation*) |
 | **Ébranlement** | Coup emportant ≥ 30 % des PV, ou feu nourri | Test de moral : l'unité combat moins bien au round suivant |
 
 ### Rythme d'un round
@@ -256,12 +260,76 @@ les chercher** au lieu de se débander (mesuré: 2/30 → 30/30 victoires).
 - Les charges nécessitent un chemin libre (pas de téléportation)
 - Seule la première arme de mêlée frappe pendant la charge
 
+### Orientation — de face, de flanc, de dos
+
+Chaque unité regarde dans une direction (chevron sur son anneau). Elle se
+tourne vers l'ennemi qui la touche, sinon vers sa cible, sinon vers là où elle
+marche; un fuyard tourne le dos. Au déploiement, les armées se font face.
+
+| Arc (vu de la cible) | Mêlée | Tir |
+|----------------------|-------|-----|
+| **De face** (±67°) | — | — |
+| **De flanc** | -1 au toucher | — |
+| **De dos** | -1 au toucher, sauvegarde -1, choc (ébranlement) | sauvegarde -1 (le bouclier est devant) |
+
+Une troupe qui se retourne vers un nouvel agresseur présente son dos à
+l'ancien: prendre un ennemi à deux, ou le déborder, devient payant. La mêlée
+de l'IA choisit, parmi les cases d'attaque atteignables dans le round, celle
+qui prend la cible de flanc ou de dos. Mesuré: environ un tiers des coups de
+mêlée partent de flanc ou de dos. Le moteur et l'estimation de l'IA lisent la
+même règle (`facing.py`, via `terrain.combat_mods`).
+
+### Munitions et fatigue
+
+- **Carquois**: 10 volées par tireur (trait `ammo:N` pour régler une unité).
+  À court, le tireur passe à son arme de mêlée — ou à un coutelas improvisé —
+  et l'IA le traite en fantassin. À 3 volées ou moins, il ne tire plus sur une
+  cible qu'il n'a presque aucune chance de blesser (tir économe).
+- La **garnison** postée sur le rempart actif puise dans les réserves de la
+  place; l'**assaillant** d'un siège a amené son train (carquois doublés).
+  Les machines de guerre n'ont pas de carquois: elles ont le rechargement.
+- **Fatigue**: +1 par round de mêlée, +2 de plus pour une charge; -1 par round
+  hors du contact, -2 au calme. **Fatiguée** (≥ 3): -1 au toucher en mêlée.
+  **Épuisée** (≥ 6): -1 au toucher partout, -1 en vitesse, plus de charge.
+  Elle pèse surtout sur les unités solides engagées longtemps (héros,
+  monstres, housecarls, cavalerie): un fantassin à 1 PV tombe avant.
+
+La fiche d'unité (survol) affiche munitions, fatigue et l'état *recharge*,
+*fatiguée* ou *épuisée*.
+
+### Météo
+
+Une condition par bataille, choisie au menu et affichée dans le bandeau
+(`weather.py`, rendu `weather_render.py`). *Clair* ne tire aucun dé: une
+graine rejoue exactement la bataille d'avant la météo.
+
+| Météo | Tir | Feu | Autre |
+|-------|-----|-----|-------|
+| **Pluie** | +1 au seuil de toucher | allumage ×0,5, s'éteint 2× plus vite | traînées de pluie |
+| **Brouillard** | portée plafonnée à 7 cases, la hauteur ne fait plus voir plus loin | — | voile et bancs de brume |
+| **Vent** | +1 portée dans le vent, +1 au seuil de toucher contre | court sous le vent (×1,8), remonte mal (×0,4) | la fumée file avec lui |
+| **Crépuscule** | portée -2 (jamais sous 4) | — | teinte ambrée |
+| **Chaleur** | — | allumage ×1,3 | fatigue ×2 |
+
+Brouillard et crépuscule raccourcissent les armes dès le déploiement: l'IA
+place ses tireurs à leur vraie portée. Une machine garde sa portée nominale
+contre un mur ou une porte (cible fixe). *Aléatoire* tire la météo selon le
+biome — et jamais brouillard ni crépuscule en siège: mesuré, ils y écrasent
+l'assaillant (0 à 17 % de victoires selon l'affrontement, contre 25 à 50 %
+par temps clair), car la garnison protégée gagne tout échange de tir à courte
+portée. On peut les choisir explicitement. Effet mesuré par temps de pluie:
+la mêlée contre les archers passe de 37 % à 77 % de victoires.
+
 ### Siège
 
 - Les **tireurs** et **mages** sur les remparts ne bougent jamais (avantage positionnel)
 - Les défenseurs sur rempart bénéficient de **+2 sauvegarde** (seuil réduit de 2)
 - Les attaquants sur les murs ont **-1 toucher** (plus facile de toucher)
 - Les **portes** ont des PV et peuvent être détruites pour percer la défense
+- Les **machines de guerre** rechargent un round après chaque tir **sur des
+  troupes** (il faut repointer); battre un mur ou une porte garde le réglage,
+  sans rechargement. Sans cela, la baliste abattait la garnison hors de toute
+  riposte (assaillant 72 % au banc « Siege baliste », environ 50 % depuis).
 
 ### Sorts
 
@@ -326,6 +394,10 @@ battle-simulator/
 ├── maps.py              # Définition des cartes et génération de terrain
 ├── terrain.py           # Règles de terrain (coûts, vue, modificateurs)
 ├── terrain_render.py    # Motifs et légende du terrain
+├── facing.py            # Orientation: arcs de face, de flanc, de dos
+├── weather.py           # Météo: règles (tir, feu, fatigue) et tirage
+├── weather_render.py    # Météo: calque visuel (pluie, brume, vent…)
+├── bench.py             # Bancs d'équilibrage unifiés (suites, comparaison)
 ├── tokens/              # Images PNG des tokens d'unités (optionnel)
 └── requirements.txt     # Dépendances Python
 ```
@@ -355,13 +427,27 @@ Chaque round se déroule en phases :
 5. **Charge** — choc horodaté tôt dans le round, cible choisie pour sa valeur
 6. **Échange général** — résolution dans l'ordre d'initiative, avec enchaînements (élan)
 
-Le banc d'essai `bench_balance.py` rejoue des affrontements types sur N graines
+Chaque phase est une méthode de `Battle` (`_command_phase`, `_plan_moves`,
+`_apply_moves`, `_exchange_phase`…): `simulate_round` se lit comme leur
+sommaire, dans l'ordre des tirages aléatoires.
+
+Le banc d'essai `bench.py` rejoue des affrontements types sur N graines
 et affiche taux de victoire, durée et survivants : de quoi vérifier qu'une
 modification de mécanique ne fait pas basculer l'équilibre.
 
 ### Tests
 
 ```bash
+python run_tests.py                         # toutes les suites, en parallèle (sans dépendance)
+python run_tests.py terrain ui              # seulement les suites nommées
+```
+
+Chaque suite reste un script autonome:
+
+```bash
+python src/test_facing.py                   # orientation: arcs, modificateurs, rotation, IA
+python src/test_endurance.py                # munitions et fatigue
+python src/test_weather.py                  # météo: règles, feu, menu, rendu
 python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
 python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental
@@ -374,9 +460,11 @@ python src/test_determinism.py              # une graine rejoue la même bataill
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
 python src/measure_contact.py               # round du premier contact par carte
-python src/bench_balance.py 60              # équilibrage sur 60 graines par affrontement
-python src/bench_maps.py 60                 # équilibrage Village et Défilé
-python src/bench_sides.py 300               # biais de côté: une armée contre son double, par carte
+python src/bench.py balance 60              # équilibrage sur 60 graines par affrontement
+python src/bench.py maps 60                 # équilibrage Village et Défilé
+python src/bench.py sides 300               # biais de côté: une armée contre son double, par carte
+python src/bench.py themes 60               # sièges avec rivière, collines, bois, désert
+python src/bench.py all 60 --only siege --weather Pluie --compare docs/superpowers/baselines/bench-after-1E.txt
 python src/bench_fire.py 60                 # incendies: part du combustible consumé, durée des batailles
 python src/bench_plans.py 40                # IA avec plans contre la même IA sans plan
 ```

@@ -25,9 +25,7 @@ def p_d6_ge(threshold):
 
 def _avg_roll(arme):
     """Dégâts moyens d'un jet de l'arme."""
-    if getattr(arme, '_is_dice', False):
-        return arme._bonus + arme._nb_des * (arme._faces + 1) / 2.0
-    return getattr(arme, '_fixed_damage', 1)
+    return arme.dice.average
 
 
 def weapon_expected_damage(arme, attacker, target, extra_perf=0,

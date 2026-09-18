@@ -1,6 +1,51 @@
 import random
 
 
+class Dice:
+    """Expression de dégâts: "3", "1d4", "2+1d6". Immuable.
+
+    `bonus` s'ajoute toujours au jet (y compris pour des dégâts fixes, qui
+    sont un bonus sans dé)."""
+    __slots__ = ("count", "faces", "bonus")
+
+    def __init__(self, count=0, faces=0, bonus=0):
+        self.count = count
+        self.faces = faces
+        self.bonus = bonus
+
+    @classmethod
+    def parse(cls, expr):
+        s = str(expr).lower().strip()
+        try:
+            if 'd' in s:
+                bonus = 0
+                if '+' in s:
+                    head, s = s.split('+', 1)
+                    bonus = int(head)
+                count, faces = s.split('d')
+                return cls(int(count), int(faces), bonus)
+            return cls(0, 0, int(float(s)))
+        except (ValueError, TypeError):
+            return cls(0, 0, 1)
+
+    def plus(self, extra):
+        """Même jet avec un bonus fixe supplémentaire."""
+        return Dice(self.count, self.faces, self.bonus + extra)
+
+    def roll(self):
+        return self.bonus + sum(random.randint(1, self.faces) for _ in range(self.count))
+
+    @property
+    def average(self):
+        return self.bonus + self.count * (self.faces + 1) / 2.0
+
+    def __repr__(self):
+        if not self.count:
+            return str(self.bonus)
+        core = f"{self.count}d{self.faces}"
+        return f"{self.bonus}+{core}" if self.bonus else core
+
+
 class Arme:
     def __init__(self, name, nb_attaque, toucher, blesser, perforation, degats, porte=1, special=None):
         self.name = name
@@ -11,40 +56,14 @@ class Arme:
         self.degats = degats
         self.porte = porte
         self.range = porte
+        # Portée nominale: la météo peut réduire `porte` (brouillard,
+        # crépuscule), pas le tir d'une machine sur un mur, cible fixe
+        self.base_porte = porte
         self.special = special or {}
-        
-        self._bonus = 0
-        degats_str = str(degats).lower().strip()
-        
-        if '+' in degats_str and 'd' in degats_str:
-            parts = degats_str.split('+')
-            try:
-                self._bonus = int(parts[0])
-            except ValueError:
-                self._bonus = 0
-            dice_part = parts[1]
-            dp = dice_part.split('d')
-            self._nb_des = int(dp[0])
-            self._faces = int(dp[1])
-            self._is_dice = True
-        elif 'd' in degats_str:
-            dp = degats_str.split('d')
-            self._nb_des = int(dp[0])
-            self._faces = int(dp[1])
-            self._is_dice = True
-        else:
-            self._nb_des = 0
-            self._faces = 0
-            self._is_dice = False
-            try:
-                self._fixed_damage = int(float(degats_str))
-            except (ValueError, TypeError):
-                self._fixed_damage = 1
-    
+        self.dice = Dice.parse(degats)
+
     def lancer_degats(self):
-        if self._is_dice:
-            return self._bonus + sum(random.randint(1, self._faces) for _ in range(self._nb_des))
-        return self._fixed_damage
+        return self.dice.roll()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -90,30 +109,10 @@ class SpellFireball(Spell):
         self.degats = degats
         self.aoe_size = aoe_size  # 3 = zone 3×3
         
-        # Parser dégâts
-        self._parse_degats(degats)
-    
-    def _parse_degats(self, degats):
-        s = str(degats).lower().strip()
-        self._bonus = 0
-        if '+' in s and 'd' in s:
-            parts = s.split('+')
-            self._bonus = int(parts[0])
-            dp = parts[1].split('d')
-            self._nb_des, self._faces = int(dp[0]), int(dp[1])
-            self._is_dice = True
-        elif 'd' in s:
-            dp = s.split('d')
-            self._nb_des, self._faces = int(dp[0]), int(dp[1])
-            self._is_dice = True
-        else:
-            self._is_dice = False
-            self._fixed = int(float(s))
-    
+        self.dice = Dice.parse(degats)
+
     def lancer_degats(self):
-        if self._is_dice:
-            return self._bonus + sum(random.randint(1, self._faces) for _ in range(self._nb_des))
-        return self._fixed
+        return self.dice.roll()
 
 
 class SpellHeal(Spell):
@@ -138,26 +137,10 @@ class SpellMagicProjectile(Spell):
         self.blesser = blesser
         self.degats = degats
         
-        s = str(degats).lower().strip()
-        self._bonus = 0
-        if '+' in s and 'd' in s:
-            parts = s.split('+')
-            self._bonus = int(parts[0])
-            dp = parts[1].split('d')
-            self._nb_des, self._faces = int(dp[0]), int(dp[1])
-            self._is_dice = True
-        elif 'd' in s:
-            dp = s.split('d')
-            self._nb_des, self._faces = int(dp[0]), int(dp[1])
-            self._is_dice = True
-        else:
-            self._is_dice = False
-            self._fixed = int(float(s))
-    
+        self.dice = Dice.parse(degats)
+
     def lancer_degats(self):
-        if self._is_dice:
-            return self._bonus + sum(random.randint(1, self._faces) for _ in range(self._nb_des))
-        return self._fixed
+        return self.dice.roll()
 
 
 class SpellWall(Spell):

@@ -213,6 +213,7 @@ def target(pos, save=7):
 
 
 def mean_damage(bf, a, t, n=3000):
+    a.ammo = None     # on mesure le taux par volée, pas l'épuisement du carquois
     total = 0
     for _ in range(n):
         before = t.hp

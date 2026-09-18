@@ -1047,8 +1047,8 @@ def generate_defile(width, height):
 
 
 def deploy_front(width, deploy_gap=None, siege=False):
-    """Colonne de front de l'armée 1, selon la même formule que
-    Battle._place_armies: rien de procédural ne doit tomber à sa gauche
+    """Colonne de front de l'armée 1 (source unique: Battle._place_armies
+    l'utilise aussi). Rien de procédural ne doit tomber à sa gauche
     (principe « zones de déploiement en plaine »)."""
     mid_x = width // 2
     if siege:

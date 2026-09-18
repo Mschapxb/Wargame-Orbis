@@ -216,6 +216,9 @@ class FxRenderer:
         fires = getattr(battle.battlefield, 'fires', None)
         if fires:
             reveal = getattr(battle, 'fire_reveal', {})
+            # La fumée file avec le vent (weather.py); sans vent, vers l'est
+            sky = getattr(battle.battlefield, 'weather', None)
+            drift = (sky.wind if sky is not None and sky.wind else 1)
             view = self._view
             for (fx_, fy_) in fires:
                 if rf < reveal.get((fx_, fy_), 0):
@@ -231,7 +234,8 @@ class FxRenderer:
                     # plus cher du rendu d'un incendie.
                     grey = rng.randint(118, 150)
                     self._emit(x + rng.uniform(-cs * 0.3, cs * 0.3), y - cs * 0.5,
-                               rng.uniform(0.18, 0.4), -rng.uniform(0.35, 0.7),
+                               drift * rng.uniform(0.18, 0.4) * (2.0 if sky and sky.wind else 1.0),
+                               -rng.uniform(0.35, 0.7),
                                rng.randint(80, 110), cs * rng.uniform(0.6, 0.9),
                                (grey, grey - 6, grey - 12), 'smoke', 0.985)
                 if rng.random() < 0.16:

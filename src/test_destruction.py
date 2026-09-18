@@ -427,6 +427,7 @@ def test_couvert_palissade_moteur_egal_estimation():
     a = Unit("Archer", pv=100, vitesse=4, morale=3, sauvegarde=7, color=(1, 1, 1),
              armes=[Arme("Arc", nb_attaque=1, toucher=3, blesser=1, perforation=0, degats="1", porte=8)])
     a.position = (0, 1)
+    a.ammo = None     # on mesure le taux par volée, pas l'épuisement du carquois
     t = Unit("Cible", pv=100000, vitesse=4, morale=5, sauvegarde=7, color=(2, 2, 2),
              armes=[Arme("Epee", 1, 4, 4, 0, "1", porte=1)])
     t.position = (6, 1)

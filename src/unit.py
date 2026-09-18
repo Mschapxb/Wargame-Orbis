@@ -2,6 +2,7 @@ import random
 from collections import deque
 
 from effects import FloatingText, FX_CLOCK
+import facing
 import structures as st
 import terrain as tr
 
@@ -10,6 +11,36 @@ import itertools
 # Identifiant stable: sert de clé de tri déterministe (id() change d'une
 # exécution à l'autre et rendait les graines non reproductibles).
 _UID = itertools.count(1)
+
+# Rounds de rechargement d'une machine de guerre après un tir SUR DES
+# TROUPES (il faut repointer; battre un mur garde le réglage). Sans cela,
+# une baliste (perforation -2, portée 18) abat ~2 défenseurs par siège hors
+# de toute riposte: assaillant 72 % au banc « Siege baliste ».
+ENGINE_RELOAD = 1
+
+# ─── Munitions ───
+# Volées par tireur (trait "ammo:N" pour régler une unité). Mesuré avant
+# réglage: médiane 3-5 volées par bataille rangée (p90 7-9), 8-9 en siège
+# (p90 13-16): la limite pèse sur les longs échanges, pas sur une escarmouche.
+DEFAULT_AMMO = 10
+# Tir économe: à ce stock ou moins, on ne tire plus sur une cible qu'on n'a
+# presque aucune chance de blesser (dégâts espérés sous ce seuil)
+AMMO_SPARING = 3
+AMMO_SPARING_MIN_DMG = 0.15
+# L'assaillant d'un siège a amené son train de munitions (la garnison, elle,
+# puise dans les réserves de la place quand elle tient le rempart)
+SIEGE_TRAIN_FACTOR = 2
+# Arme improvisée d'un tireur à court de traits sans arme de mêlée
+_IMPROVISED = ("Coutelas", 1, 5, 5, 0, "1")
+
+# ─── Fatigue ───
+# +1 par round de mêlée, +2 de plus pour une charge; on récupère hors du
+# contact (-1, -2 au calme). Seuils:
+# (mesuré: avec 4/7, moins de 1 % des rounds-unités fatigués — les duels
+# d'infanterie à 1 PV sont trop courts pour que la fatigue joue)
+FATIGUE_TIRED = 3        # fatigué: -1 au toucher en mêlée
+FATIGUE_EXHAUSTED = 6    # épuisé: -1 au toucher partout, -1 vitesse, pas de charge
+FATIGUE_MAX = 10
 
 
 def reassign_uid(u):
@@ -129,6 +160,28 @@ class Unit:
         self._damage_prev_round = 0      # Dégâts encaissés au round précédent
         self._cells_moved = 0            # Cases parcourues dans le round
         self._calm_rounds = 0            # Rounds consécutifs au calme
+        # Rechargement: rounds passés à réarmer après chaque tir (machines
+        # de guerre). Trait "reload:N" pour le régler par unité.
+        self.reload_rounds = next(
+            (int(k.split(":")[1]) for k in self.special if k.startswith("reload:")),
+            ENGINE_RELOAD if unit_type == "Artillerie" else 0)
+        self._reload_timer = 0
+        # Orientation (vecteur unitaire, cf. facing.py). None: pas encore
+        # déployée, tous les coups sont alors « de face ».
+        self.facing = None
+        # Munitions: None = illimitées (mêlée, machines de guerre)
+        has_bow = any(a.porte >= 4 for a in self.armes) and unit_type != "Artillerie"
+        self.max_ammo = next(
+            (int(k.split(":")[1]) for k in self.special if k.startswith("ammo:")),
+            DEFAULT_AMMO) if has_bow else None
+        self.ammo = self.max_ammo
+        self._spent_weapons = []         # armes de tir remisées, carquois vide
+        # Fatigue (cf. FATIGUE_*) et vitesse de référence (fixée au 1er round,
+        # APRÈS les bonus du menu)
+        self.fatigue = 0
+        self._melee_this_round = False
+        self._base_vitesse = None
+        self.fatigue_rate = 1.0          # multiplicateur (météo: chaleur)
         
         # Pré-calculer les propriétés spéciales
         if self.special.get("causes_fear"):
@@ -211,6 +264,13 @@ class Unit:
         self._opportunity_used = False
         self._momentum_used = False
         self._acted_this_round = False
+        self._melee_this_round = False
+        if self._base_vitesse is None:
+            self._base_vitesse = self.vitesse
+        self.vitesse = (max(1, self._base_vitesse - 1)
+                        if self.exhausted and self._base_vitesse > 0 else self._base_vitesse)
+        if self._reload_timer > 0:
+            self._reload_timer -= 1
         self._damage_taken_round = 0
         self._cells_moved = 0
         self._reaction_text = ""
@@ -229,6 +289,7 @@ class Unit:
         lus: les mécaniques de feu nourri et de camarade tombé ne se
         déclenchaient jamais.
         """
+        self._update_fatigue()
         self._damage_prev_round = self._damage_taken_round
         self._suppression = max(0, self._suppression - 1)
         self._shock = max(0, self._shock - 1)
@@ -348,25 +409,16 @@ class Unit:
         # débouche. Le gain de tempo se paie d'un peu de précision. ───
         snap_toucher = 1 if kind == "reaction" else 0
 
-        # ─── Prise à revers: une cible déjà accrochée par un camarade se
-        # défend moins bien. C'est ce qui rend le débordement PAYANT et
-        # récompense la concentration des efforts. ───
-        flank_toucher = 0
-        if battle is not None and dist <= 2 and self._max_range <= 2:
-            tx_f, ty_f = target.position
-            engaged_allies = 0
-            for a in battle.get_allies(self):
-                if a is self or not a.is_alive or a.fleeing:
-                    continue
-                if abs(a.position[0] - tx_f) + abs(a.position[1] - ty_f) <= 1:
-                    engaged_allies += 1
-                    break
-            if engaged_allies >= 1:
-                flank_toucher = -1
-                if kind == "normal":
-                    self.floating_texts.append(
-                        FloatingText("À revers!", (255, 200, 120), 45))
-
+        # ─── Flanc / dos (facing.py): le modificateur passe par
+        # tr.combat_mods; ici on l'annonce, et un coup de mêlée reçu dans le
+        # dos ébranle (choc). Puis l'attaquant se tourne vers sa cible. ───
+        arc = facing.arc(self, target)
+        if arc != facing.FRONT and kind in ("normal", "charge"):
+            self.floating_texts.append(
+                FloatingText(facing.LABELS[arc], (255, 200, 120), 45))
+        if arc == facing.REAR and self._max_range < 4 and dist <= 2:
+            target._shock += 1
+        facing.face_unit(self, target)
 
         # Bonus de charge (appliqué si has_charged ce round)
         charge_toucher = 0
@@ -380,14 +432,22 @@ class Unit:
                 charge_blesser = -1
             self.has_charged = False  # Reset après application
 
+        fired_volley = False
         for arme in armes:
             if dist > tr.weapon_reach(battlefield, arme, self, target):
+                continue
+            if arme.porte >= 4 and self.ammo is not None and self.ammo <= 0:
                 continue
             # Ligne de vue: un mur ou une porte fermée bloque les tirs
             if arme.porte >= 4 and not battlefield.has_line_of_fire(self, target):
                 continue
 
             is_ranged_weapon = arme.porte >= 4
+            if is_ranged_weapon:
+                fired_volley = True
+            else:
+                self._melee_this_round = True
+                target._melee_this_round = True
             tmods = tr.combat_mods(battlefield, self, target, is_ranged_weapon)
             # Sprite du projectile: trait de baliste, carreau ou flèche
             if self.is_artillery or arme.porte >= 16:
@@ -421,7 +481,7 @@ class Unit:
                 # Résolution combat avec bonus
                 toucher_final = (arme.toucher + (1 if self.afraid else 0)
                                  + anti_toucher + charge_toucher + wall_toucher_bonus
-                                 + flank_toucher + snap_toucher + tmods['toucher'])
+                                 + snap_toucher + tmods['toucher'])
                 blesser_final = arme.blesser + anti_blesser + charge_blesser
                 perf_final = arme.perforation + charge_perf
 
@@ -469,6 +529,12 @@ class Unit:
 
             if not target.is_alive:
                 break
+
+        # Une volée tirée, une volée de moins — sauf pour la garnison postée
+        # sur le rempart actif, qui puise dans les réserves de la place.
+        if fired_volley and not (battlefield.gate_hp and battlefield.on_active_rampart(
+                *self.position, self, battle)):
+            self.spend_ammo()
 
         FX_CLOCK.at(base_t)
         return events
@@ -788,6 +854,89 @@ class Unit:
                 self.sauvegarde += self._armor_buff_amount
                 self._armor_buff = False
                 self.floating_texts.append(FloatingText("Armure dissipée", (150, 150, 200), 50))
+
+    # ─── Fatigue ───
+
+    @property
+    def tired(self):
+        return self.fatigue >= FATIGUE_TIRED
+
+    @property
+    def exhausted(self):
+        return self.fatigue >= FATIGUE_EXHAUSTED
+
+    def fatigue_toucher(self, ranged):
+        """Malus au seuil de toucher dû à la fatigue (lu par combat_mods)."""
+        if self.exhausted:
+            return 1
+        if self.tired and not ranged:
+            return 1
+        return 0
+
+    def _update_fatigue(self):
+        """Fin de round: la mêlée et la charge fatiguent, le repos délasse."""
+        was_exhausted = self.exhausted
+        if self._melee_this_round:
+            gain = 1 + (2 if getattr(self, '_charged_this_round', False) else 0)
+            self.fatigue = min(FATIGUE_MAX, self.fatigue + int(round(gain * self.fatigue_rate)))
+        elif self.fatigue > 0:
+            rest = 2 if self._calm_rounds > 0 else 1
+            self.fatigue = max(0, self.fatigue - rest)
+        if self.exhausted and not was_exhausted and self.is_alive:
+            self.floating_texts.append(FloatingText("Épuisé!", (220, 190, 120), 60))
+
+    # ─── Munitions ───
+
+    def spend_ammo(self):
+        """Une volée tirée. À court: on remise l'arme de tir et l'on passe
+        à la mêlée (arme de mêlée, sinon coutelas improvisé)."""
+        if self.ammo is None:
+            return
+        self.ammo = max(0, self.ammo - 1)
+        if self.ammo == 0:
+            self._out_of_ammo()
+
+    def refill_ammo(self, factor=1):
+        """Dote l'unité d'un carquois (×factor)."""
+        if self.max_ammo is not None:
+            self.max_ammo = int(self.max_ammo * factor)
+            self.ammo = self.max_ammo
+
+    def spares_ammo(self, target, battlefield):
+        """Tir économe: à court de traits, on garde ses volées pour une
+        cible qui en vaut la peine."""
+        if self.ammo is None or self.ammo > AMMO_SPARING:
+            return False
+        import tactics
+        d = abs(self.position[0] - target.position[0]) + abs(self.position[1] - target.position[1])
+        return tactics.expected_damage(self, target, d, battlefield) < AMMO_SPARING_MIN_DMG
+
+    def _out_of_ammo(self):
+        from models import Arme
+        ranged = [a for a in self.armes if a.porte >= 4]
+        if not ranged:
+            return
+        self._spent_weapons.extend(ranged)
+        self.armes = [a for a in self.armes if a.porte < 4]
+        if not self.armes:
+            n, att, tou, bl, perf, deg = _IMPROVISED
+            self.armes = [Arme(n, att, tou, bl, perf, deg, porte=1)]
+        self._max_range = max(a.porte for a in self.armes)
+        self.attack_type = ("spell" if self.spells else
+                            ("reach" if self._max_range >= 2 else "melee"))
+        if self.role == "back" and not self.spells:
+            self.role = "front"
+        self.floating_texts.append(FloatingText("Plus de traits!", (230, 200, 120), 70))
+
+    @property
+    def reloading(self):
+        """Machine encore en train de réarmer: elle ne tire pas ce round."""
+        return self._reload_timer > 0
+
+    def mark_fired(self):
+        """À appeler après un tir: lance le rechargement éventuel."""
+        if self.reload_rounds > 0:
+            self._reload_timer = self.reload_rounds + 1
 
     @property
     def is_artillery(self):

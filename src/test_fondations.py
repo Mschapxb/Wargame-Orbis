@@ -96,6 +96,40 @@ def test_rempart_toujours_visible_par_dessus_le_mur():
     assert bf.has_line_of_fire(archer((0, 2)), target((8, 2))) is True
 
 
+@test
+def test_rempart_ne_voit_pas_a_travers_une_maison():
+    import structures as st
+    grid = [[0] * 6 for _ in range(12)]
+    grid[4][2] = 2                      # le mur
+    grid[6][2] = 1                      # une maison dans la cour
+    grid[5][3] = 1                      # une haie basse
+    bf = Battlefield(12, 6, 0, "Siège", grid,
+                     {'walls': [(4, 2)], 'ramparts': [(8, 2), (8, 3)]})
+    bf.structures = {(6, 2): (st.HOUSE, 0), (5, 3): (st.HEDGE, 1)}
+    # la maison coupe, même depuis le rempart
+    assert bf.has_line_of_fire(archer((8, 2)), target((0, 2))) is False
+    # la haie basse ne coupe pas le tir plongeant
+    assert bf.has_line_of_fire(archer((8, 3)), target((0, 3))) is True
+
+
+@test
+def test_machine_de_guerre_recharge_un_round_sur_deux():
+    import unit_library as ul
+    bal = ul.make_unit("Armée Skaldienne", "Baliste")
+    fant = ul.make_unit("Armée Skaldienne", "Infanterie régulière")
+    assert bal.reload_rounds == 1 and fant.reload_rounds == 0
+    tirs = []
+    for _ in range(4):
+        bal.start_round()
+        tirs.append(not bal.reloading)
+        if not bal.reloading:
+            bal.mark_fired()
+    assert tirs == [True, False, True, False], tirs
+    fant.mark_fired()
+    fant.start_round()
+    assert not fant.reloading
+
+
 # ── Estimation IA ──
 
 @test
@@ -104,6 +138,7 @@ def test_estimation_rempart_conforme_au_moteur():
     grid = [[0] * 6 for _ in range(12)]
     bf = Battlefield(12, 6, 0, "Siège", grid, {'walls': [(5, 5)], 'ramparts': [(6, 1)]})
     a, t = archer((0, 1)), target((6, 1), save=5)
+    a.ammo = None     # on mesure le taux par volée, pas l'épuisement du carquois
     bf.place_unit(a)
     bf.place_unit(t)
     open_ground = target((6, 3), save=5)
