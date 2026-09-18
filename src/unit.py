@@ -680,7 +680,7 @@ class Unit:
                 if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
                     enemy.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
                     continue
-                save_mod = min(7, enemy.sauvegarde + spell.perforation)
+                save_mod = min(7, enemy.sauvegarde - spell.perforation)
                 if random.randint(1, 6) >= save_mod:
                     enemy.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
                     continue
@@ -704,7 +704,7 @@ class Unit:
                         hit.add(gid)
                         kind = bf.structure_kind[gid]
                         cells = list(bf.structure_members[gid])
-                        if (random.randint(1, 6) < min(7, st.KINDS[kind]['save'] + spell.perforation)
+                        if (random.randint(1, 6) < min(7, st.KINDS[kind]['save'] - spell.perforation)
                                 and st.damage(bf, gid, random.randint(1, 4))):
                             battle._structure_collapsed(gid, kind, cells)
                     if (st.flammability(bf, gx, gy) > 0
