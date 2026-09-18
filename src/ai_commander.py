@@ -88,6 +88,22 @@ _TEMPERAMENTS = {
 }
 
 
+# ─── Agressivité ───
+# Postures où l'on attend l'ennemi: là seulement, une unité peut refuser le
+# contact pour tenir sa place. Partout ailleurs, l'IA va au combat.
+DEFENSIVE_POSTURES = frozenset(("hold_line", "regroup", "screen", "hold_walls",
+                                "fall_back", "recall"))
+# Un ennemi à portée de marche du round (au moins cette distance Manhattan),
+# on le combat au lieu de le contourner pour une cible « de valeur » plus
+# loin (mesuré avant: 66 % des mêlées proches d'un ennemi visaient un
+# adversaire plus éloigné).
+ENGAGE_RANGE = 2
+# Pénalité de distance du choix de cible de mêlée, par case et par point de
+# vitesse (agressif / défensif).
+MELEE_DIST_COST = 3.2
+MELEE_DIST_COST_DEFENSIVE = 1.65
+
+
 class CommanderAI:
     # Plans de bataille multi-rounds (cf. battle_plan.py). Désactivables pour
     # mesurer ce qu'ils apportent (bench_plans.py).
@@ -530,6 +546,7 @@ class CommanderAI:
                 (is_defender and self.posture == "sortie"))
 
         taken_slots = set()
+        aggressive = self.aggressive()
         for unit in alive:
             lane = lanes.get(id(unit), 0)
             unit._rush = rush  # battle.py: désactive le frein de cohésion
@@ -544,6 +561,8 @@ class CommanderAI:
                     order = self._siege_defense(unit, enemies, prio, battle)
             else:
                 order = self._standard(unit, enemies_f, prio, ec, mc, battle, s)
+            if aggressive:
+                order = self._engage_reflex(unit, enemies, order)
             order.lane = lane
             unit._tactical_order = order
 
@@ -1356,8 +1375,15 @@ class CommanderAI:
     # ─── Kiting (tir en reculant) ───
 
     def _kite_threat(self, unit, enemies):
-        """Retourne l'ennemi de mêlée menaçant si le tireur doit reculer."""
+        """Retourne l'ennemi de mêlée menaçant si le tireur doit reculer.
+
+        Reculer en tirant (« kiting ») fait tourner la mêlée adverse en rond
+        et retarde le choc: réservé à une armée qui attend l'ennemi (posture
+        défensive, hauteurs tenues). À l'offensive, un tireur tient sa place
+        et tire — sauf s'il est blessé (≤ 50 % des PV)."""
         if unit._max_range < 4 or unit.vitesse < 3:
+            return None
+        if self.aggressive() and unit.hp > unit.max_hp * 0.5:
             return None
         ux, uy = unit.position
         if self.battlefield.is_rampart(ux, uy):
@@ -1708,12 +1734,83 @@ class CommanderAI:
         c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=1)
 
+    def aggressive(self):
+        """L'armée va-t-elle au combat (par défaut) ou attend-elle l'ennemi
+        (posture défensive, garnison, hauteurs tenues par le plan) ?"""
+        if self.posture in DEFENSIVE_POSTURES:
+            return False
+        bf = self.battlefield
+        if bf.is_siege and not self.is_army1 and self.posture != "sortie":
+            return False
+        plan = self.plan if self.use_plans else None
+        if plan is not None and plan.kind == "colline" and plan.phase in ("prise", "tenue"):
+            return False
+        return True
+
+    def _melee_can_reach(self, unit, e):
+        """Un ennemi est-il abordable en mêlée ? Pas un défenseur sur le
+        rempart (le mur l'abrite), ni un ennemi derrière une enceinte dont
+        les portes tiennent: s'y acharner, c'est piétiner au pied du mur."""
+        bf = self.battlefield
+        if not bf.is_siege:
+            return True
+        if bf.is_rampart(*e.position):
+            return False
+        wx = bf.wall_x
+        if wx is None:
+            return True
+        gates_hold = not (bf.gates_open or bf.active_breaches
+                          or all(hp <= 0 for hp in bf.active_gates.values()))
+        return not (gates_hold and (unit.position[0] < wx) != (e.position[0] < wx))
+
+    def _engage_reflex(self, unit, enemies, order):
+        """Au contact (ou à un pas), une mêlée agressive combat l'ennemi qui
+        est LÀ plutôt que de le contourner: c'est ce qui faisait tourner les
+        unités autour des lignes adverses et retardait le choc."""
+        if (unit._max_range >= 4 or unit.spells or getattr(unit, 'is_artillery', False)
+                or unit.vitesse <= 0):
+            return order
+        if order.order_type in ("withdraw", "demolish", "kite"):
+            return order
+        plan = self.plan if self.use_plans else None
+        if plan is not None:
+            role = plan.roles.get(id(unit))
+            if (role == "refused" and plan.phase == "refus") or (
+                    role == "lure" and plan.phase == "feinte"):
+                return order
+        ux, uy = unit.position
+        # Ce qu'on peut atteindre dans le round (au moins ENGAGE_RANGE)
+        engage = max(ENGAGE_RANGE, unit.vitesse)
+        near = [e for e in enemies
+                if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= engage
+                and self._melee_can_reach(unit, e)]
+        if not near:
+            return order
+        if order.order_type == "attack" and order.target_unit in near:
+            return order
+        bf = self.battlefield
+
+        def value(e):
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            dmg = tactics.expected_damage(unit, e, 1, bf)
+            return (tactics.kill_chance(dmg, e) * 10.0 + dmg - d * 1.5
+                    + 1.5 * min(self._claims.get(id(e), 0), 2), -e.uid)
+        best = max(near, key=value)
+        self._claims[id(best)] = self._claims.get(id(best), 0) + 1
+        return TacticalOrder("attack", target_unit=best, priority=max(order.priority, 5))
+
     def _melee_order(self, unit, enemies, prio):
         """Choix du combat: meilleur RAPPORT entre ce qu'on peut abattre et
         le chemin à parcourir pour y arriver."""
         bf = self.battlefield
         ux, uy = unit.position
         reach = max(unit.vitesse * 2, 6)
+        # En siège, l'objectif de l'assaillant est la porte ou la brèche, pas
+        # l'ennemi le plus proche: le coût de distance agressif y faisait
+        # basculer l'équilibre (baliste 41 % → 61 %, mêmes graines).
+        aggressive = self.aggressive() and not bf.is_siege
+        dist_cost = MELEE_DIST_COST if aggressive else MELEE_DIST_COST_DEFENSIVE
+        d_near = min(abs(ux - e.position[0]) + abs(uy - e.position[1]) for e in enemies)
         best, best_score = None, -1e9
         for score, e in prio:
             d = abs(ux - e.position[0]) + abs(uy - e.position[1])
@@ -1725,7 +1822,11 @@ class CommanderAI:
                 val += 4.0                       # achever
             if self.posture == "exploit":
                 val += tactics.kill_chance(dmg, e) * 6.0
-            val -= d * 1.65 / max(1, unit.vitesse)
+            val -= d * dist_cost / max(1, unit.vitesse)
+            # Passer à côté d'un ennemi pour en chercher un autre plus loin,
+            # c'est lui offrir son flanc et retarder le choc
+            if aggressive and d > d_near + max(2, unit.vitesse):
+                val -= 6.0
             # Frapper ENSEMBLE: rejoindre les camarades qui visent déjà cette
             # cible garde les paquets serrés et gagne le combat local — mais
             # une cible déjà cernée n'a plus de place autour d'elle.

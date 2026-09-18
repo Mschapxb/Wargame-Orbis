@@ -27,6 +27,10 @@ _COS_FRONT = 0.38
 
 # Préférence de l'IA pour une case d'attaque (plus petit = meilleur)
 ARC_RANK = {REAR: 0, FLANK: 1, FRONT: 2}
+# Surcoût, en pas, d'une case d'attaque selon l'arc: le flanc ou le dos ne
+# l'emportent qu'à distance (presque) égale — sinon les mêlées adverses se
+# tournaient autour en cherchant chacune le flanc de l'autre.
+ARC_COST = {REAR: 0.0, FLANK: 0.25, FRONT: 0.5}
 
 # Libellés affichés au moment du coup
 LABELS = {FLANK: "Flanc!", REAR: "Dans le dos!"}

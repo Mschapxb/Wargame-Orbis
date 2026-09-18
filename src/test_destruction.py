@@ -451,7 +451,9 @@ def test_catapulte_ouvre_une_breche_et_l_assaut_la_prend():
     att = ("Armée Orlandar", {"Fantassin covaliir": 8, "Archer covaliir": 4,
                              "Officier covaliir": 1, "Catapulte covaliir": 1})
     dfd = ("Armée Skaldienne", {"Infanterie régulière": 5, "Arbaletrier régulier": 4, "Officier": 1})
-    for seed in range(8):
+    # La brèche s'ouvre avant le round 25 dans ~60 % des sièges (mesuré sur
+    # 40 graines): 16 graines, pas 8, pour ne pas dépendre d'un tirage.
+    for seed in range(16):
         b = siege_battle(1000 + seed, att, dfd)
         bf = b.battlefield
         while not b.is_battle_over() and b.round <= 25 and not bf.breaches:
@@ -462,7 +464,7 @@ def test_catapulte_ouvre_une_breche_et_l_assaut_la_prend():
         if not b.is_battle_over():
             b.simulate_round()
             switched += b.commander1.assault_gate in bf.breaches or bf.gates_open
-    assert opened >= 4, opened
+    assert opened >= 6, opened
     assert switched >= opened - 1, (switched, opened)
 
 

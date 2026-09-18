@@ -561,7 +561,7 @@ class Battlefield:
         best_priority = None
         best_pos = None
         melee = max_range < 4
-        reach = unit.vitesse + 1
+        close = self.manhattan_distance(unit_pos, target_pos) <= unit.vitesse * 2 + max_range
 
         # Parcours orienté: à priorité égale, la première case trouvée
         # l'emporte — du côté de l'unité, quel que soit son camp (miroir)
@@ -596,13 +596,15 @@ class Battlefield:
                 
                 occupied = 0 if pos not in units_dict else 1
                 dist = abs(ux - px) + abs(uy - py)
-                lane_dist = abs(py - lane_y) // 3
-                # Mêlée: déborder vers le flanc ou le dos de la cible, si la
-                # case est à portée de ce round (pas de grand détour)
-                arc_rank = 2
-                if melee and dist <= reach:
-                    arc_rank = facing.ARC_RANK[facing.arc_from(pos, target)]
-                priority = (occupied, lane_dist, arc_rank, dist)
+                # L'étalement par couloirs sert l'approche; au contact, il
+                # faisait glisser les unités de côté au lieu de frapper.
+                lane_dist = abs(py - lane_y) // 3 if not close else 0
+                # Mêlée: le flanc ou le dos de la cible valent au plus un pas
+                # de détour (au-delà, on tournait autour au lieu de frapper)
+                cost = float(dist)
+                if melee:
+                    cost += facing.ARC_COST[facing.arc_from(pos, target)]
+                priority = (occupied, lane_dist, cost)
                 
                 if best_priority is None or priority < best_priority:
                     best_priority = priority

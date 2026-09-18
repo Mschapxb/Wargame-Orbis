@@ -487,6 +487,7 @@ python src/test_facing.py                   # orientation: arcs, modificateurs, 
 python src/test_endurance.py                # munitions et fatigue
 python src/test_weather.py                  # météo: règles, feu, menu, rendu
 python src/test_map_screen.py               # écran carte: graine, aperçu, avantage de terrain
+python src/test_aggression.py               # agressivité de l'IA: engagement, cibles, recul des tireurs
 python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
 python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental
@@ -564,6 +565,28 @@ de la moitié de ses parties contre la même IA sans plan — les plans rendent
 les batailles lisibles sans affaiblir l'IA (une feinte où les leurres
 chargeaient seuls tombait à 27 %; en sous-bois, les manœuvres cèdent la place
 à l'assaut direct).
+
+### Agressivité: on va au combat
+
+Par défaut, l'IA cherche le choc. Trois règles l'empêchent de faire tourner
+les unités autour de l'ennemi en retardant le combat:
+
+- **Réflexe d'engagement**: une mêlée qui a un ennemi à portée de marche du
+  round le combat, au lieu de le contourner pour une cible « de valeur » plus
+  loin (sauf repli d'une unité à l'agonie, leurres et aile refusée d'un plan).
+- **Choix de cible**: la distance coûte cher; passer à côté d'un ennemi pour
+  en chercher un autre plus loin est fortement pénalisé.
+- **Placement**: le flanc ou le dos d'une cible ne valent qu'un demi-pas de
+  détour; au contact, plus d'étalement par couloirs.
+- **Tireurs**: reculer en tirant (« kiting ») est réservé à l'armée qui
+  attend l'ennemi; à l'offensive, un tireur tient et tire (sauf blessé).
+
+Ces règles ne s'appliquent pas en **défense**: postures tenir la ligne, se
+regrouper, écran, garnison sur ses murs, repli, ni au camp qui **tient ses
+hauteurs** (plan colline, avantage de terrain). En siège, l'assaillant garde
+son objectif (porte, brèche) et ignore les défenseurs abrités sur le rempart.
+Mesuré en taille réelle (178×64): les rounds de « ronde » (mêlée proche d'un
+ennemi qui bouge sans frapper, 2 rounds de suite) passent de 7,3 % à 3,8 %.
 
 ### IA tactique (`ai_commander.py` + `tactics.py`)
 
