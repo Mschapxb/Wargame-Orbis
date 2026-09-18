@@ -362,7 +362,7 @@ class Unit:
         # positionnés dans le temps par rapport à elle (départ du tir,
         # temps de vol du projectile, impact...).
         base_t = FX_CLOCK.current_delay
-        dist = battlefield.manhattan_distance(self.position, target.position)
+        dist = battlefield.unit_distance(self, target)
         armes = self.armes if weapons is None else weapons
 
         range_bonus = tr.range_bonus(battlefield, self, target)

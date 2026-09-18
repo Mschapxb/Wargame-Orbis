@@ -13,6 +13,7 @@ position s'exprime en (proj, lat) relatifs à une origine commune.
 
 import math
 
+import tactics
 import terrain as tr
 
 
@@ -49,12 +50,14 @@ def walkable(bf, x, y):
 
 def nearest_walkable(bf, x, y, taken, radius=3):
     """Case praticable et non attribuée la plus proche de (x, y)."""
-    x = max(1, min(bf.width - 2, int(round(x))))
+    x = max(1, min(bf.width - 2, tactics.mirror_round_x(x, bf.width)))
     y = max(1, min(bf.height - 2, int(round(y))))
+    s = tactics.mirror_sign(x, bf.width)
     for r in range(radius + 1):
         ring = [(x + dx, y + dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)
                 if max(abs(dx), abs(dy)) == r]
-        ring.sort(key=lambda c: (abs(c[0] - x) + abs(c[1] - y), c))
+        # Départage en miroir (un tri sur la case brute préférait l'ouest)
+        ring.sort(key=lambda c: (abs(c[0] - x) + abs(c[1] - y), (c[0] - x) * s, c[1]))
         for c in ring:
             if (0 < c[0] < bf.width - 1 and 0 < c[1] < bf.height - 1
                     and c not in taken and walkable(bf, *c)):

@@ -1014,8 +1014,8 @@ class Battle:
             if e._max_range >= 4:
                 continue  # un tireur ne retient personne au contact
             reach = min(2, e._max_range)
-            d_old = abs(e.position[0] - ox) + abs(e.position[1] - oy)
-            d_new = abs(e.position[0] - nx) + abs(e.position[1] - ny)
+            d_old = self.battlefield.unit_distance(e, mover, b_pos=(ox, oy))
+            d_new = self.battlefield.unit_distance(e, mover, b_pos=(nx, ny))
             if d_old > reach or d_new <= d_old:
                 continue
             melee = [a for a in e.armes if a.porte <= 2]
@@ -1053,8 +1053,8 @@ class Battle:
                     continue
                 old_pos, new_pos = info
                 mr = tr.effective_range(bf, shooter, e)
-                d_old = abs(sx - old_pos[0]) + abs(sy - old_pos[1])
-                d_new = abs(sx - new_pos[0]) + abs(sy - new_pos[1])
+                d_old = bf.unit_distance(shooter, e, b_pos=old_pos)
+                d_new = bf.unit_distance(shooter, e, b_pos=new_pos)
                 if d_old <= mr or d_new > mr:
                     continue  # il était déjà sous le feu, ou toujours hors portée
                 if not bf.has_line_of_fire(shooter, e):
@@ -1085,15 +1085,13 @@ class Battle:
         ux, uy = unit.position
         mr = unit._max_range
         cands = [e for e in self.get_enemies(unit)
-                 if e.is_alive
-                 and abs(e.position[0] - ux) + abs(e.position[1] - uy) <= mr]
+                 if e.is_alive and bf.unit_distance(unit, e) <= mr]
         if mr >= 4:
             cands = [e for e in cands if bf.has_line_of_fire(unit, e)]
         if not cands:
             return
-        target = min(cands, key=lambda e: (e.hp,
-                                           abs(e.position[0] - ux) + abs(e.position[1] - uy)))
-        d = abs(target.position[0] - ux) + abs(target.position[1] - uy)
+        target = min(cands, key=lambda e: (e.hp, bf.unit_distance(unit, e)))
+        d = bf.unit_distance(unit, target)
         weapon = next((a for a in unit.armes if d <= a.porte), None)
         if weapon is None:
             return
@@ -1174,7 +1172,7 @@ class Battle:
             for enemy in enemies_all:
                 if not enemy.is_alive:
                     continue
-                d = self.battlefield.manhattan_distance(unit.position, enemy.position)
+                d = self.battlefield.unit_distance(unit, enemy)
                 if not (min_dist <= d <= max_dist):
                     continue
                 dmg = tactics.expected_damage(unit, enemy, 1, self.battlefield)
@@ -1195,20 +1193,7 @@ class Battle:
             if not best_target:
                 continue
 
-            tx, ty = best_target.position
-            charge_pos = None
-            charge_dist = 999
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    if dx == 0 and dy == 0:
-                        continue
-                    nx, ny = tx + dx, ty + dy
-                    if (self.battlefield._can_move_to(unit, (nx, ny), set())
-                            and tr.charge_ok(self.battlefield, nx, ny)):
-                        d = self.battlefield.manhattan_distance(unit.position, (nx, ny))
-                        if d < charge_dist:
-                            charge_pos = (nx, ny)
-                            charge_dist = d
+            charge_pos = self._charge_impact(unit, best_target)
 
             if not charge_pos:
                 continue
@@ -1253,6 +1238,37 @@ class Battle:
                 unit.perform_attacks(best_target, self.battlefield, self,
                                      weapons=weapons, kind="charge"))
             self._momentum_followup(unit, t_charge + 0.05)
+
+    def _charge_impact(self, unit, target):
+        """Case d'arrivée d'une charge: une ancre dont l'empreinte TOUCHE
+        celle de la cible (y compris en diagonale), libre et d'où l'on peut
+        charger — la plus proche du chargeur. Mesurée en empreintes, et
+        départagée en miroir: une grosse cavalerie n'est plus forcée de
+        contourner sa proie selon le côté d'où elle vient."""
+        bf = self.battlefield
+        uw, uh = bf.get_unit_dims(unit)
+        tw, th = bf.get_unit_dims(target)
+        tx, ty = target.position
+        ux, uy = unit.position
+        best, best_key = None, None
+        for px in range(tx - uw, tx + tw + 1):
+            for py in range(ty - uh, ty + th + 1):
+                ax0, ax1 = px, px + uw - 1
+                ay0, ay1 = py, py + uh - 1
+                gx = max(0, tx - ax1, ax0 - (tx + tw - 1))
+                gy = max(0, ty - ay1, ay0 - (ty + th - 1))
+                if max(gx, gy) != 1:
+                    continue                      # ni chevauchement ni écart
+                if not bf._can_move_to(unit, (px, py), set()):
+                    continue
+                if not all(tr.charge_ok(bf, px + i, py + j)
+                           for i in range(uw) for j in range(uh)
+                           if 0 <= px + i < bf.width and 0 <= py + j < bf.height):
+                    continue
+                key = (abs(ux - px) + abs(uy - py), gx + gy, abs(py - uy), abs(px - ux))
+                if best_key is None or key < best_key:
+                    best, best_key = (px, py), key
+        return best
 
     def _attack_gate(self, unit):
         """Siège: l'unité consacre-t-elle son action à enfoncer une porte ?
@@ -1518,7 +1534,7 @@ class Battle:
         is_ranged = mr >= 4
 
         def can_hit(e):
-            if abs(ux - e.position[0]) + abs(uy - e.position[1]) > tr.effective_range(bf, unit, e):
+            if bf.unit_distance(unit, e) > tr.effective_range(bf, unit, e):
                 return False
             if is_ranged and not bf.has_line_of_fire(unit, e):
                 return False
@@ -1535,7 +1551,7 @@ class Battle:
 
         best, best_score = None, -1e9
         for e in reachable:
-            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            d = bf.unit_distance(unit, e)
             dmg = tactics.expected_damage(unit, e, d, bf)
             score = dmg
             score += tactics.kill_chance(dmg, e) * 14.0   # finir le travail
@@ -1760,7 +1776,7 @@ class Battle:
                 # Bloqué: mouvement latéral seulement si aucun ennemi au contact
                 ux, uy = unit.position
                 enemy_in_range = any(
-                    abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)
+                    bf.unit_distance(unit, e) <= tr.effective_range(bf, unit, e)
                     for e in self.get_enemies(unit) if e.is_alive
                 )
                 if not enemy_in_range:

@@ -130,6 +130,56 @@ def test_machine_de_guerre_recharge_un_round_sur_deux():
     assert not fant.reloading
 
 
+@test
+def test_distance_d_empreinte_symetrique_pour_les_grosses_unites():
+    from unit import Unit
+    grid = [[0] * 12 for _ in range(20)]
+    bf = Battlefield(20, 12, 0, "Prairie", grid, {})
+    big = Unit("Cavalier", 4, 8, 3, 6, (1, 1, 1), armes=[Arme("Lance", 1, 3, 3, 0, "1", porte=1)], size=2)
+    foot = target((10, 5))
+    big.position = (8, 5)             # collé à l'ouest (cases x = 8..9)
+    assert bf.unit_distance(big, foot) == 1
+    big.position = (11, 5)            # collé à l'est
+    assert bf.unit_distance(big, foot) == 1
+    big.position = (10, 3)            # collé au nord (cases y = 3..4)
+    assert bf.unit_distance(big, foot) == 1
+    assert bf.unit_distance(foot, big) == 1
+
+
+@test
+def test_arrondis_et_departages_en_miroir():
+    import tactics
+    W = 40
+    for x10 in range(0, 390, 5):
+        x = x10 / 10.0
+        if x == (W - 1) / 2:
+            continue          # le centre exact est son propre miroir: 19 ou 20
+        assert tactics.mirror_round_x(x, W) == (W - 1) - tactics.mirror_round_x((W - 1) - x, W), x
+    import formation
+    grid = [[0] * 20 for _ in range(W)]
+    bf = Battlefield(W, 20, 0, "Prairie", grid, {})
+    a = formation.nearest_walkable(bf, 10.5, 8, {(11, 8), (10, 8)})
+    b = formation.nearest_walkable(bf, (W - 1) - 10.5, 8, {((W - 1) - 11, 8), ((W - 1) - 10, 8)})
+    assert b == ((W - 1) - a[0], a[1]), (a, b)
+
+
+@test
+def test_charge_d_une_grosse_cavalerie_arrive_de_son_cote():
+    random.seed(4)
+    import unit_library as ul
+    from battle import Battle
+    a1 = ul.build_army("Armée Orlandar", [("Cavalier covaliir", 1)])
+    a2 = ul.build_army("Armée Orlandar", [("Fantassin covaliir", 1)])
+    b = Battle(a1, a2, 40, 20, 0, map_name="Prairie", map_options={'relief': "Plat"})
+    bf = b.battlefield
+    cav, foe = b.army1[0], b.army2[0]
+    bf.remove_unit(cav); bf.remove_unit(foe)
+    cav.position, foe.position = (10, 8), (17, 8)
+    bf.place_unit(cav); bf.place_unit(foe)
+    pos = b._charge_impact(cav, foe)
+    assert pos is not None and pos[0] + 1 < foe.position[0], pos   # à l'OUEST de la cible
+
+
 # ── Estimation IA ──
 
 @test

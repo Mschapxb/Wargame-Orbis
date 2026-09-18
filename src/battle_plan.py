@@ -186,7 +186,7 @@ class BattlePlan:
             wp = self._point(cmd, side * (half + 7), -5)
             bad = n = 0
             for k in range(1, 21):
-                x = int(round(mc[0] + (wp[0] - mc[0]) * k / 20))
+                x = tactics.mirror_round_x(mc[0] + (wp[0] - mc[0]) * k / 20, bf.width)
                 y = int(round(mc[1] + (wp[1] - mc[1]) * k / 20))
                 n += 1
                 if bf.grid[x][y] != 0 or (terr is not None and terr[x][y] in (tr.WOOD, tr.MARSH, tr.RIVER, tr.FORD)):

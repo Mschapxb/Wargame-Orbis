@@ -504,6 +504,8 @@ python src/bench.py balance 60              # équilibrage sur 60 graines par af
 python src/bench.py maps 60                 # équilibrage Village et Défilé
 python src/bench.py sides 300               # biais de côté: une armée contre son double, par carte
 python src/bench.py themes 60               # sièges avec rivière, collines, bois, désert
+python src/bench_fairness.py 300            # équité: armées égales, 53 situations (|z| > 3 signalé)
+python src/bench_fairness.py 200 --quick --full-size   # idem en taille réelle 178×64
 python src/bench.py all 60 --only siege --weather Pluie --compare docs/superpowers/baselines/bench-after-1E.txt
 python src/bench_fire.py 60                 # incendies: part du combustible consumé, durée des batailles
 python src/bench_plans.py 40                # IA avec plans contre la même IA sans plan
@@ -565,6 +567,26 @@ de la moitié de ses parties contre la même IA sans plan — les plans rendent
 les batailles lisibles sans affaiblir l'IA (une feinte où les leurres
 chargeaient seuls tombait à 27 %; en sous-bois, les manœuvres cèdent la place
 à l'assaut direct).
+
+### Équité: à armées égales, aucun camp avantagé
+
+`bench_fairness.py` oppose une armée à son double exact dans 53 situations
+(5 cartes × 5 compositions, 4 reliefs, 2 biomes, 5 météos) et signale tout
+écart au-delà du hasard (|z| > 3). Mesuré (15 878 parties): camp de gauche
+49,7 %, aucune situation signalée; en taille réelle, 49,8 %. Trois biais
+trouvés et corrigés en route:
+
+- **Grosses unités** (cavaliers 2×2, monstres 2×4): les distances de combat
+  se mesuraient de coin haut-gauche à coin haut-gauche; un cavalier collé à
+  l'ouest de sa cible était « hors de portée », collé à l'est il frappait.
+  Désormais `Battlefield.unit_distance` mesure entre les cases les plus
+  proches des empreintes (portée, charges, cases d'attaque, réactions).
+- **Interception de la cavalerie**: extrapolée sur 4 rounds, elle envoyait
+  la cavalerie au bord de la carte derrière une proie rapide; bornée à
+  2 rounds, et une proie rapide est chargée directement.
+- **Arrondis et départages** sur l'axe x (`round()` au pair, tris qui
+  préféraient l'ouest): remplacés par des versions en miroir
+  (`tactics.mirror_round_x`, `mirror_sign`).
 
 ### Agressivité: on va au combat
 

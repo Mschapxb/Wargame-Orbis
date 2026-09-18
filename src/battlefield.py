@@ -323,6 +323,24 @@ class Battlefield:
         else:  # size 3+
             return (2, 4)
 
+    def unit_distance(self, a, b, a_pos=None, b_pos=None):
+        """Distance de combat entre deux unités: Manhattan entre leurs cases
+        les plus proches (empreintes 1×1, 2×2, 2×4). Pour deux unités d'une
+        case, c'est la distance entre positions.
+
+        Mesurer d'ancre à ancre (coin haut-gauche) avantageait un camp: un
+        cavalier 2×2 collé à l'OUEST d'un fantassin avait son ancre à 2 cases
+        (« hors de portée »), collé à l'EST à 1 case. Les grosses unités de
+        l'armée de gauche devaient contourner leur cible pour frapper, par
+        derrière — camp gauche 57-63 % à armées égales avec cavalerie."""
+        ax, ay = a.position if a_pos is None else a_pos
+        bx, by = b.position if b_pos is None else b_pos
+        aw, ah = self.get_unit_dims(a)
+        bw, bh = self.get_unit_dims(b)
+        dx = max(0, bx - (ax + aw - 1), ax - (bx + bw - 1))
+        dy = max(0, by - (ay + ah - 1), ay - (by + bh - 1))
+        return dx + dy
+
     def get_unit_cells(self, unit):
         """Retourne toutes les cases occupées par une unité. Ancré en haut-gauche."""
         x, y = unit.position
@@ -536,8 +554,10 @@ class Battlefield:
         target_pos = target.position
         unit_pos = unit.position
         
-        if self.manhattan_distance(unit_pos, target_pos) <= max_range:
+        if self.unit_distance(unit, target) <= max_range:
             return None
+        if unit.size > 1 or target.size > 1:
+            return self._best_attack_anchor(unit, target, reserved_positions)
         
         # Siège: ne pas viser derrière le mur si portes intactes
         wall_x = self.wall_x
@@ -611,6 +631,41 @@ class Battlefield:
                     best_pos = pos
         
         return best_pos
+
+    def _best_attack_anchor(self, unit, target, reserved_positions):
+        """Case d'attaque (ancre) pour les grosses unités ou les grosses
+        cibles: toute ancre dont l'EMPREINTE est à portée de celle de la
+        cible, sans chevauchement. Même critère que la version 1×1 (la plus
+        proche, flanc/dos à coût réduit), mais en miroir: aucun côté n'est
+        interdit par la géométrie de l'ancre."""
+        mr = unit._max_range
+        uw, uh = self.get_unit_dims(unit)
+        tw, th = self.get_unit_dims(target)
+        tx, ty = target.position
+        ux, uy = unit.position
+        melee = mr < 4
+        best, best_key = None, None
+        for px in range(tx - mr - uw + 1, tx + tw + mr):
+            for py in range(ty - mr - uh + 1, ty + th + mr):
+                if not (0 <= px <= self.width - uw and 0 <= py <= self.height - uh):
+                    continue
+                g = self.unit_distance(unit, target, a_pos=(px, py))
+                if g < 1 or g > mr:
+                    continue
+                if not self._can_move_to(unit, (px, py), reserved_positions):
+                    continue
+                if self.terrain is not None and any(
+                        tr.MOVE[self.terrain[px + i][py + j]] is None
+                        for i in range(uw) for j in range(uh)):
+                    continue
+                cost = abs(ux - px) + abs(uy - py)
+                if melee:
+                    cx, cy = px + (uw - 1) / 2.0, py + (uh - 1) / 2.0
+                    cost += facing.ARC_COST[facing.arc_from((cx, cy), target)]
+                key = (cost, abs(py - uy), abs(px - ux))
+                if best_key is None or key < best_key:
+                    best, best_key = (px, py), key
+        return best
 
     def compute_move(self, unit, battle, reserved_positions):
         # Coût terrain réel du prochain déplacement, calculé ci-dessous quand
@@ -695,7 +750,7 @@ class Battlefield:
             # (sinon elle "tirait" inutilement sur des cibles hors d'atteinte)
             ux_a, uy_a = unit.position
             reachable = [e for e in enemies
-                         if abs(ux_a - e.position[0]) + abs(uy_a - e.position[1]) <= tr.effective_range(self, unit, e)
+                         if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
                          and self.has_line_of_fire(unit, e)]
             if reachable:
                 # Priorité: achever les blessés, sinon le plus proche
@@ -726,7 +781,7 @@ class Battlefield:
             if unit._max_range >= 4 or bool(unit.spells):
                 ux, uy = unit.position
                 in_range = [e for e in enemies
-                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(self, unit, e)
+                            if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
                             and self.has_line_of_fire(unit, e)]
                 if in_range:
                     return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
@@ -751,7 +806,7 @@ class Battlefield:
         closest_dist = 999
         closest_enemy = None
         for e in enemies:
-            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            d = self.unit_distance(unit, e)
             if d < closest_dist:
                 closest_dist = d
                 closest_enemy = e
@@ -761,8 +816,7 @@ class Battlefield:
                 and not unit.fleeing and not _is_kiting and not _is_repositioning):
             # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
             in_range = [e for e in enemies
-                        if abs(ux - e.position[0]) + abs(uy - e.position[1])
-                        <= tr.effective_range(self, unit, e)]
+                        if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)]
             # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
             # derrière la porte ne doit pas figer un arbalétrier sur place)
             if unit._max_range >= 4:
@@ -802,7 +856,7 @@ class Battlefield:
                     # atteignable ET visible, sinon pas de visée
                     mr = unit._max_range
                     in_r = [e for e in enemies
-                            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(self, unit, e)
+                            if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
                             and (mr < 4 or self.has_line_of_fire(unit, e))]
                     if in_r:
                         return None, min(in_r, key=lambda e: (e.hp / max(1, e.max_hp),
@@ -835,7 +889,7 @@ class Battlefield:
             if target is None:
                 target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
         
-        current_dist = self.manhattan_distance(unit.position, target.position)
+        current_dist = self.unit_distance(unit, target)
         
         if current_dist <= tr.effective_range(self, unit, target):
             # Tireur à portée mais aveuglé (rocher, maison, bois): rester planté

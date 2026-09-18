@@ -193,6 +193,26 @@ class ThreatField:
 # ── Anticipation ──
 
 
+# ─── Symétrie gauche/droite ───
+# La carte est un miroir (x → largeur-1-x) et les armées s'y déploient en
+# reflet. Tout arrondi ou départage sur l'axe x doit donc se comporter en
+# miroir, sinon un camp gagne une case d'avance à chaque égalité.
+
+def mirror_round_x(x, width):
+    """Arrondi d'une abscisse cohérent avec le miroir: les demis vont vers
+    le centre de la carte (round() de Python arrondit au pair: 10,5 → 10 à
+    l'ouest mais 28,5 → 28 à l'est, au lieu de 29)."""
+    c = (width - 1) / 2.0
+    return int(math.floor(x + 0.5)) if x < c else int(math.ceil(x - 0.5))
+
+
+def mirror_sign(x, width):
+    """+1 dans la moitié ouest, -1 dans la moitié est: multiplie un écart
+    en x pour que « vers l'arrière de son camp » se départage pareil des
+    deux côtés."""
+    return 1 if x < (width - 1) / 2.0 else -1
+
+
 def predicted_position(unit, steps=1, clamp=None):
     """Extrapole où sera l'unité dans `steps` round(s) d'après son
     déplacement du round précédent. Permet d'INTERCEPTER au lieu de
@@ -215,8 +235,20 @@ def intercept_point(hunter, prey, clamp=None):
     px, py = prey.position
     dist = abs(hx - px) + abs(hy - py)
     speed = max(1, hunter.vitesse)
-    turns = max(1, min(4, int(math.ceil(dist / speed))))
-    return predicted_position(prey, turns, clamp)
+    # Deux rounds au plus, et un pas plafonné à la vitesse de la proie:
+    # extrapoler sur 4 rounds le dernier bond d'une proie rapide (cavalier
+    # à javelots, 12 cases avec l'élan) envoyait le chasseur à 30 cases,
+    # au bord de la carte — des courses à vide qui ne se compensaient pas
+    # d'un camp à l'autre (camp gauche 62 % en forêt, armées égales).
+    turns = max(1, min(2, int(math.ceil(dist / speed))))
+    dx, dy = getattr(prey, '_last_step', (0, 0))
+    cap = max(1, prey.vitesse)
+    dx, dy = max(-cap, min(cap, dx)), max(-cap, min(cap, dy))
+    nx, ny = px + dx * turns, py + dy * turns
+    if clamp is not None:
+        nx = max(0, min(clamp[0] - 1, nx))
+        ny = max(0, min(clamp[1] - 1, ny))
+    return (int(nx), int(ny))
 
 
 # ── Lecture de situation ──

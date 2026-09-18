@@ -719,7 +719,7 @@ class CommanderAI:
 
     def _clamp_pos(self, x, y):
         bf = self.battlefield
-        return (max(1, min(bf.width - 2, int(round(x)))),
+        return (max(1, min(bf.width - 2, tactics.mirror_round_x(x, bf.width))),
                 max(1, min(bf.height - 2, int(round(y)))))
 
     def _rear_fallback_pos(self, unit):
@@ -1699,14 +1699,16 @@ class CommanderAI:
         if prey is not None:
             self._prey[id(unit)] = id(prey)
             d = abs(ux - prey.position[0]) + abs(uy - prey.position[1])
-            if d <= unit.vitesse + 2:
+            # Une proie rapide ne s'intercepte pas: sa trajectoire change à
+            # chaque round, on la charge directement.
+            if d <= unit.vitesse + 2 or prey.vitesse >= 6:
                 return TacticalOrder("attack", target_unit=prey, priority=5)
             ip = tactics.intercept_point(unit, prey, clamp)
             return TacticalOrder("flank", target_pos=ip, priority=4)
 
         self._prey.pop(id(unit), None)
         fy = 3 if uy < bf.height // 2 else bf.height - 4
-        return TacticalOrder("flank", target_pos=(int(ec[0]), fy), priority=3)
+        return TacticalOrder("flank", target_pos=(tactics.mirror_round_x(ec[0], bf.width), fy), priority=3)
 
     def _ranged_order(self, unit, enemies, prio):
         ux, uy = unit.position
@@ -1779,10 +1781,11 @@ class CommanderAI:
                     role == "lure" and plan.phase == "feinte"):
                 return order
         ux, uy = unit.position
+        bf = self.battlefield
         # Ce qu'on peut atteindre dans le round (au moins ENGAGE_RANGE)
         engage = max(ENGAGE_RANGE, unit.vitesse)
         near = [e for e in enemies
-                if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= engage
+                if bf.unit_distance(unit, e) <= engage
                 and self._melee_can_reach(unit, e)]
         if not near:
             return order
@@ -1791,7 +1794,7 @@ class CommanderAI:
         bf = self.battlefield
 
         def value(e):
-            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            d = bf.unit_distance(unit, e)
             dmg = tactics.expected_damage(unit, e, 1, bf)
             return (tactics.kill_chance(dmg, e) * 10.0 + dmg - d * 1.5
                     + 1.5 * min(self._claims.get(id(e), 0), 2), -e.uid)
@@ -1847,7 +1850,7 @@ class CommanderAI:
             c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
             return TacticalOrder("attack", target_unit=c, priority=1)
         rc = self._center(my_r)
-        rc_i = (int(rc[0]), int(rc[1]))
+        rc_i = (tactics.mirror_round_x(rc[0], self.battlefield.width), int(rc[1]))
         # Menace prioritaire: celle qui atteindra nos tireurs en premier
         ce = min(enemies, key=lambda e: (bf.manhattan_distance(rc_i, e.position)
                                          - e.vitesse * 1.5))
@@ -1855,7 +1858,7 @@ class CommanderAI:
             return TacticalOrder("attack", target_unit=ce, priority=4)
         # Se placer entre le danger et nos tireurs, sur son axe d'approche
         ip = tactics.predicted_position(ce, 1, (bf.width, bf.height))
-        sx = int(rc[0] * 0.4 + ip[0] * 0.6)
+        sx = tactics.mirror_round_x(rc[0] * 0.4 + ip[0] * 0.6, self.battlefield.width)
         sy = int(rc[1] * 0.4 + ip[1] * 0.6)
         return TacticalOrder("protect", target_pos=(sx, sy), priority=2)
 
@@ -1865,7 +1868,7 @@ class CommanderAI:
                     and u._max_range < 4 and not u.fleeing]
         if fighters:
             c = self._center(fighters)
-            return TacticalOrder("hold", target_pos=(int(c[0]), int(c[1])), priority=2)
+            return TacticalOrder("hold", target_pos=(tactics.mirror_round_x(c[0], self.battlefield.width), int(c[1])), priority=2)
         c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
         return TacticalOrder("attack", target_unit=c, priority=1)
 
@@ -1984,7 +1987,8 @@ def select_tactical_target(unit, battle, battlefield):
     is_ranged = max_range >= 4
 
     def _reachable(e, d):
-        if d > tr.effective_range(battlefield, unit, e):
+        # Distance d'empreintes (grosses unités), pas d'ancres
+        if battlefield.unit_distance(unit, e) > tr.effective_range(battlefield, unit, e):
             return False
         if is_ranged and not battlefield.has_line_of_fire(unit, e):
             return False
