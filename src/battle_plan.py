@@ -167,6 +167,12 @@ class BattlePlan:
                     best, best_score = (x, y), score
         return best
 
+    @staticmethod
+    def _terrain_favors(cmd):
+        """Le terrain a-t-il été façonné en faveur de ce camp ?"""
+        theme = getattr(cmd.battlefield, 'theme', None) or {}
+        return theme.get('advantage') == (1 if cmd.is_army1 else 2)
+
     def _flank_is_open(self, cmd, alive, enemies):
         """Le contournement est-il praticable ? On échantillonne le trajet de
         notre centre vers les deux points d'attente possibles: au-delà d'un
@@ -234,16 +240,24 @@ class BattlePlan:
             if len(melee) >= 6:
                 scores["feinte"] = 0.2 + 0.7 * cmd.ruse
                 scores["oblique"] = 0.4 + 0.5 * cmd.prudence + (0.4 if s['ratio'] < 1.0 else 0.0)
-        if len(alive) >= 6 and len(s['my_ranged_units']) >= 2 and not outgunned:
+        # Avantage de terrain (option du menu, maps.apply_advantage): le
+        # camp favorisé s'est déployé sur SES hauteurs — il les tient.
+        favored = self._terrain_favors(cmd)
+        need_shooters = 1 if favored else 2
+        if (len(alive) >= 6 and len(s['my_ranged_units']) >= need_shooters
+                and (favored or not outgunned)):
             hill = self._find_hill(cmd, alive, enemies)
             if hill is not None:
                 self.points['colline'] = hill
                 scores["colline"] = (0.5 + 0.5 * cmd.patience
                                      + (0.5 if s['my_ranged'] > s['en_ranged'] else 0.0))
+                if favored:
+                    scores["colline"] += 10.0
         scores["direct"] = 0.35 if scores else 1.0
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
         pick = ranked[0][0]
-        if len(ranked) > 1 and cmd.rng.random() >= 2.0 / 3.0:
+        if len(ranked) > 1 and cmd.rng.random() >= 2.0 / 3.0 and not (
+                favored and pick == "colline"):
             pick = ranked[1][0]
         self._start(pick, cmd, alive, enemies)
 
@@ -297,6 +311,25 @@ class BattlePlan:
             self.phase = ""
         if announce:
             self.events.append((f"plan « {NAMES[kind]} »", _EVENT_COLOR))
+
+    def _hill_edge(self, cmd, x, y):
+        """Case de colline libre la plus proche de (x, y), en privilégiant la
+        plus avancée vers l'ennemi; (x, y) bornée si aucune à 3 cases."""
+        bf = cmd.battlefield
+        ax, ay = cmd._axis
+        x0, y0 = cmd._clamp_pos(x, y)
+        best, best_key = (x0, y0), None
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
+                cx, cy = x0 + dx, y0 + dy
+                if not (0 < cx < bf.width - 1 and 0 < cy < bf.height - 1):
+                    continue
+                if bf.terrain[cx][cy] != tr.HILL or bf.grid[cx][cy] != 0:
+                    continue
+                key = (abs(dx) + abs(dy), -(cx * ax + cy * ay), cx, cy)
+                if best_key is None or key < best_key:
+                    best, best_key = (cx, cy), key
+        return best
 
     def _assign_hill_slots(self, cmd, alive, hill):
         bf = cmd.battlefield
@@ -428,7 +461,12 @@ class BattlePlan:
             # le regarde pas pendant dix rounds, on va le chercher.
             stalled = (self.rounds >= 1 and self._enemy_proj0 is not None
                        and self._enemy_front(cmd, enemies) >= self._enemy_proj0 - 1.5)
-            if foes or stalled or self._hurting_streak >= 2 or self.rounds >= 3:
+            # Sur un terrain qui nous favorise, on laisse l'ennemi venir plus
+            # longtemps: c'est à lui de monter sous nos traits.
+            patience = 5 if self._terrain_favors(cmd) else 3
+            if self._terrain_favors(cmd):
+                stalled = stalled and self.rounds >= patience
+            if foes or stalled or self._hurting_streak >= 2 or self.rounds >= patience:
                 self._set_phase("contre", "contre-attaque depuis la colline !")
                 self.roles = {}
                 self.hill_slots = {}
@@ -490,7 +528,13 @@ class BattlePlan:
                 ax, ay = cmd._axis
                 px, py = -ay, ax
                 lat = max(-5.0, min(5.0, self._lat(up) - self._lat(hill)))
-                post = cmd._clamp_pos(hill[0] + ax * 3 + px * lat, hill[1] + ay * 3 + py * lat)
+                if self._terrain_favors(cmd):
+                    # Nos hauteurs: la mêlée tient le REBORD de la pente
+                    # (l'ennemi qui monte frappe plus mal), pas la plaine
+                    # devant (mesuré: 3 coups sur 4 portés en plaine).
+                    post = self._hill_edge(cmd, hill[0] + ax + px * lat, hill[1] + ay + py * lat)
+                else:
+                    post = cmd._clamp_pos(hill[0] + ax * 3 + px * lat, hill[1] + ay * 3 + py * lat)
                 if _dist(up, post) > 1:
                     return ("support", None, post, 3)
                 return ("hold", None, post, 3)

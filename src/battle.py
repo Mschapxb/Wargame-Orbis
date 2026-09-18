@@ -68,6 +68,16 @@ class Battle:
         # Thème demandé (biome, relief), rejoué tel quel par un redémarrage
         self.map_options = map_options
         
+        # Graine de carte (écran « Champ de bataille »): la carte, la météo
+        # tirée au sort et le déploiement sont ceux de l'aperçu, et R rejoue
+        # la même carte. Le hasard de la bataille elle-même n'en dépend pas
+        # (état restauré après le déploiement).
+        map_seed = (map_options or {}).get('seed')
+        saved_state = None
+        if map_seed is not None:
+            saved_state = random.getstate()
+            random.seed(map_seed)
+
         # Générer la map
         from maps import generate_map
         grid, map_data = generate_map(map_name, battlefield_width, battlefield_height,
@@ -99,6 +109,8 @@ class Battle:
 
         center_y = self.battlefield.height // 2
         self._place_armies(center_y)
+        if saved_state is not None:
+            random.setstate(saved_state)
         if self.battlefield.is_siege:
             for u in self.army1:
                 u.refill_ammo(unit_mod.SIEGE_TRAIN_FACTOR)

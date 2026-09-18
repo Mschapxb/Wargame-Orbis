@@ -26,9 +26,9 @@ python src/main.py
 
 ## 🎮 Comment jouer
 
-### Menu de composition
+### Menu en deux écrans
 
-Au lancement, un menu permet de :
+**1. Composition des armées**
 
 - Sélectionner une **armée prédéfinie** pour chaque camp (Orlandar, Skaldienne, Draconie, Légion sacrée, Héros)
 - Articuler un camp en plusieurs **groupes** (jusqu'à 4) via les onglets `G1 G2 …`:
@@ -37,13 +37,50 @@ Au lancement, un menu permet de :
   d'une pastille de couleur sur le terrain et **comptée à part dans le rapport de
   bataille**. Les boutons `+/-` alimentent le groupe sélectionné.
 - Ajouter/retirer des unités individuellement avec les boutons **+/-**
+- **SUIVANT : CHAMP DE BATAILLE →** (ou `Entrée`) ouvre le second écran
+
+**2. Champ de bataille** (`src/map_screen.py`)
+
 - Choisir la **carte** (Prairie, Forêt, Désert, Village, Siège, Citadelle, Défilé)
 - Choisir le **thème** (Prairie, Forêt, Désert — pour Village, Siège et Citadelle)
   et le **relief**: Plat, Rivière, Collines, Rivière + collines ou Aléatoire
   (cf. *Thèmes procéduraux* ci-dessous)
 - Choisir la **météo**: Clair, Pluie, Brouillard, Vent, Crépuscule, Chaleur ou
   Aléatoire (cf. *Météo* ci-dessous)
-- Lancer la bataille avec **COMBAT!**
+- Donner un **avantage de terrain** à un camp (cf. ci-dessous)
+- **Aperçu** de la vraie carte, déploiement des deux armées compris, avec le
+  relief et la météo effectivement tirés; **Nouvelle carte** (`N`) en tire une
+  autre. La bataille se joue exactement sur la carte de l'aperçu, et `R` en
+  bataille rejoue la même carte (la graine voyage dans `map_options['seed']`).
+- **← Armées** (`Échap`) revient au premier écran sans rien perdre;
+  **COMBAT !** (`Entrée`) lance la bataille
+
+#### Avantage de terrain
+
+Par défaut, une bataille rangée se joue sur une carte en miroir. L'option
+*Avantage* façonne le terrain en faveur d'un camp (pas en siège: la
+forteresse est déjà l'avantage du défenseur):
+
+| Intensité | Terrain du camp favorisé |
+|-----------|--------------------------|
+| **Léger** | une chaîne de buttes sous son front: il s'y déploie |
+| **Marqué** | des hauteurs plus étendues et des bosquets de couverture à ses ailes |
+
+Le camp favorisé le sait: il choisit de **tenir ses hauteurs** (plan colline,
+tireurs sur les buttes, mêlée sur le rebord de la pente) et laisse l'ennemi
+monter sous ses traits plus longtemps avant de contre-attaquer. Mesuré sur
+200 duels miroir par cas (camp favorisé: gauche):
+
+| Carte | Aucun | Léger | Marqué |
+|-------|-------|-------|--------|
+| Prairie | 45,5 % | 60 % | 61,5 % |
+| Désert | 50,5 % | 54 % | 56,5 % |
+| Forêt | 42 % | 63 % | 68,5 % |
+| Village | 48 % | 58 % | 57,5 % |
+
+Écartés à la mesure: des marais sur l'approche adverse et une ligne de haies
+devant le front desservaient le camp favorisé, qui devait les franchir à son
+tour pour contre-attaquer.
 
 ### Contrôles en bataille
 
@@ -379,7 +416,8 @@ percentile (le budget à 60 i/s est de 16,6 ms). La pause fige aussi les effets.
 ```
 battle-simulator/
 ├── main.py              # Point d'entrée
-├── menu.py              # Menu de composition des armées (Pygame)
+├── menu.py              # Écran 1: composition des armées (Pygame)
+├── map_screen.py        # Écran 2: carte, météo, avantage, aperçu rechargeable
 ├── battle.py            # Boucle de simulation (rounds, phases, moral)
 ├── battlefield.py       # Grille, pathfinding A*, calcul de mouvement
 ├── ai_commander.py      # IA tactique (postures, manœuvres, ciblage)
@@ -448,6 +486,7 @@ Chaque suite reste un script autonome:
 python src/test_facing.py                   # orientation: arcs, modificateurs, rotation, IA
 python src/test_endurance.py                # munitions et fatigue
 python src/test_weather.py                  # météo: règles, feu, menu, rendu
+python src/test_map_screen.py               # écran carte: graine, aperçu, avantage de terrain
 python src/test_terrain.py                  # terrain: règles, cartes, rendu
 python src/test_fondations.py               # symétrie des cartes, ligne de tir, estimation IA
 python src/test_destruction.py              # structures, incendie, ruines, IA et rendu incrémental

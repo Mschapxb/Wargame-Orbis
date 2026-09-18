@@ -229,9 +229,11 @@ class ArmyState:
 
 
 def run_army_menu(screen_w=None, screen_h=None):
-    """Lance le menu de composition. Retourne (army1_list, army2_list,
-    map_name, map_options) ou None si quit. map_options: {'biome', 'relief',
-    'weather'} (cf. maps.resolve_options, weather.resolve)."""
+    """Menu en deux écrans: composition des armées, puis champ de bataille
+    (map_screen.py: carte, thème, relief, météo, avantage, aperçu).
+    Retourne (army1_list, army2_list, map_name, map_options).
+    map_options: {'biome', 'relief', 'weather', 'seed', 'advantage'…}
+    (cf. maps.generate_map, weather.resolve, Battle)."""
     
     if screen_w is None or screen_h is None:
         info = pygame.display.Info()
@@ -253,16 +255,22 @@ def run_army_menu(screen_w=None, screen_h=None):
     stat_font   = pygame.font.SysFont("arial", 11)
     
     states = [ArmyState(0), ArmyState(1)]
-    selected_map = "Prairie"
-    import maps as maps_mod
-    selected_biome = "Prairie"
-    selected_relief = maps_mod.natural_relief_name(selected_map)
-    import weather as weather_mod
-    selected_weather = weather_mod.CLEAR
+    # Choix de la carte: écran « Champ de bataille » (map_screen.py). Gardé
+    # d'un aller-retour à l'autre entre les deux écrans.
+    from map_screen import MapSetup, run_map_screen
+    setup = MapSetup()
 
-    def map_options():
-        return {'biome': selected_biome, 'relief': selected_relief,
-                'weather': selected_weather}
+    def next_screen():
+        """Écran 2. Retourne le résultat final du menu, ou None (retour)."""
+        from renderer import compute_grid_from_screen
+        a1 = states[0].build()
+        a2 = states[1].build()
+        grid_w, grid_h, _cell = compute_grid_from_screen()
+        if run_map_screen(screen, screen_w, screen_h, a1, a2, setup,
+                          (grid_w, grid_h)) == "launch":
+            return a1, a2, setup.map_name, setup.options()
+        pygame.display.set_caption("Composition des armées")
+        return None
     
     # ─── Fond dégradé pré-rendu (une seule fois) ───
     bg_surface = pygame.Surface((screen_w, screen_h))
@@ -320,9 +328,9 @@ def run_army_menu(screen_w=None, screen_h=None):
                     sys.exit()
                 if event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
                     if states[0].total_units > 0 and states[1].total_units > 0:
-                        a1 = states[0].build()
-                        a2 = states[1].build()
-                        return a1, a2, selected_map, map_options()
+                        result = next_screen()
+                        if result is not None:
+                            return result
         
         screen.blit(bg_surface, (0, 0))
         
@@ -337,7 +345,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         panel_margin = 15
         panel_top = 50
         panel_w = (screen_w - panel_margin * 3) // 2
-        panel_h = screen_h - panel_top - 182   # + rangée Météo
+        panel_h = screen_h - panel_top - 80
         
         for i, state in enumerate(states):
             px = panel_margin + i * (panel_w + panel_margin)
@@ -666,72 +674,8 @@ def run_army_menu(screen_w=None, screen_h=None):
                         stop = True
                         break
         
-        # ─── SÉLECTION DE MAP ───
-        from maps import get_map_names, get_map_info
-        map_names = get_map_names()
-        
-        map_y = screen_h - 164
-        map_label = small_font.render("Carte:", True, TEXT)
-        screen.blit(map_label, (panel_margin, map_y + 6))
-        
-        def choice_row(options, selected, x, y, min_w=70):
-            """Rangée de boutons à choix unique. Retourne (choix, x de fin)."""
-            for opt in options:
-                is_sel = (opt == selected)
-                rect = pygame.Rect(x, y, max(min_w, small_font.size(opt)[0] + 20), 26)
-                if draw_button(screen, rect, opt, small_font, mouse_pos,
-                               BTN_ACTIVE if is_sel else BTN_NORMAL,
-                               (100, 180, 255) if is_sel else BTN_HOVER,
-                               TEXT_BRIGHT if is_sel else TEXT) and clicked:
-                    selected = opt
-                if is_sel:
-                    pygame.draw.rect(screen, GOLD, rect, 2, border_radius=4)
-                x += rect.w + 6
-            return selected, x
-
-        new_map, btn_x = choice_row(map_names, selected_map, panel_margin + 48, map_y)
-        if new_map != selected_map:
-            # Une nouvelle carte repart de son thème naturel
-            selected_map = new_map
-            selected_relief = maps_mod.natural_relief_name(selected_map)                 if selected_map in maps_mod.THEMED_MAPS else selected_relief
-        
-        # Description de la map (bornée avant le bouton d'éditeur)
-        map_desc = get_map_info(selected_map).get("description", "")
-        screen.set_clip(pygame.Rect(btn_x + 10, map_y, max(0, screen_w - 200 - btn_x), 26))
-        draw_text(screen, map_desc, small_font, (btn_x + 10, map_y + 6), TEXT_DIM)
-        screen.set_clip(None)
-
-        # ─── THÈME ET RELIEF (procéduraux) ───
-        opt_y = map_y + 32
-        if selected_map in maps_mod.THEMED_MAPS:
-            x = panel_margin
-            if selected_map not in maps_mod.OPEN_MAPS:
-                draw_text(screen, "Thème:", small_font, (x, opt_y + 6), TEXT)
-                selected_biome, x = choice_row(maps_mod.BIOMES, selected_biome, x + 48, opt_y)
-                x += 18
-            draw_text(screen, "Relief:", small_font, (x, opt_y + 6), TEXT)
-            reliefs = list(maps_mod.RELIEFS) + [maps_mod.RANDOM_RELIEF]
-            selected_relief, x = choice_row(reliefs, selected_relief, x + 48, opt_y)
-        else:
-            draw_text(screen, "Relief fixe: le goulet et son torrent sont la carte.",
-                      small_font, (panel_margin, opt_y + 6), TEXT_DIM)
-
-        # ─── MÉTÉO ───
-        sky_y = opt_y + 32
-        draw_text(screen, "Météo:", small_font, (panel_margin, sky_y + 6), TEXT)
-        skies = list(weather_mod.WEATHERS) + [weather_mod.RANDOM_WEATHER]
-        selected_weather, x = choice_row(skies, selected_weather, panel_margin + 48, sky_y)
-        sky_desc = weather_mod.DESCRIPTIONS.get(selected_weather,
-                                                "Tirée au sort selon le biome.")
-        if (selected_map in maps_mod.SIEGE_MAPS
-                and selected_weather in (weather_mod.FOG, weather_mod.DUSK)):
-            sky_desc += " Très dur pour l'assaillant d'un siège."
-        screen.set_clip(pygame.Rect(x + 10, sky_y, max(0, screen_w - x - 20), 26))
-        draw_text(screen, sky_desc, small_font, (x + 10, sky_y + 6), TEXT_DIM)
-        screen.set_clip(None)
-        
         # ─── BOUTON ÉDITEUR D'UNITÉS ───
-        custom_btn = pygame.Rect(screen_w - 180, map_y, 160, 26)
+        custom_btn = pygame.Rect(screen_w - 180, screen_h - 52, 160, 36)
         from unit_editor import list_custom_units
         nb_custom = len(list_custom_units())
         custom_label = f"Unités custom ({nb_custom})" if nb_custom > 0 else "Créer unités"
@@ -750,7 +694,7 @@ def run_army_menu(screen_w=None, screen_h=None):
         # ─── BOUTON LANCER ───
         can_launch = states[0].total_units > 0 and states[1].total_units > 0
         
-        launch_w = 300
+        launch_w = 420
         launch_h = 44
         launch_rect = pygame.Rect(
             (screen_w - launch_w) // 2,
@@ -759,20 +703,20 @@ def run_army_menu(screen_w=None, screen_h=None):
         )
         
         if can_launch:
-            label = f"LANCER — {selected_map} ({states[0].total_units} vs {states[1].total_units})"
+            label = f"SUIVANT : CHAMP DE BATAILLE →  ({states[0].total_units} vs {states[1].total_units})"
             hovered = draw_button(screen, launch_rect, label,
                                   body_font, mouse_pos, BTN_ACTIVE, (100, 180, 255), TEXT_BRIGHT)
             if hovered and clicked:
-                a1 = states[0].build()
-                a2 = states[1].build()
-                return a1, a2, selected_map, map_options()
+                result = next_screen()
+                if result is not None:
+                    return result
         else:
             draw_button(screen, launch_rect,
                         "Ajoutez des unités aux deux armées",
                         body_font, mouse_pos, (40, 45, 50), (40, 45, 50), TEXT_DIM)
         
         # Aide
-        help_txt = small_font.render("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  ENTRÉE = lancer  |  ÉCHAP = quitter", True, TEXT_DIM)
+        help_txt = small_font.render("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  ENTRÉE = choisir le champ de bataille  |  ÉCHAP = quitter", True, TEXT_DIM)
         screen.blit(help_txt, ((screen_w - help_txt.get_width()) // 2, screen_h - 16))
         
         pygame.display.flip()
