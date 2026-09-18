@@ -16,7 +16,8 @@ Champs d'une unité:
     size            : int       — taille en cases (1=1x1, 2=2x2, 3=3x3)
     unit_type       : str       — "Infanterie", "Large", "Cavalerie", "Artillerie", "Monstre", "Héros"
     armes           : list      — liste de tuples (nom, portée, attaques, toucher, blesser, perf, dégâts)
-    traits          : list      — liste de strings: "Encouragement", "Planqué", "Anti-Large", etc.
+    traits          : list      — liste de strings: "Encouragement", "Anti-Infanterie", "Anti-Large",
+                              "Phalange", "Charge montée", "Charge d'Aïda", "Sort de bataille (N)"
 """
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
@@ -64,7 +65,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Coutelas", 1, 2, 4, 4, 1, "1"),
                 ],
-                "traits": ["Planqué", "Eclaireur", "Rapide"],
+                "traits": [],
             },
             {
                 "nom": "Arbaletrier régulier",
@@ -136,7 +137,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Carreaux de Scorpion", 13, 1, 3, 2, -1, "1d2"),
                 ],
-                "traits": ["Artillerie legere"],
+                "traits": [],
             },
             {
                 "nom": "Baliste",
@@ -150,7 +151,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Carreaux de baliste", 18, 1, 4, 2, -2, "1d4"),
                 ],
-                "traits": ["Artillerie"],
+                "traits": [],
             },
             {
                 "nom": "Housecarl",
@@ -261,7 +262,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Roche", 24, 1, 5, 5, -3, "2+1d4"),
                 ],
-                "traits": ["Artillerie"],
+                "traits": [],
             },
             {
                 "nom": "Porte-étendard",
