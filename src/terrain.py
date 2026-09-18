@@ -163,23 +163,41 @@ def weapon_reach(bf, arme, shooter, target):
     return arme.porte
 
 
-def combat_mods(bf, attacker, target, ranged):
+def combat_mods(bf, attacker, target, ranged, details=None):
     """Modificateurs de terrain, d'orientation (flanc, dos: facing.py), de
-    fatigue de l'attaquant et de météo (weather.py)."""
+    fatigue de l'attaquant et de météo (weather.py).
+
+    details: liste optionnelle où ajouter (libellé, stat, delta) pour
+    chaque modificateur non nul (cf. combat.attack_profile)."""
+    def note(label, stat, delta):
+        if delta and details is not None:
+            details.append((label, stat, delta))
+
     f_toucher, f_save = facing.arc_mods(attacker, target, ranged)
+    if details is not None and (f_toucher or f_save):
+        label = facing.LABELS.get(facing.arc(attacker, target), "Flanc").rstrip("!")
+        note(label, 'toucher', f_toucher)
+        note(label, 'save', f_save)
     # Fatigue de l'attaquant (Unit.fatigue_toucher)
     fat = getattr(attacker, 'fatigue_toucher', None)
     if fat is not None:
-        f_toucher += fat(ranged)
+        d = fat(ranged)
+        f_toucher += d
+        note("Épuisé" if getattr(attacker, 'exhausted', False) else "Fatigué", 'toucher', d)
     # Météo (pluie: tirs moins précis)
     if ranged:
-        f_toucher += weather.of(bf).ranged_toucher(attacker.position, target.position)
+        w = weather.of(bf)
+        d = w.ranged_toucher(attacker.position, target.position)
+        f_toucher += d
+        note("Contre le vent" if w.name == weather.WIND else w.name, 'toucher', d)
     if getattr(bf, 'terrain', None) is None:
         return {'toucher': f_toucher, 'save': f_save}
-    t = TERRAINS[at(bf, *target.position)]
+    name = at(bf, *target.position)
+    t = TERRAINS[name]
     toucher = f_toucher
     if ranged:
         toucher += t['cover']
+        note(f"Cible à couvert ({name})", 'toucher', t['cover'])
         # À couvert derrière un obstacle (palissade, haie, maison, rocher):
         # la case voisine de la cible, du côté du tireur, arrête une partie
         # des traits. Le mur de siège n'en fait pas partie: le rempart a
@@ -192,8 +210,11 @@ def combat_mods(bf, attacker, target, ranged):
                 entry = structs.get((tx + (ax > tx) - (ax < tx), ty + (ay > ty) - (ay < ty)))
                 if entry is not None and entry[0] != "mur":
                     toucher += 1
+                    note(f"Derrière {entry[0]}", 'toucher', 1)
     elif t['elevated'] and not is_elevated(bf, *attacker.position):
         toucher += 1
+        note("Attaque en montée", 'toucher', 1)
+    note(f"Cible dans {name}", 'save', -t['save_mod'])
     return {'toucher': toucher, 'save': -t['save_mod'] + f_save}
 
 

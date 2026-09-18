@@ -193,7 +193,10 @@ class ArmyState:
                     u.contingent = label
                 all_units.extend(units)
 
-        # Appliquer les bonus globaux
+        # Appliquer les bonus globaux. Convention du menu: +1 est TOUJOURS
+        # un avantage. Toucher, blesser et sauvegarde sont des seuils d6 (plus
+        # bas = meilleur) et la perforation se soustrait à la sauvegarde
+        # adverse (plus négative = meilleure): le bonus s'y retranche.
         b = self.bonuses
         for u in all_units:
             if b["mouvement"] != 0:
@@ -206,18 +209,19 @@ class ArmyState:
                 u.hp = u.pv
                 u.max_hp = u.pv
             if b["moral"] != 0:
-                u.morale = max(1, min(6, u.morale + b["moral"]))
+                # Plafond 6 (un d6), sauf pour un héros qui le dépasse déjà
+                u.morale = max(1, min(max(6, u.morale), u.morale + b["moral"]))
                 u.base_morale = u.morale
             if b["sauvegarde"] != 0:
-                u.sauvegarde = max(2, min(7, u.sauvegarde + b["sauvegarde"]))
+                u.sauvegarde = max(2, min(7, u.sauvegarde - b["sauvegarde"]))
             if b["toucher"] != 0 or b["blesser"] != 0 or b["perforation"] != 0 or b["degats"] != 0:
                 for arme in u.armes:
                     if b["toucher"] != 0:
-                        arme.toucher = max(2, arme.toucher + b["toucher"])
+                        arme.toucher = max(2, min(7, arme.toucher - b["toucher"]))
                     if b["blesser"] != 0:
-                        arme.blesser = max(2, arme.blesser + b["blesser"])
+                        arme.blesser = max(2, min(7, arme.blesser - b["blesser"]))
                     if b["perforation"] != 0:
-                        arme.perforation = arme.perforation + b["perforation"]
+                        arme.perforation = arme.perforation - b["perforation"]
                     if b["degats"] != 0:
                         arme.dice = arme.dice.plus(b["degats"])
 

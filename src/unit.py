@@ -2,6 +2,7 @@ import random
 from collections import deque
 
 from effects import FloatingText, FX_CLOCK
+import combat
 import facing
 import structures as st
 import terrain as tr
@@ -41,6 +42,15 @@ _IMPROVISED = ("Coutelas", 1, 5, 5, 0, "1")
 FATIGUE_TIRED = 3        # fatigué: -1 au toucher en mêlée
 FATIGUE_EXHAUSTED = 6    # épuisé: -1 au toucher partout, -1 vitesse, pas de charge
 FATIGUE_MAX = 10
+
+# Texte flottant d'un jet raté (combat.roll)
+_OUTCOME_TEXT = {
+    combat.MISS: ("Raté!", (255, 220, 80)),
+    combat.NO_WOUND: ("Pas blessé!", (255, 200, 120)),
+    combat.SAVED: ("Sauvé!", (100, 200, 255)),
+}
+_SPELL_OUTCOME_TEXT = dict(_OUTCOME_TEXT)
+_SPELL_OUTCOME_TEXT[combat.NO_WOUND] = ("Résiste!", (255, 200, 120))
 
 
 def reassign_uid(u):
@@ -92,7 +102,9 @@ class Unit:
         self.max_pv = pv
         self.vitesse = vitesse
         self.base_morale = morale
-        self.sauvegarde = sauvegarde
+        # Sauvegarde de BASE: les bonus temporaires (armure magique,
+        # phalange) ne la modifient jamais, cf. la propriété `sauvegarde`
+        self.base_sauvegarde = sauvegarde
         self.armes = armes or []
         self.spells = spells or []
         self.special = special or {}
@@ -328,25 +340,20 @@ class Unit:
         """Applique l'effet de peur. La portée est déjà vérifiée par battle.py (4 cases)."""
         if self.immune_mind or aura_level == 0:
             return None
-        
-        if not hasattr(self, '_fear_malus_applied') or not self._fear_malus_applied:
-            self.morale_malus += 1
-            self._fear_malus_applied = True
-            self.afraid = True
-            self.floating_texts.append(FloatingText("-1 Moral", (255, 180, 60), 80))
-            
-            if self.get_effective_morale() == 0:
-                self.fleeing = True
-                self.status_text = "FUITE!"
-                return "flee"
-            else:
-                self.status_text = "PEUR"
-                return "afraid"
-        elif not self.fleeing:
-            self.afraid = True
-            self.status_text = "PEUR"
-            return "afraid"
-        return None
+
+        # Malus TEMPORAIRE: morale_bonus est remis à zéro à chaque phase de
+        # moral, la peur pèse donc tant qu'on reste dans l'aura (Peur -1,
+        # Effroi -2, Terreur -3) et se dissipe dès qu'on s'en éloigne.
+        self.morale_bonus -= aura_level
+        if not self.afraid:
+            self.floating_texts.append(FloatingText(f"-{aura_level} Moral", (255, 180, 60), 80))
+        self.afraid = True
+        if self.get_effective_morale() == 0:
+            self.fleeing = True
+            self.status_text = "FUITE!"
+            return "flee"
+        self.status_text = "PEUR"
+        return "afraid"
 
     def perform_attacks(self, target, battlefield, battle=None, weapons=None,
                         kind="normal"):
@@ -380,12 +387,6 @@ class Unit:
             self.current_target = None
             return events
 
-        # Bonus sauvegarde rempart (+2 pour les défenseurs sur rempart)
-        wall_save_bonus = 2 if target_on_rampart else 0
-
-        # Bonus toucher rempart (-1 = plus facile de toucher depuis le mur)
-        wall_toucher_bonus = -1 if self._on_wall else 0
-
         self.current_target = target
 
         # Animation de lunge CaC: si l'unité est au corps à corps, elle bondit
@@ -394,20 +395,6 @@ class Unit:
             self._lunge_target = target.position  # grid coords
             self._lunge_timer = 20  # 20 frames de lunge
             self._lunge_delay = FX_CLOCK.current_delay
-
-        # Bonus anti-type
-        anti_toucher = 0
-        anti_blesser = 0
-        if self.anti_infanterie and target.unit_type == "Infanterie":
-            anti_toucher = -1  # Plus facile à toucher (valeur basse = mieux)
-            anti_blesser = -1
-        if self.anti_large and target.unit_type in ("Large", "Cavalerie", "Monstre"):
-            anti_toucher = -1
-            anti_blesser = -1
-
-        # ─── Tir d'arrêt: on lâche la volée à la hâte, sur une cible qui
-        # débouche. Le gain de tempo se paie d'un peu de précision. ───
-        snap_toucher = 1 if kind == "reaction" else 0
 
         # ─── Flanc / dos (facing.py): le modificateur passe par
         # tr.combat_mods; ici on l'annonce, et un coup de mêlée reçu dans le
@@ -420,17 +407,11 @@ class Unit:
             target._shock += 1
         facing.face_unit(self, target)
 
-        # Bonus de charge (appliqué si has_charged ce round)
-        charge_toucher = 0
-        charge_blesser = 0
-        charge_perf = 0
-        charge_degats = 0
-        if self.has_charged:
-            if self.charge_montee:
-                charge_degats = 1
-            elif self.charge_aida:
-                charge_blesser = -1
-            self.has_charged = False  # Reset après application
+        # Bonus de charge: appliqué une fois, à l'attaque qui suit la charge.
+        # Tous les modificateurs (anti-type, rempart, tir de réaction,
+        # terrain, orientation, fatigue, météo) sont dans combat.attack_profile.
+        charging = self.has_charged
+        self.has_charged = False
 
         fired_volley = False
         for arme in armes:
@@ -448,7 +429,7 @@ class Unit:
             else:
                 self._melee_this_round = True
                 target._melee_this_round = True
-            tmods = tr.combat_mods(battlefield, self, target, is_ranged_weapon)
+            prof = combat.attack_profile(self, target, arme, battlefield, kind, charging)
             # Sprite du projectile: trait de baliste, carreau ou flèche
             if self.is_artillery or arme.porte >= 16:
                 proj_kind = "ballista"
@@ -478,36 +459,18 @@ class Unit:
                                    'to_grid': target.position, 'kind': kind,
                                    'at': 0})
 
-                # Résolution combat avec bonus
-                toucher_final = (arme.toucher + (1 if self.afraid else 0)
-                                 + anti_toucher + charge_toucher + wall_toucher_bonus
-                                 + snap_toucher + tmods['toucher'])
-                blesser_final = arme.blesser + anti_blesser + charge_blesser
-                perf_final = arme.perforation + charge_perf
-
                 if dist <= 1 and target.awe > 0 and not self.morale_check():
                     target.floating_texts.append(FloatingText("Intimidé!", (255, 180, 60)))
                     continue
 
-                # Toucher
-                if random.randint(1, 6) < toucher_final:
-                    target.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
-                    continue
-
-                # Blessure
-                if random.randint(1, 6) < blesser_final:
-                    target.floating_texts.append(FloatingText("Pas blessé!", (255, 200, 120)))
-                    continue
-
-                # Sauvegarde
-                save_modifie = min(7, target.sauvegarde - perf_final - wall_save_bonus
-                                   + tmods['save'])
-                if random.randint(1, 6) >= save_modifie:
-                    target.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
+                outcome = prof.roll()
+                if outcome != combat.HIT:
+                    text, color = _OUTCOME_TEXT[outcome]
+                    target.floating_texts.append(FloatingText(text, color))
                     continue
 
                 # Dégâts
-                dmg = arme.lancer_degats() + charge_degats
+                dmg = arme.lancer_degats() + prof.dmg_bonus
                 killed = target.take_damage(dmg, False, self, ranged=is_ranged_weapon)
                 events.append({
                     'type': 'impact',
@@ -674,15 +637,11 @@ class Unit:
                 continue
             ex, ey = enemy.position
             if abs(ex - tx) <= half and abs(ey - ty) <= half:
-                if random.randint(1, 6) < spell.toucher:
-                    enemy.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
-                    continue
-                if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
-                    enemy.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
-                    continue
-                save_mod = min(7, enemy.sauvegarde - spell.perforation)
-                if random.randint(1, 6) >= save_mod:
-                    enemy.floating_texts.append(FloatingText("Sauvé!", (100, 200, 255)))
+                outcome = combat.roll(spell.toucher, spell.blesser,
+                                      combat.save_threshold(enemy.sauvegarde, spell.perforation))
+                if outcome != combat.HIT:
+                    text, color = _SPELL_OUTCOME_TEXT[outcome]
+                    enemy.floating_texts.append(FloatingText(text, color))
                     continue
                 dmg_f = spell.lancer_degats()
                 if enemy.take_damage(dmg_f, False, self):
@@ -704,7 +663,8 @@ class Unit:
                         hit.add(gid)
                         kind = bf.structure_kind[gid]
                         cells = list(bf.structure_members[gid])
-                        if (random.randint(1, 6) < min(7, st.KINDS[kind]['save'] - spell.perforation)
+                        save_thr = combat.save_threshold(st.KINDS[kind]['save'], spell.perforation)
+                        if (not combat.saves(save_thr)
                                 and st.damage(bf, gid, random.randint(1, 4))):
                             battle._structure_collapsed(gid, kind, cells)
                     if (st.flammability(bf, gx, gy) > 0
@@ -757,12 +717,16 @@ class Unit:
         if not unbuffed:
             return False
 
-        target = min(unbuffed, key=lambda c: (c.sauvegarde, c.hp / max(1, c.max_hp)))
+        # Le plus vulnérable: la PIRE sauvegarde (seuil le plus haut), puis
+        # le plus entamé. Une sauvegarde déjà à 1 ne gagnerait rien.
+        unbuffed = [c for c in unbuffed if c.sauvegarde > 1]
+        if not unbuffed:
+            return False
+        target = min(unbuffed, key=lambda c: (-c.sauvegarde, c.hp / max(1, c.max_hp)))
 
         target._armor_buff = True
         target._armor_buff_rounds = spell.duration
         target._armor_buff_amount = spell.bonus
-        target.sauvegarde = max(1, target.sauvegarde - spell.bonus)
 
         events.append({'type': 'armor', 'at_grid': target.position, 'unit_size': target.size})
 
@@ -788,12 +752,11 @@ class Unit:
         self.floating_texts.append(FloatingText("Projectile!", (180, 80, 255), 60))
         FX_CLOCK.at(base_t + FLIGHT)
 
-        if random.randint(1, 6) < spell.toucher:
-            target.floating_texts.append(FloatingText("Raté!", (255, 220, 80)))
-            FX_CLOCK.at(base_t)
-            return True
-        if spell.blesser > 1 and random.randint(1, 6) < spell.blesser:
-            target.floating_texts.append(FloatingText("Résiste!", (255, 200, 120)))
+        # Projectile magique: aucune sauvegarde
+        outcome = combat.roll(spell.toucher, spell.blesser, None)
+        if outcome != combat.HIT:
+            text, color = _SPELL_OUTCOME_TEXT[outcome]
+            target.floating_texts.append(FloatingText(text, color))
             FX_CLOCK.at(base_t)
             return True
 
@@ -851,8 +814,8 @@ class Unit:
         if getattr(self, '_armor_buff', False):
             self._armor_buff_rounds -= 1
             if self._armor_buff_rounds <= 0:
-                self.sauvegarde += self._armor_buff_amount
                 self._armor_buff = False
+                self._armor_buff_amount = 0
                 self.floating_texts.append(FloatingText("Armure dissipée", (150, 150, 200), 50))
 
     # ─── Fatigue ───
@@ -945,6 +908,22 @@ class Unit:
         jeu ont une vitesse de 1-2 (repositionnement lent), PAS 0 — c'est
         pourquoi le test `vitesse <= 0` seul ne les détectait jamais."""
         return self.unit_type == "Artillerie" or (self.vitesse <= 0 and self._max_range >= 4)
+
+    @property
+    def sauvegarde(self):
+        """Sauvegarde EFFECTIVE: la base, améliorée par l'armure magique et
+        la phalange (plancher 1). Calculée à la lecture: aucun bonus ne
+        peut plus « dériver » la base en fin d'effet."""
+        s = self.base_sauvegarde
+        if getattr(self, '_armor_buff', False):
+            s -= self._armor_buff_amount
+        if getattr(self, '_phalange_bonus_active', False):
+            s -= 1
+        return max(1, s)
+
+    @sauvegarde.setter
+    def sauvegarde(self, value):
+        self.base_sauvegarde = value
 
     @property
     def hp(self):

@@ -94,7 +94,7 @@ tour pour contre-attaquer.
 | `+` / `-` / `0` | Zoomer / dézoomer / revenir à ×1 |
 | `Clic milieu` | Glisser la caméra |
 | `Tab` | Afficher/masquer la mini-carte (clic ou glissé dessus pour s'y rendre) |
-| Survol d'une unité | Fiche: PV, moral, sauvegarde, armes, sorts, état, ordre et rôle dans le plan |
+| Survol d'une unité | Fiche: PV, moral, sauvegarde (et ses bonus), traits, armes, sorts, seuils contre sa cible avec le détail des modificateurs, état, ordre et rôle dans le plan |
 | `T` | Afficher/masquer les lignes de ciblage |
 | `I` | Afficher/masquer les intentions des plans de bataille (flèches, aile refusée, colline) |
 | `L` | Afficher/masquer la légende du terrain |
@@ -318,7 +318,7 @@ même règle (`facing.py`, via `terrain.combat_mods`).
 
 ### Munitions et fatigue
 
-- **Carquois**: 10 volées par tireur (trait `ammo:N` pour régler une unité).
+- **Carquois**: 10 volées par tireur (trait `Munitions (N)` pour régler une unité).
   À court, le tireur passe à son arme de mêlée — ou à un coutelas improvisé —
   et l'IA le traite en fantassin. À 3 volées ou moins, il ne tire plus sur une
   cible qu'il n'a presque aucune chance de blesser (tir économe).
@@ -378,13 +378,44 @@ la mêlée contre les archers passe de 37 % à 77 % de victoires.
 | Projectile magique | Attaque à distance ciblée |
 | Mur magique | Crée des obstacles temporaires |
 
+L'armure magique vise l'allié à la plus mauvaise sauvegarde. Elle et la
+phalange ne modifient jamais la sauvegarde de base: la sauvegarde effective
+est recalculée à chaque lecture (`Unit.sauvegarde`).
+
 ### Traits spéciaux
 
-- **Anti-infanterie / Anti-large** : bonus au toucher et blesser contre le type ciblé
-- **Phalange** : bonus défensif en formation serrée
-- **Aura de peur** : force des tests de moral aux unités ennemies proches
-- **Régénération** : récupère des PV chaque tour
-- **Vengeance sanglante** : contre-attaque en mourant
+Écrits en clair dans `traits` (accents et casse indifférents), lus par
+`unit_library.create_unit`:
+
+| Trait | Effet |
+|-------|-------|
+| **Encouragement** | +1 bravoure à toute l'armée, +2 au ralliement (rayon 6), +1 initiative |
+| **Anti-Infanterie / Anti-Large** | -1 toucher et -1 blesser contre le type ciblé |
+| **Phalange** | -1 sauvegarde (meilleure) au contact d'une autre phalange |
+| **Charge montée / Charge d'Aïda** | +1 dégât / -1 blesser à l'attaque de charge |
+| **Sort de bataille (N)** | N sorts par round |
+| **Peur / Effroi / Terreur** | aura de 4 cases: -1 / -2 / -3 bravoure aux ennemis tant qu'ils y restent |
+| **Intimidant** | un ennemi au contact doit réussir un test de moral pour frapper |
+| **Immunité mentale** | insensible à la peur |
+| **Régénération (N)** | regagne N % de ses PV max par round (10 par défaut); peut se relever |
+| **Vengeance de sang (N)** | peut renvoyer à l'attaquant le coup reçu |
+| **Munitions (N)** | N volées de tir (10 par défaut) |
+| **Rechargement (N)** | N rounds de rechargement après un tir sur des troupes |
+
+### Résolution d'une attaque (`combat.py`)
+
+Le moteur, l'IA et la fiche d'unité passent par `combat.attack_profile`, qui
+rassemble tous les modificateurs (type, charge, rempart, tir de réaction,
+orientation, fatigue, météo, terrain) avec leur libellé. Une seule
+convention: seuil plus bas = meilleur, sauvegarde = `sauvegarde - perforation`.
+Au survol, la fiche d'unité affiche ces seuils contre sa cible, par exemple
+`Toucher 2+ (Flanc -1) · Blesser 3+ · Svg 5+ (Dans le dos +1)`.
+
+### Bonus d'armée (menu)
+
+Les huit bonus du menu vont tous dans le même sens: **+1 est un avantage**
+(pour toucher, blesser et sauvegarde, le seuil baisse d'un cran; pour la
+perforation, elle devient plus négative).
 
 ---
 

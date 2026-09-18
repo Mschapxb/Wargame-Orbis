@@ -16,13 +16,28 @@ Champs d'une unité:
     size            : int       — taille en cases (1=1x1, 2=2x2, 3=3x3)
     unit_type       : str       — "Infanterie", "Large", "Cavalerie", "Artillerie", "Monstre", "Héros"
     armes           : list      — liste de tuples (nom, portée, attaques, toucher, blesser, perf, dégâts)
-    traits          : list      — liste de strings: "Encouragement", "Anti-Infanterie", "Anti-Large",
-                              "Phalange", "Charge montée", "Charge d'Aïda", "Sort de bataille (N)"
+    traits          : list      — liste de strings (accents et casse indifférents):
+        Encouragement       +1 bravoure à l'armée, +2 au ralliement (rayon 6)
+        Anti-Infanterie     -1 toucher et -1 blesser contre l'Infanterie
+        Anti-Large          -1 toucher et -1 blesser contre Large/Cavalerie/Monstre
+        Phalange            -1 sauvegarde (meilleure) au contact d'une autre Phalange
+        Charge montée       +1 dégât à l'attaque de charge
+        Charge d'Aïda       -1 blesser à l'attaque de charge
+        Sort de bataille (N)  N sorts par round
+        Peur / Effroi / Terreur   aura (4 cases): -1 / -2 / -3 bravoure aux ennemis
+        Intimidant          un ennemi au contact doit réussir un test de moral pour frapper
+        Immunité mentale    insensible à la peur
+        Régénération (N)    regagne N % de ses PV max par round (défaut 10), peut se relever
+        Vengeance de sang (N)  peut renvoyer un coup reçu à l'attaquant
+        Munitions (N)       N volées de tir (défaut 10)
+        Rechargement (N)    N rounds de rechargement après un tir sur des troupes
 """
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
 from unit import Unit
 import os
+import re
+import unicodedata
 import shutil
 
 
@@ -447,11 +462,50 @@ def _build_arme(arme_tuple):
                 perforation=perf, degats=degats, porte=portee)
 
 
+def _norm(text):
+    """Minuscules sans accents: « Régénération » → « regeneration »."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text)
+                   if not unicodedata.combining(c)).lower().strip()
+
+
+def _trait_number(trait, default):
+    """Valeur N d'un trait « Nom (N) » ou « Nom [N] »."""
+    m = re.search(r'[\(\[]\s*(\d+)\s*[\)\]]', trait)
+    return int(m.group(1)) if m else default
+
+
+# Traits qui alimentent Unit.special (cf. Unit.__init__). Nom normalisé
+# (sans accent) au début du trait → fonction(trait) -> {clé: valeur}.
+_SPECIAL_TRAITS = (
+    ("peur", lambda t: {"causes_fear": True}),            # aura -1 moral
+    ("effroi", lambda t: {"causes_dread": True}),         # aura -2 moral
+    ("terreur", lambda t: {"causes_terror": True}),       # aura -3 moral
+    ("intimidant", lambda t: {"awe:1": True}),            # mêlée: test de moral pour frapper
+    ("immunite mentale", lambda t: {"immune_mind": True}),
+    ("regeneration", lambda t: {"regeneration": _trait_number(t, 10)}),  # % PV max / round
+    ("vengeance de sang", lambda t: {"blood_vengeance": _trait_number(t, 1)}),
+    ("munitions", lambda t: {f"ammo:{_trait_number(t, 10)}": True}),
+    ("rechargement", lambda t: {f"reload:{_trait_number(t, 1)}": True}),
+)
+
+
+def _traits_to_special(traits):
+    """Dictionnaire `special` d'une unité à partir de ses traits lisibles."""
+    special = {}
+    for t in traits:
+        n = _norm(t)
+        for prefix, build in _SPECIAL_TRAITS:
+            if n.startswith(prefix):
+                special.update(build(t))
+    return special
+
+
 def create_unit(unit_def, army_color):
     """Crée un objet Unit depuis un dict de définition."""
     armes = [_build_arme(a) for a in unit_def["armes"]]
-    
+
     unit = Unit(
+        special=_traits_to_special(unit_def.get("traits", [])),
         name=unit_def["nom"][:10],
         pv=unit_def["blessure"],
         vitesse=unit_def["deplacement"],
@@ -464,7 +518,8 @@ def create_unit(unit_def, army_color):
         unit_type=unit_def.get("unit_type", "Infanterie"),
     )
     unit.token_name = unit_def["nom"]
-    
+    unit.traits = list(unit_def.get("traits", []))  # affichés sur la fiche d'unité
+
     # Traits
     for t in unit_def.get("traits", []):
         tl = t.lower()
@@ -482,7 +537,6 @@ def create_unit(unit_def, army_color):
             unit.charge_aida = True
         # "Sort de bataille (N)" → N sorts par round
         if "sort de bataille" in tl:
-            import re
             m = re.search(r'\((\d+)\)', t)
             if m:
                 unit.spells_per_round = int(m.group(1))

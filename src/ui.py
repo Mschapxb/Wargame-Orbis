@@ -9,6 +9,7 @@ import math
 
 import pygame
 
+import combat
 import terrain as tr
 import theme as T
 
@@ -207,6 +208,42 @@ class Minimap:
 
 # ─── Fiche d'unité ───
 
+def save_breakdown(unit):
+    """Bonus temporaires qui améliorent la sauvegarde: ["Armure magique -2", ...]."""
+    out = []
+    if getattr(unit, '_armor_buff', False) and unit._armor_buff_amount:
+        out.append(f"Armure magique -{unit._armor_buff_amount}")
+    if getattr(unit, '_phalange_bonus_active', False):
+        out.append("Phalange -1")
+    return out
+
+
+def attack_preview(unit, battle):
+    """(cible, distance, combat.AttackProfile, à portée?) de la meilleure
+    arme de l'unité contre sa cible (celle qu'elle frappe, sinon celle de
+    son ordre, sinon l'ennemi le plus proche). Hors de portée: l'arme de
+    plus longue portée. None sans arme ni ennemi.
+    Mêmes seuils que le moteur: combat.attack_profile."""
+    if not unit.is_alive or not unit.armes or unit.position is None:
+        return None
+    target = unit.current_target
+    if target is None or not target.is_alive:
+        order = getattr(unit, '_tactical_order', None)
+        target = getattr(order, 'target_unit', None)
+    if target is None or not target.is_alive:
+        target = battle.get_closest_enemy(unit)
+    if target is None or target.position is None:
+        return None
+    bf = battle.battlefield
+    dist = bf.unit_distance(unit, target)
+    armes = [a for a in unit.armes if dist <= tr.weapon_reach(bf, a, unit, target)]
+    if not armes:
+        longest = max(unit.armes, key=lambda a: a.porte)
+        return target, dist, combat.attack_profile(unit, target, longest, bf), False
+    profiles = [combat.attack_profile(unit, target, a, bf) for a in armes]
+    return target, dist, max(profiles, key=lambda p: p.expected_damage()), True
+
+
 def unit_card_lines(unit, battle):
     """[(texte, couleur)] décrivant une unité, du titre aux ordres."""
     side = 0 if unit in battle.army1 else 1
@@ -217,8 +254,16 @@ def unit_card_lines(unit, battle):
     lines = [(title, team)]
     hp_r = unit.hp / max(1, unit.max_hp)
     hp_c = (90, 210, 90) if hp_r > 0.6 else ((230, 200, 60) if hp_r > 0.3 else (235, 90, 70))
+    save = "aucune" if unit.sauvegarde >= combat.NO_SAVE else f"{unit.sauvegarde}+"
     lines.append((f"PV {unit.hp}/{unit.max_hp}   Moral {unit.get_effective_morale()}   "
-                  f"Sauvegarde {unit.sauvegarde}+   Vitesse {unit.vitesse}", hp_c))
+                  f"Sauvegarde {save}   Vitesse {unit.vitesse}", hp_c))
+    buffs = save_breakdown(unit)
+    if buffs:
+        lines.append((f"Sauvegarde: base {unit.base_sauvegarde}+, " + ", ".join(buffs),
+                      (140, 190, 255)))
+    traits = getattr(unit, 'traits', None)
+    if traits:
+        lines.append(("Traits: " + ", ".join(traits), (215, 190, 120)))
     extra = []
     if getattr(unit, 'max_ammo', None):
         extra.append(f"Munitions {unit.ammo}/{unit.max_ammo}")
@@ -233,6 +278,16 @@ def unit_card_lines(unit, battle):
                       (205, 205, 200)))
     for sp in getattr(unit, 'spells', ()):
         lines.append((f"• Sort: {sp.name} (portée {sp.porte})", (190, 150, 255)))
+    preview = attack_preview(unit, battle)
+    if preview is not None:
+        target, dist, prof, in_reach = preview
+        if in_reach:
+            lines.append((f"Contre {target.name} ({dist} cases), {prof.arme.name}: "
+                          f"moy. {prof.expected_damage():.2f} dégâts/round", (240, 215, 140)))
+            lines.append(("  " + combat.describe(prof), (225, 205, 160)))
+        else:
+            lines.append((f"Contre {target.name}: hors de portée ({dist} cases, "
+                          f"{prof.arme.name} porte à {prof.arme.porte})", (170, 160, 140)))
     states = []
     if unit.fleeing:
         states.append("EN FUITE")

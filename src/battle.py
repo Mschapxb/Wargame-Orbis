@@ -1,3 +1,4 @@
+import combat
 import copy
 import deployment
 import weather as weather_mod
@@ -931,8 +932,7 @@ class Battle:
                        for e in self.army2):
                     continue
             for _ in range(arme.nb_attaque):
-                gate_save_mod = min(7, gate_save - arme.perforation)
-                if random.randint(1, 6) >= gate_save_mod:
+                if combat.saves(combat.save_threshold(gate_save, arme.perforation)):
                     continue
                 total_dmg += max(1, arme.lancer_degats())
 
@@ -999,7 +999,7 @@ class Battle:
                         if u is not None and u.is_alive and (x + dx, y + dy) not in cset:
                             hit.add(u)
             for u in sorted(hit, key=lambda u: u.uid):
-                if random.randint(1, 6) >= u.sauvegarde:
+                if combat.saves(combat.save_threshold(u.sauvegarde)):
                     u.floating_texts.append(FloatingText("Esquive!", (200, 200, 160)))
                     continue
                 u.take_damage(random.randint(1, 3))
@@ -1014,7 +1014,7 @@ class Battle:
                         fallen.add(u)
             for u in sorted(fallen, key=lambda u: u.uid):
                 u._on_wall = False
-                if random.randint(1, 6) >= u.sauvegarde:
+                if combat.saves(combat.save_threshold(u.sauvegarde)):
                     continue
                 u.take_damage(random.randint(1, 3))
                 u.floating_texts.append(FloatingText("Chute!", (255, 150, 90), 50))
@@ -1067,7 +1067,7 @@ class Battle:
             for _ in range(arme.nb_attaque):
                 events.append({'type': 'arrow', 'from_grid': unit.position,
                                'to_grid': (tx, ty), 'proj': 'ballista', 'at': 0})
-                if random.randint(1, 6) >= min(7, save - arme.perforation):
+                if combat.saves(combat.save_threshold(save, arme.perforation)):
                     continue
                 total += int(max(1, arme.lancer_degats()) * factor)
         if not fired:
@@ -1520,9 +1520,8 @@ class Battle:
                 if not ally.is_alive or not ally.phalange or ally == unit:
                     continue
                 if self.battlefield.manhattan_distance(unit.position, ally.position) <= 1:
-                    if not unit._phalange_bonus_active:
-                        unit._phalange_bonus_active = True
-                        unit.sauvegarde = max(1, unit.sauvegarde - 1)
+                    # Lu par la propriété Unit.sauvegarde (-1 au seuil)
+                    unit._phalange_bonus_active = True
                     break
 
     def _exchange_phase(self):
@@ -1585,9 +1584,7 @@ class Battle:
         """Fin de round: phalange, régénération, buffs, incendie, murs temporaires."""
         # Reset phalange bonus en fin de round
         for unit in alive:
-            if unit._phalange_bonus_active:
-                unit.sauvegarde += 1
-                unit._phalange_bonus_active = False
+            unit._phalange_bonus_active = False
 
         # Régénération + tick buffs
         FX_CLOCK.at(int(self.fx_frames_per_round * 0.9))

@@ -71,6 +71,9 @@ def test_fiche_d_unite():
     assert "Armée 1" in lines[0] and lines[1].startswith("PV ")
     assert any(t.startswith("• Sort") for t in lines)
     assert any(t.startswith("Ordre:") for t in lines)
+    # Aperçu d'attaque (détail testé dans test_combat) et traits
+    assert any(t.startswith("Contre ") for t in lines), lines
+    assert any(t.startswith("Traits: Sort de bataille") for t in lines), lines
     screen = pygame.Surface((1200, 800))
     rect = ui.draw_unit_card(screen, mage, b, 1150, 780, pygame.font.SysFont("arial", 14),
                              pygame.Rect(0, 0, 1200, 800))

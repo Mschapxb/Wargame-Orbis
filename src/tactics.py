@@ -9,18 +9,13 @@ cette cible CE round, quelle case est dangereuse, où sera l'ennemi au
 prochain round.
 """
 import math
+
+import combat
 import terrain
 
-# ── Dés: probabilités de base (tout se joue au d6) ──
+# ── Dés: probabilités de base (tout se joue au d6, cf. combat.py) ──
 
-
-def p_d6_ge(threshold):
-    """P(1d6 >= seuil)."""
-    if threshold <= 1:
-        return 1.0
-    if threshold > 6:
-        return 0.0
-    return (7 - threshold) / 6.0
+p_d6_ge = combat.p_ge
 
 
 def _avg_roll(arme):
@@ -28,47 +23,20 @@ def _avg_roll(arme):
     return arme.dice.average
 
 
-def weapon_expected_damage(arme, attacker, target, extra_perf=0,
-                           toucher_mod=0, blesser_mod=0):
-    """Dégâts moyens espérés d'une arme sur une cible précise, en tenant
-    compte du toucher, de la blessure, de la perforation ET de la
-    sauvegarde réelle de la cible (ce que l'ancienne estimation ignorait)."""
-    p_hit = p_d6_ge(arme.toucher + toucher_mod + (1 if attacker.afraid else 0))
-    p_wound = p_d6_ge(arme.blesser + blesser_mod)
-    save_thr = min(7, target.sauvegarde - arme.perforation - extra_perf)
-    p_save = p_d6_ge(save_thr)
-    return arme.nb_attaque * p_hit * p_wound * (1.0 - p_save) * _avg_roll(arme)
-
-
 def expected_damage(attacker, target, dist=None, battlefield=None):
     """Dégâts moyens espérés en UN round de l'attaquant sur la cible.
-    dist=None → on suppose l'attaquant à portée de toutes ses armes."""
+    dist=None → on suppose l'attaquant à portée de toutes ses armes.
+    Mêmes seuils que le moteur: combat.attack_profile."""
     if not attacker.is_alive or attacker.fleeing:
         return 0.0
     total = 0.0
-    anti_mod = 0
-    if attacker.anti_infanterie and target.unit_type == "Infanterie":
-        anti_mod = -1
-    elif attacker.anti_large and target.unit_type in ("Large", "Cavalerie", "Monstre"):
-        anti_mod = -1
-    extra_perf = 0
-    if battlefield is not None and battlefield.is_rampart(*target.position):
-        # Le rempart améliore la sauvegarde du défenseur de 2 crans, comme
-        # dans Unit.perform_attacks (seuil - 2). Ici le seuil vaut
-        # sauvegarde - perforation - extra_perf: il faut donc +2, pas -2.
-        extra_perf = 2
     for arme in attacker.armes:
-        ranged = arme.porte >= 4
         if dist is not None:
             reach = (terrain.weapon_reach(battlefield, arme, attacker, target)
                      if battlefield is not None else arme.porte)
             if dist > reach:
                 continue
-        tm = (terrain.combat_mods(battlefield, attacker, target, ranged)
-              if battlefield is not None else {'toucher': 0, 'save': 0})
-        # save +1 (seuil) ⇔ perforation supplémentaire -1 dans cette formule
-        total += weapon_expected_damage(arme, attacker, target, extra_perf - tm['save'],
-                                        anti_mod + tm['toucher'], anti_mod)
+        total += combat.attack_profile(attacker, target, arme, battlefield).expected_damage()
     for sp in attacker.spells:
         if sp.spell_type in ("fireball", "projectile"):
             if dist is not None and dist > sp.porte:
