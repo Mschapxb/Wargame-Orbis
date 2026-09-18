@@ -7,31 +7,34 @@ dans le dossier custom_units/.
 import json
 import os
 import pygame
+
+import theme as T
 import sys
 
 # ═══════════════════════════════════════════════════════════════
 #                    CONSTANTES VISUELLES
 # ═══════════════════════════════════════════════════════════════
 
-BG          = (20, 25, 30)
-PANEL_BG    = (30, 38, 45)
-PANEL_HOVER = (40, 50, 60)
-BORDER      = (60, 70, 80)
-HIGHLIGHT   = (80, 160, 255)
-TEXT        = (210, 210, 210)
-TEXT_DIM    = (130, 130, 140)
-TEXT_BRIGHT = (255, 255, 255)
-GOLD        = (255, 215, 0)
-GREEN       = (80, 200, 80)
-RED         = (200, 80, 80)
-ORANGE      = (220, 160, 50)
-BTN_NORMAL  = (50, 60, 75)
-BTN_HOVER   = (65, 80, 100)
-BTN_ACTIVE  = (80, 160, 255)
-BTN_DANGER  = (180, 50, 50)
-INPUT_BG    = (25, 30, 38)
-INPUT_ACTIVE = (35, 45, 60)
-CURSOR_COLOR = (200, 200, 255)
+# Palette: celle du thème commun (theme.py)
+BG          = T.BG_BOTTOM
+PANEL_BG    = T.PANEL_TOP
+PANEL_HOVER = (44, 48, 58)
+BORDER      = T.PANEL_EDGE
+HIGHLIGHT   = T.TEAM[0]
+TEXT        = T.PARCHMENT
+TEXT_DIM    = T.PARCHMENT_DIM
+TEXT_BRIGHT = (250, 244, 228)
+GOLD        = T.GOLD
+GREEN       = T.SUCCESS
+RED         = T.DANGER
+ORANGE      = T.WARNING
+BTN_NORMAL  = T.BTN
+BTN_HOVER   = T.lighten(T.BTN, 0.14)
+BTN_ACTIVE  = T.BTN_GOLD
+BTN_DANGER  = T.BTN_RED
+INPUT_BG    = (18, 20, 25)
+INPUT_ACTIVE = (36, 33, 26)
+CURSOR_COLOR = T.GOLD_BRIGHT
 
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_units")
 
@@ -92,20 +95,15 @@ def delete_custom_unit(name):
 
 def draw_button(screen, rect, text, font, mouse_pos, color=BTN_NORMAL,
                 hover_color=BTN_HOVER, text_color=TEXT):
-    hovered = rect.collidepoint(mouse_pos)
-    c = hover_color if hovered else color
-    pygame.draw.rect(screen, c, rect, border_radius=4)
-    pygame.draw.rect(screen, BORDER, rect, 1, border_radius=4)
-    t = font.render(text, True, text_color)
-    screen.blit(t, (rect.x + (rect.w - t.get_width()) // 2,
-                     rect.y + (rect.h - t.get_height()) // 2))
-    return hovered
+    """Bouton du thème commun (survol et relief dérivés de `color`)."""
+    auto = text_color in (TEXT, TEXT_BRIGHT)
+    return T.button(screen, rect, text, font, mouse_pos, base=color,
+                    text_color=None if auto else text_color)
 
 
 def draw_text(screen, text, font, pos, color=TEXT):
-    t = font.render(str(text), True, color)
-    screen.blit(t, pos)
-    return t.get_width(), t.get_height()
+    r = T.text(screen, str(text), font, pos, color)
+    return r.w, r.h
 
 
 class TextInput:
@@ -194,9 +192,9 @@ def run_file_browser(screen, screen_w, screen_h, start_dir=None):
     """Explorateur de fichiers pour sélectionner un PNG.
     Retourne le chemin du fichier sélectionné ou None."""
     clock = pygame.time.Clock()
-    font = pygame.font.SysFont("arial", 14)
-    small = pygame.font.SysFont("arial", 12)
-    title_font = pygame.font.SysFont("arial", 18, bold=True)
+    font = T.font('ui', 14)
+    small = T.font('ui', 12)
+    title_font = T.font('title', 20)
 
     if start_dir is None:
         # Commencer dans le dossier tokens ou le dossier courant
@@ -236,7 +234,7 @@ def run_file_browser(screen, screen_w, screen_h, start_dir=None):
                         selected = None
                         preview_img = None
 
-        screen.fill(BG)
+        screen.blit(T.background(screen_w, screen_h), (0, 0))
 
         # Titre
         title = title_font.render("Sélectionner un token (PNG)", True, GOLD)
@@ -298,10 +296,10 @@ def run_file_browser(screen, screen_w, screen_h, start_dir=None):
                 pygame.draw.rect(screen, (40, 60, 80), row_rect, border_radius=3)
 
             if etype == "dir":
-                icon = "📁 "
+                icon = "» "
                 color = ORANGE
             else:
-                icon = "🖼 "
+                icon = "• "
                 color = GREEN if is_sel else TEXT
 
             draw_text(screen, f"{icon}{name}", font, (list_x + 6, ry + 3), color)
@@ -377,11 +375,11 @@ def _default_unit():
 def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
     """Lance l'éditeur d'unité. Retourne le dict sauvegardé ou None."""
     clock = pygame.time.Clock()
-    title_font = pygame.font.SysFont("arial", 20, bold=True)
-    header_font = pygame.font.SysFont("arial", 15, bold=True)
-    font = pygame.font.SysFont("arial", 13)
-    small = pygame.font.SysFont("arial", 11)
-    label_font = pygame.font.SysFont("arial", 10)
+    title_font = T.font('title', 22)
+    header_font = T.font('title', 17)
+    font = T.font('ui', 13)
+    small = T.font('ui', 12)
+    label_font = T.font('ui', 11)
 
     if unit_data is None:
         data = _default_unit()
@@ -465,7 +463,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
 
         scroll_y = max(0, scroll_y + scroll_delta)
 
-        screen.fill(BG)
+        screen.blit(T.background(screen_w, screen_h), (0, 0))
 
         # Offset pour scroll
         oy = -scroll_y
@@ -548,13 +546,13 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
                     except Exception:
                         token_preview = None
                 # Reafficher
-                screen.fill(BG)
+                screen.blit(T.background(screen_w, screen_h), (0, 0))
 
         if token_preview:
             screen.blit(token_preview, (col1_x + 220, cy - 12))
         if token_path:
             clear_token = pygame.Rect(col1_x + 275, cy, 20, 24)
-            if draw_button(screen, clear_token, "✕", small, mouse_pos, BTN_DANGER, (220, 70, 70)):
+            if draw_button(screen, clear_token, "x", small, mouse_pos, BTN_DANGER, (220, 70, 70)):
                 if clicked:
                     token_path = ""
                     token_preview = None
@@ -586,7 +584,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
 
             # Bouton supprimer
             del_btn = pygame.Rect(lx + 4, cy + 12, 22, fh)
-            if draw_button(screen, del_btn, "✕", small, mouse_pos, BTN_DANGER, (220, 70, 70)):
+            if draw_button(screen, del_btn, "x", small, mouse_pos, BTN_DANGER, (220, 70, 70)):
                 if clicked:
                     arme_to_remove = ai
 
@@ -645,7 +643,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
         # === Boutons bas ===
         btn_y = screen_h - 50
         save_btn = pygame.Rect((screen_w - 400) // 2, btn_y, 180, 36)
-        if draw_button(screen, save_btn, "💾 Sauvegarder", font, mouse_pos, BTN_ACTIVE, (100, 180, 255), TEXT_BRIGHT):
+        if draw_button(screen, save_btn, "Sauvegarder", font, mouse_pos, BTN_ACTIVE, (100, 180, 255), TEXT_BRIGHT):
             if clicked:
                 result = _build_result(inp_nom, inp_dep, inp_pv, inp_brv, inp_svg, inp_size,
                                        sel_type_idx, sel_role_idx, arme_inputs, active_traits,
@@ -769,10 +767,10 @@ def run_custom_units_screen(screen, screen_w, screen_h):
     """Écran de liste des unités custom avec créer/éditer/supprimer.
     Retourne quand l'utilisateur appuie sur Retour."""
     clock = pygame.time.Clock()
-    title_font = pygame.font.SysFont("arial", 20, bold=True)
-    font = pygame.font.SysFont("arial", 14)
-    small = pygame.font.SysFont("arial", 12)
-    stat_font = pygame.font.SysFont("arial", 11)
+    title_font = T.font('title', 22)
+    font = T.font('ui', 14)
+    small = T.font('ui', 12)
+    stat_font = T.font('ui', 12)
 
     scroll = 0
 
@@ -795,7 +793,7 @@ def run_custom_units_screen(screen, screen_w, screen_h):
                 if event.key == pygame.K_ESCAPE:
                     return
 
-        screen.fill(BG)
+        screen.blit(T.background(screen_w, screen_h), (0, 0))
 
         # Titre
         title = title_font.render("UNITÉS PERSONNALISÉES", True, GOLD)

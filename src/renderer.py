@@ -1,6 +1,8 @@
 import math
 import os
 import pygame
+
+import theme as T
 import sys
 
 import sprites
@@ -1194,168 +1196,96 @@ def _draw_dashed_circle(screen, center, radius, color):
 
 
 def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
-    """Dessine le rapport de bataille en overlay semi-transparent."""
-    title_font = pygame.font.SysFont("arial", 22, bold=True)
-    header_font = pygame.font.SysFont("arial", 17, bold=True)
-    body_font = pygame.font.SysFont("arial", 14)
-    detail_font = pygame.font.SysFont("arial", 13)
+    """Rapport de bataille: panneau du thème sur la carte assombrie."""
+    header_font = T.font('title', 18)
+    body_font = T.font('ui_bold', 13)
+    detail_font = T.font('ui', 13)
+    small = T.font('ui', 11)
 
-    panel_w = min(750, screen_w - 20)
-    panel_h = min(640, battlefield_h - 10)
+    veil = pygame.Surface((screen_w, battlefield_h), pygame.SRCALPHA)
+    veil.fill((6, 7, 9, 150))
+    screen.blit(veil, (0, 0))
+
+    panel_w = min(780, screen_w - 20)
+    panel_h = min(660, battlefield_h - 10)
     px = (screen_w - panel_w) // 2
     py = (battlefield_h - panel_h) // 2
+    prect = T.panel(screen, (px, py, panel_w, panel_h))
 
-    overlay = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-    overlay.fill((15, 20, 25, 230))
-    screen.blit(overlay, (px, py))
-    pygame.draw.rect(screen, (200, 180, 80), (px, py, panel_w, panel_h), 2)
+    y = T.title(screen, "Rapport de bataille", prect.centerx, py + 14, 26)
+    T.text(screen, f"Victoire : {report['winner']}   ·   {report['rounds']} rounds",
+           T.font('serif', 16), (prect.centerx, y), T.PARCHMENT, align="center")
+    y += 32
 
-    y = py + 14
+    col_w = (panel_w - 60) // 2
+    clip = screen.get_clip()
+    screen.set_clip(prect.inflate(-8, -8))
 
-    title = title_font.render("RAPPORT DE BATAILLE", True, (255, 215, 0))
-    screen.blit(title, (px + (panel_w - title.get_width()) // 2, y))
-    y += 28
-
-    winner_txt = header_font.render(f"Victoire: {report['winner']}  —  {report['rounds']} rounds", True, (220, 200, 120))
-    screen.blit(winner_txt, (px + (panel_w - winner_txt.get_width()) // 2, y))
-    y += 26
-
-    pygame.draw.line(screen, (120, 120, 80), (px + 15, y), (px + panel_w - 15, y), 1)
-    y += 10
-
-    col_w = (panel_w - 40) // 2
+    def listing(label, items, color, item_color, col_x, cy):
+        cy = T.section_header(screen, label, col_x, cy, col_w, color, 14)
+        for name, count in items[:8]:
+            txt = f"{name}  ×{count}" if count > 1 else name
+            T.diamond(screen, col_x + 5, cy + 8, 2, color)
+            T.text(screen, txt, detail_font, (col_x + 14, cy), item_color)
+            cy += 17
+        if len(items) > 8:
+            rest = sum(c for _, c in items[8:])
+            T.text(screen, f"… et {rest} autres", small, (col_x + 14, cy), T.MUTED)
+            cy += 16
+        return cy + 6
 
     for i, army_key in enumerate(['army1', 'army2']):
         army = report[army_key]
-        col_x = px + 15 + i * (col_w + 10)
+        col_x = px + 22 + i * (col_w + 16)
         cy = y
+        team = T.TEAM[i]
 
-        team_color = (80, 160, 255) if i == 0 else (255, 80, 80)
-
-        header = header_font.render(army['name'], True, team_color)
-        screen.blit(header, (col_x, cy))
-        cy += 24
+        T.diamond(screen, col_x + 5, cy + 11, 5, team)
+        T.text(screen, army['name'], header_font, (col_x + 16, cy), T.lighten(team, 0.3))
+        cy += 28
 
         total = army['total']
-        n_alive = army['alive_count']
-        n_dead = army['dead_count']
-        n_fled = army['fled_count']
-
-        bar_w = col_w - 5
-        bar_h = 16
-
+        n_alive, n_dead, n_fled = army['alive_count'], army['dead_count'], army['fled_count']
         if total > 0:
-            alive_pct = n_alive / total
-            dead_pct = n_dead / total
-            fled_pct = n_fled / total
-
-            pygame.draw.rect(screen, (40, 40, 40), (col_x, cy, bar_w, bar_h))
-            if alive_pct > 0:
-                pygame.draw.rect(screen, (50, 180, 50), (col_x, cy, int(bar_w * alive_pct), bar_h))
-            if fled_pct > 0:
-                fx = col_x + int(bar_w * alive_pct)
-                pygame.draw.rect(screen, (220, 150, 30), (fx, cy, int(bar_w * fled_pct), bar_h))
-            if dead_pct > 0:
-                dx = col_x + int(bar_w * (alive_pct + fled_pct))
-                pygame.draw.rect(screen, (180, 40, 40), (dx, cy, int(bar_w * dead_pct), bar_h))
-            pygame.draw.rect(screen, (100, 100, 100), (col_x, cy, bar_w, bar_h), 1)
-        cy += bar_h + 8
-
-        txt_alive = body_font.render(f"Vivants: {n_alive}/{total}", True, (80, 220, 80))
-        screen.blit(txt_alive, (col_x, cy))
-        cy += 20
-
-        txt_dead = body_font.render(f"Morts: {n_dead}/{total}", True, (220, 80, 80))
-        screen.blit(txt_dead, (col_x, cy))
-        cy += 20
-
-        txt_fled = body_font.render(f"Fuyants: {n_fled}/{total}", True, (220, 170, 50))
-        screen.blit(txt_fled, (col_x, cy))
-        cy += 24
+            T.bar(screen, (col_x, cy, col_w, 14),
+                  [(n_alive / total, (70, 170, 90)), (n_fled / total, T.WARNING),
+                   (n_dead / total, (130, 42, 40))])
+        cy += 22
+        chip_w = (col_w - 12) // 3
+        for k, (lbl, n, c) in enumerate((("vivants", n_alive, T.SUCCESS),
+                                         ("en fuite", n_fled, T.WARNING),
+                                         ("morts", n_dead, T.DANGER))):
+            T.pill(screen, (col_x + k * (chip_w + 6), cy, chip_w, 22),
+                   f"{n}/{total} {lbl}", small, c, 36)
+        cy += 32
 
         # ── Détail par contingent (équipe composée de plusieurs armées) ──
         contingents = army.get('contingents') or []
         if len(contingents) > 1:
-            lbl = body_font.render("Contingents:", True, (200, 190, 150))
-            screen.blit(lbl, (col_x, cy))
-            cy += 19
+            cy = T.section_header(screen, "Contingents", col_x, cy, col_w, T.GOLD, 14)
             for c in contingents[:4]:
-                nm = detail_font.render(f"  {c['name'][:22]}", True, (215, 205, 175))
-                screen.blit(nm, (col_x, cy))
-                cy += 15
-                stats = (f"     {c['alive_count']} vivants · "
-                         f"{c['fled_count']} fuyants · {c['dead_count']} morts"
-                         f"  ({c['total']})")
-                st = tiny_font.render(stats, True, (150, 160, 150))
-                screen.blit(st, (col_x, cy))
-                # Petite barre de pertes du contingent
-                cw = col_w - 20
-                if c['total'] > 0 and cw > 20:
-                    bx, by2, bh2 = col_x + 6, cy + 13, 4
-                    ap = c['alive_count'] / c['total']
-                    fp = c['fled_count'] / c['total']
-                    pygame.draw.rect(screen, (40, 40, 40), (bx, by2, cw, bh2))
-                    pygame.draw.rect(screen, (50, 180, 50), (bx, by2, int(cw * ap), bh2))
-                    pygame.draw.rect(screen, (220, 150, 30),
-                                     (bx + int(cw * ap), by2, int(cw * fp), bh2))
-                    pygame.draw.rect(screen, (180, 40, 40),
-                                     (bx + int(cw * (ap + fp)), by2,
-                                      cw - int(cw * (ap + fp)), bh2))
-                cy += 22
-            cy += 4
+                T.text(screen, c['name'][:28], body_font, (col_x, cy), T.PARCHMENT)
+                T.text(screen, f"{c['alive_count']} / {c['fled_count']} / {c['dead_count']}"
+                       f"  (sur {c['total']})", small, (col_x + col_w, cy + 2),
+                       T.PARCHMENT_DIM, align="right")
+                cy += 17
+                if c['total'] > 0:
+                    T.bar(screen, (col_x, cy, col_w, 5),
+                          [(c['alive_count'] / c['total'], (70, 170, 90)),
+                           (c['fled_count'] / c['total'], T.WARNING),
+                           (c['dead_count'] / c['total'], (130, 42, 40))])
+                cy += 11
+            cy += 6
 
-        pygame.draw.line(screen, (60, 60, 60), (col_x, cy), (col_x + col_w - 5, cy), 1)
-        cy += 6
-
-        # Survivants (groupés: nom x quantité)
         if army['alive']:
-            label = body_font.render("Survivants:", True, (80, 220, 80))
-            screen.blit(label, (col_x, cy))
-            cy += 18
-            for name, count in army['alive'][:8]:
-                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
-                t = detail_font.render(txt, True, (160, 220, 160))
-                screen.blit(t, (col_x, cy))
-                cy += 16
-            if len(army['alive']) > 8:
-                rest = sum(c for _, c in army['alive'][8:])
-                more = detail_font.render(f"  ...et {rest} autres", True, (120, 160, 120))
-                screen.blit(more, (col_x, cy))
-                cy += 16
-
-        # Fuyants (groupés: nom x quantité)
+            cy = listing("Survivants", army['alive'], T.SUCCESS, (190, 225, 190), col_x, cy)
         if army['fled']:
-            cy += 4
-            label = body_font.render("Fuyants:", True, (220, 170, 50))
-            screen.blit(label, (col_x, cy))
-            cy += 18
-            for name, count in army['fled'][:8]:
-                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
-                t = detail_font.render(txt, True, (200, 170, 80))
-                screen.blit(t, (col_x, cy))
-                cy += 16
-            if len(army['fled']) > 8:
-                rest = sum(c for _, c in army['fled'][8:])
-                more = detail_font.render(f"  ...et {rest} autres", True, (150, 130, 60))
-                screen.blit(more, (col_x, cy))
-                cy += 16
-
-        # Morts (groupés: nom x quantité)
+            cy = listing("En fuite", army['fled'], T.WARNING, (230, 200, 140), col_x, cy)
         if army['dead']:
-            cy += 4
-            label = body_font.render("Morts:", True, (220, 80, 80))
-            screen.blit(label, (col_x, cy))
-            cy += 18
-            for name, count in army['dead'][:8]:
-                txt = f"  {name} x{count}" if count > 1 else f"  {name}"
-                t = detail_font.render(txt, True, (180, 100, 100))
-                screen.blit(t, (col_x, cy))
-                cy += 16
-            if len(army['dead']) > 8:
-                rest = sum(c for _, c in army['dead'][8:])
-                more = detail_font.render(f"  ...et {rest} autres", True, (120, 80, 80))
-                screen.blit(more, (col_x, cy))
-                cy += 16
+            cy = listing("Tombés", army['dead'], T.DANGER, (215, 160, 150), col_x, cy)
+
+    screen.set_clip(clip)
+    pygame.draw.line(screen, T.darken(T.GOLD_DIM, 0.4), (prect.centerx, y), (prect.centerx, prect.bottom - 20))
 
 
 def run_visual(battle, cell_size):
@@ -1375,15 +1305,15 @@ def run_visual(battle, cell_size):
 
     font_small_size = max(9, cell_size // 3)
     font_tiny_size = max(7, cell_size // 4)
-    small_font = pygame.font.SysFont("arial", font_small_size)
-    tiny_font = pygame.font.SysFont("arial", font_tiny_size)
-    banner_font = pygame.font.SysFont("arial", 22, bold=True)
+    small_font = T.font('ui', font_small_size + 1)
+    tiny_font = T.font('ui', font_tiny_size + 1)
+    banner_font = T.font('title', 20)
     # Moteur d'effets: particules, décalques, morts, sprites de combat
     fxr = FxRenderer(cell_size, load_token, tiny_font)
     fxr.reset(bf_w * cell_size, bf_h * cell_size)
     wfx = WeatherFx(getattr(battle.battlefield, 'weather', None))
     gate_state = gate_visual_state(battle.battlefield)
-    pause_font = pygame.font.SysFont("arial", 30, bold=True)
+    pause_font = T.font('title', 34)
 
     battle.cell_size = cell_size
     grid_surface = build_grid_surface(battle, cell_size)
@@ -1410,9 +1340,11 @@ def run_visual(battle, cell_size):
     minimap = ui.Minimap(battle, cell_size, SCREEN_W, 38)
     show_minimap = True
     minimap_drag = False
-    card_font = pygame.font.SysFont("arial", 14)
-    hud_bold = pygame.font.SysFont("arial", 16, bold=True)
-    hud_font = pygame.font.SysFont("arial", 13)
+    card_font = T.font('ui', 14)
+    hud_bold = T.font('ui_bold', 15)
+    hud_font = T.font('ui', 13)
+    top_bold = T.font('ui_bold', 13)
+    top_small = T.font('ui', 11)
 
     def clamp_camera():
         nonlocal cam_x, cam_y
@@ -2045,43 +1977,39 @@ def run_visual(battle, cell_size):
         a1f = len(battle.army1_fled) + sum(1 for u in battle.army1 if u.fleeing and u.is_alive)
         a2f = len(battle.army2_fled) + sum(1 for u in battle.army2 if u.fleeing and u.is_alive)
 
-        top_h = 30
-        top_surf = pygame.Surface((SCREEN_W, top_h), pygame.SRCALPHA)
-        top_surf.fill((12, 16, 20, 195))
-        screen.blit(top_surf, (0, 0))
-        pygame.draw.line(screen, (60, 70, 85), (0, top_h), (SCREEN_W, top_h), 1)
+        top_h = 36
+        screen.blit(T.vgradient(SCREEN_W, top_h, (26, 28, 35), (12, 13, 17), 225), (0, 0))
+        T.divider(screen, 0, SCREEN_W, top_h - 1, T.GOLD_DIM, gem=False)
 
         # Barre "bras de fer" centrale (proportion des forces vivantes)
         bar_w_total = min(420, SCREEN_W // 3)
         bar_x = (SCREEN_W - bar_w_total) // 2
-        bar_y = 8
-        bar_h = 14
+        bar_y = 6
+        bar_h = 12
         total_alive = max(1, a1c + a2c)
-        a1_w = int(bar_w_total * a1c / total_alive)
-        pygame.draw.rect(screen, (25, 30, 38), (bar_x - 1, bar_y - 1, bar_w_total + 2, bar_h + 2))
-        pygame.draw.rect(screen, (60, 120, 220), (bar_x, bar_y, a1_w, bar_h))
-        pygame.draw.rect(screen, (220, 60, 60), (bar_x + a1_w, bar_y, bar_w_total - a1_w, bar_h))
-        pygame.draw.line(screen, (240, 240, 240), (bar_x + a1_w, bar_y), (bar_x + a1_w, bar_y + bar_h), 2)
+        T.bar(screen, (bar_x, bar_y, bar_w_total, bar_h),
+              [(a1c / total_alive, T.TEAM[0]), (1 - a1c / total_alive, T.TEAM[1])])
+        mark_x = bar_x + int(bar_w_total * a1c / total_alive)
+        pygame.draw.line(screen, T.PARCHMENT, (mark_x, bar_y - 1), (mark_x, bar_y + bar_h), 2)
+        T.diamond(screen, mark_x, bar_y - 2, 3, T.GOLD_BRIGHT)
 
         # Effectifs de part et d'autre de la barre
-        c1 = small_font.render(f"{a1c}", True, (140, 190, 255))
-        c2 = small_font.render(f"{a2c}", True, (255, 150, 150))
-        screen.blit(c1, (bar_x - c1.get_width() - 8, bar_y))
-        screen.blit(c2, (bar_x + bar_w_total + 8, bar_y))
-
-        # Round au centre de la barre
-        rt = tiny_font.render(f"Round {battle.round - 1}", True, (230, 220, 180))
-        screen.blit(rt, ((SCREEN_W - rt.get_width()) // 2, bar_y + bar_h + 1))
+        T.text(screen, f"{a1c}", top_bold, (bar_x - 8, bar_y - 3), T.lighten(T.TEAM[0], 0.3),
+               align="right")
+        T.text(screen, f"{a2c}", top_bold, (bar_x + bar_w_total + 8, bar_y - 3),
+               T.lighten(T.TEAM[1], 0.3))
+        T.text(screen, f"Round {battle.round - 1}", T.font('serif', 12),
+               (SCREEN_W // 2, bar_y + bar_h + 1), T.GOLD, align="center")
 
         # Postures IA aux extrémités
         p1 = getattr(battle.commander1, 'posture', 'balanced')
         p2 = getattr(battle.commander2, 'posture', 'balanced')
         l1, pc1 = POSTURE_LABELS.get(p1, (p1, (180, 180, 180)))
         l2, pc2 = POSTURE_LABELS.get(p2, (p2, (180, 180, 180)))
-        t1 = small_font.render(f"Armée 1 — {l1}", True, pc1)
-        t2 = small_font.render(f"{l2} — Armée 2", True, pc2)
-        screen.blit(t1, (12, 8))
-        screen.blit(t2, (SCREEN_W - t2.get_width() - 12, 8))
+        T.diamond(screen, 14, 11, 4, T.TEAM[0])
+        T.text(screen, f"Armée 1 — {l1}", top_bold, (24, 3), pc1)
+        T.diamond(screen, SCREEN_W - 14, 11, 4, T.TEAM[1])
+        T.text(screen, f"{l2} — Armée 2", top_bold, (SCREEN_W - 24, 3), pc2, align="right")
 
         # Tempérament du général + manoeuvre en cours: on comprend d'un
         # coup d'oeil POURQUOI l'IA joue comme elle joue.
@@ -2096,8 +2024,10 @@ def run_visual(battle, cell_size):
             plan = getattr(cmd, 'plan', None)
             if plan is not None and plan.kind not in (None, "direct"):
                 sub = f"{sub} · plan: {plan.label()}"
-            st_t = tiny_font.render(sub, True, (150, 155, 165))
-            screen.blit(st_t, (SCREEN_W - st_t.get_width() - 12 if right else 12, 8 + 15))
+            if right:
+                T.text(screen, sub, top_small, (SCREEN_W - 24, 19), T.PARCHMENT_DIM, align="right")
+            else:
+                T.text(screen, sub, top_small, (24, 19), T.PARCHMENT_DIM)
 
         # ═══ BANNIÈRES D'ÉVÉNEMENTS (centre haut, fondu) ═══
         banner_y = top_h + 14
@@ -2118,16 +2048,9 @@ def run_visual(battle, cell_size):
                 break
         for eb in reversed(visible_banners):
             fade = min(1.0, eb[2] / 40)
-            txt = banner_font.render(eb[0], True, eb[1])
-            bw_b = txt.get_width() + 30
-            bh_b = txt.get_height() + 10
-            bsurf = pygame.Surface((bw_b, bh_b), pygame.SRCALPHA)
-            bsurf.fill((10, 12, 16, int(190 * fade)))
-            pygame.draw.rect(bsurf, (*eb[1], int(200 * fade)), (0, 0, bw_b, bh_b), 2)
-            txt.set_alpha(int(255 * fade))
-            bsurf.blit(txt, (15, 5))
-            screen.blit(bsurf, ((SCREEN_W - bw_b) // 2, banner_y))
-            banner_y += bh_b + 6
+            bsurf = T.banner(eb[0], banner_font, tuple(eb[1]), int(255 * fade))
+            screen.blit(bsurf, ((SCREEN_W - bsurf.get_width()) // 2, banner_y))
+            banner_y += bsurf.get_height() + 6
 
         # ═══ LÉGENDE DU TERRAIN (touche L) ═══
         if show_terrain_legend:
@@ -2135,7 +2058,9 @@ def run_visual(battle, cell_size):
                 import terrain_render
                 terrain_legend = terrain_render.legend_surface(battle.battlefield, small_font)
             if terrain_legend is not None:
-                screen.blit(terrain_legend, (12, top_h + 12))
+                # En bas à gauche: le haut de l'écran est aux bannières
+                screen.blit(terrain_legend,
+                            (12, SCREEN_H - HUD_HEIGHT - terrain_legend.get_height() - 12))
 
         # ═══ MINI-CARTE (Tab) ═══
         if show_minimap:
@@ -2144,16 +2069,15 @@ def run_visual(battle, cell_size):
 
         # ═══ OVERLAY PAUSE ═══
         if pause and winner is None and not battle_report:
-            pt = pause_font.render("PAUSE", True, (255, 220, 120))
-            ps = pygame.Surface((pt.get_width() + 50, pt.get_height() + 18), pygame.SRCALPHA)
-            ps.fill((10, 12, 16, 170))
-            pygame.draw.rect(ps, (255, 220, 120, 160), ps.get_rect(), 2)
-            ps.blit(pt, (25, 9))
-            screen.blit(ps, ((SCREEN_W - ps.get_width()) // 2,
-                             (SCREEN_H - HUD_HEIGHT - ps.get_height()) // 2))
-            hint = small_font.render("ESPACE pour reprendre", True, (200, 200, 200))
-            screen.blit(hint, ((SCREEN_W - hint.get_width()) // 2,
-                               (SCREEN_H - HUD_HEIGHT) // 2 + 35))
+            pt = T.gold_text("Pause", pause_font)
+            pw, ph = max(260, pt.get_width() + 90), pt.get_height() + 48
+            prect = pygame.Rect((SCREEN_W - pw) // 2, (SCREEN_H - HUD_HEIGHT - ph) // 2, pw, ph)
+            T.glass(screen, prect, 215, 10)
+            T.corner_marks(screen, prect, T.GOLD_DIM, 9)
+            screen.blit(pt, (prect.centerx - pt.get_width() // 2, prect.y + 8))
+            T.divider(screen, prect.x + 30, prect.right - 30, prect.y + 12 + pt.get_height())
+            T.text(screen, "ESPACE pour reprendre", T.font('ui', 13),
+                   (prect.centerx, prect.bottom - 22), T.PARCHMENT_DIM, align="center")
 
         # ═══ HUD BAS ═══
         view_h = SCREEN_H - HUD_HEIGHT

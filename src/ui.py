@@ -10,10 +10,11 @@ import math
 import pygame
 
 import terrain as tr
+import theme as T
 
 ZOOM_LEVELS = (0.5, 0.67, 0.8, 1.0, 1.25, 1.6, 2.0)
 
-TEAM_COLORS = ((60, 120, 220), (220, 60, 60))
+TEAM_COLORS = T.TEAM
 
 _ORDER_FR = {
     "attack": "attaque", "flank": "contournement", "hold": "tient la position",
@@ -177,9 +178,8 @@ class Minimap:
 
     def draw(self, screen, battle, cam_x, cam_y, view_w, view_h, zoom):
         bf = battle.battlefield
-        frame = pygame.Surface((self.w + 6, self.h + 6), pygame.SRCALPHA)
-        frame.fill((10, 12, 16, 200))
-        screen.blit(frame, (self.rect.x - 3, self.rect.y - 3))
+        T.glass(screen, self.rect.inflate(12, 12), 215, 7)
+        T.corner_marks(screen, self.rect.inflate(12, 12), T.GOLD_DIM, 6)
         screen.blit(self.thumb, self.rect.topleft)
         sx, sy = self.w / bf.width, self.h / bf.height
         for army, color in ((battle.army1, TEAM_COLORS[0]), (battle.army2, TEAM_COLORS[1])):
@@ -192,8 +192,8 @@ class Minimap:
         cs = self.cs
         view = pygame.Rect(int(self.rect.x + cam_x / cs * sx), int(self.rect.y + cam_y / cs * sy),
                            max(4, int(view_w / zoom / cs * sx)), max(4, int(view_h / zoom / cs * sy)))
-        pygame.draw.rect(screen, (240, 230, 190), view.clip(self.rect), 1)
-        pygame.draw.rect(screen, (90, 100, 115), self.rect, 1)
+        pygame.draw.rect(screen, T.GOLD_BRIGHT, view.clip(self.rect), 1)
+        pygame.draw.rect(screen, T.INK, self.rect, 1)
 
     def camera_for(self, battle, mx, my, view_w, view_h, zoom):
         """Caméra (pixels monde) centrée sur le point cliqué, ou None."""
@@ -268,12 +268,17 @@ def unit_card_lines(unit, battle):
 
 
 def draw_unit_card(screen, unit, battle, mx, my, font, bounds):
-    """Panneau de la fiche près du curseur, maintenu dans `bounds`."""
+    """Fiche près du curseur (cadre du thème), maintenue dans `bounds`.
+    Titre à empattements, jauge de PV, lignes de détail."""
     lines = unit_card_lines(unit, battle)
-    rendered = [font.render(t, True, c) for t, c in lines]
-    pad = 8
-    w = max(r.get_width() for r in rendered) + pad * 2
-    h = sum(r.get_height() + 2 for r in rendered) + pad * 2 + 8
+    title_font = T.font('title', font.get_height() + 1)
+    body = T.font('ui', max(11, font.get_height() - 3))
+    team = lines[0][1]
+    title_img = title_font.render(lines[0][0], True, T.lighten(team, 0.3))
+    rendered = [body.render(t, True, c) for t, c in lines[1:]]
+    pad = 12
+    w = max([title_img.get_width()] + [r.get_width() for r in rendered]) + pad * 2
+    h = (title_img.get_height() + 16 + sum(r.get_height() + 3 for r in rendered) + pad * 2)
     x, y = mx + 18, my + 18
     if x + w > bounds.right:
         x = mx - w - 12
@@ -281,21 +286,19 @@ def draw_unit_card(screen, unit, battle, mx, my, font, bounds):
         y = my - h - 12
     x = max(bounds.left + 4, x)
     y = max(bounds.top + 4, y)
-    panel = pygame.Surface((w, h), pygame.SRCALPHA)
-    panel.fill((12, 14, 20, 225))
-    pygame.draw.rect(panel, (*lines[0][1], 220), panel.get_rect(), 2, border_radius=4)
-    cy = pad
-    for i, r in enumerate(rendered):
-        panel.blit(r, (pad, cy))
-        cy += r.get_height() + 2
-        if i == 0:
-            bar_w = w - pad * 2
-            ratio = max(0.0, unit.hp / max(1, unit.max_hp))
-            pygame.draw.rect(panel, (40, 40, 44), (pad, cy, bar_w, 5))
-            pygame.draw.rect(panel, lines[1][1], (pad, cy, int(bar_w * ratio), 5))
-            cy += 8
-    screen.blit(panel, (x, y))
-    return pygame.Rect(x, y, w, h)
+    rect = pygame.Rect(x, y, w, h)
+    T.glass(screen, rect, 232, 8)
+    screen.blit(T.rounded_gradient(w, 3, T.lighten(team, 0.1), T.darken(team, 0.2), 2), (x, y))
+    cy = y + pad - 2
+    screen.blit(title_img, (x + pad, cy))
+    cy += title_img.get_height() + 3
+    ratio = max(0.0, min(1.0, unit.hp / max(1, unit.max_hp)))
+    T.bar(screen, (x + pad, cy, w - pad * 2, 7), [(ratio, lines[1][1])])
+    cy += 13
+    for r in rendered:
+        screen.blit(r, (x + pad, cy))
+        cy += r.get_height() + 3
+    return rect
 
 
 # ─── Bandeau inférieur ───
@@ -310,33 +313,30 @@ def army_counts(army, roster, fled_list):
 
 def draw_bottom_hud(screen, battle, screen_w, top, height, fonts, status, status_color,
                     zoom, fps, help_text, posture_labels):
-    """Bandeau: deux panneaux d'armée et l'état de la bataille au centre."""
+    """Bandeau: deux panneaux d'armée et l'état de la bataille au centre
+    (cadre et jauges du thème)."""
     tiny, bold = fonts
-    pygame.draw.rect(screen, (14, 17, 22), (0, top, screen_w, height))
-    pygame.draw.line(screen, (70, 85, 105), (0, top), (screen_w, top), 2)
+    screen.blit(T.vgradient(screen_w, height, (26, 28, 35), (12, 13, 17)), (0, top))
+    T.divider(screen, 0, screen_w, top, T.GOLD_DIM, gem=False)
+    pygame.draw.line(screen, T.INK, (0, top + 1), (screen_w, top + 1))
+    name_font = T.font('title', 17)
     panel_w = min(520, screen_w // 3)
     sides = ((battle.army1, battle.army1_roster, battle.army1_fled, battle.commander1),
              (battle.army2, battle.army2_roster, battle.army2_fled, battle.commander2))
     for side, (army, roster, fled, cmd) in enumerate(sides):
-        x = 12 if side == 0 else screen_w - panel_w - 12
+        x = 14 if side == 0 else screen_w - panel_w - 14
         color = TEAM_COLORS[side]
         total = max(1, len(roster))
         alive, fleeing, dead = army_counts(army, roster, fled)
-        title = bold.render(f"Armée {side + 1}", True, color)
-        screen.blit(title, (x, top + 6))
-        bar_x = x + title.get_width() + 12
-        bar_w = max(20, panel_w - title.get_width() - 12)
-        bar_y, bar_h = top + 10, 12
-        wa = int(bar_w * alive / total)
-        wf = int(bar_w * fleeing / total)
-        pygame.draw.rect(screen, (34, 36, 42), (bar_x, bar_y, bar_w, bar_h))
-        pygame.draw.rect(screen, (60, 180, 80), (bar_x, bar_y, wa, bar_h))
-        pygame.draw.rect(screen, (225, 150, 40), (bar_x + wa, bar_y, wf, bar_h))
-        pygame.draw.rect(screen, (150, 45, 45), (bar_x + wa + wf, bar_y, max(0, bar_w - wa - wf), bar_h))
-        pygame.draw.rect(screen, (90, 95, 105), (bar_x, bar_y, bar_w, bar_h), 1)
-        counts = tiny.render(f"{alive} au combat · {fleeing} en fuite · {dead} tombés",
-                             True, (190, 195, 200))
-        screen.blit(counts, (x, top + 28))
+        T.diamond(screen, x + 5, top + 16, 4, color)
+        title = T.text(screen, f"Armée {side + 1}", name_font, (x + 14, top + 5), T.lighten(color, 0.25))
+        bar_x = title.right + 14
+        bar_w = max(20, x + panel_w - bar_x)
+        T.bar(screen, (bar_x, top + 10, bar_w, 12),
+              [(alive / total, (70, 170, 90)), (fleeing / total, T.WARNING),
+               (1.0 - (alive + fleeing) / total, (110, 40, 38))])
+        T.text(screen, f"{alive} au combat  ·  {fleeing} en fuite  ·  {dead} tombés",
+               tiny, (x, top + 30), T.PARCHMENT)
         posture = getattr(cmd, 'posture', 'balanced')
         label, pcolor = posture_labels.get(posture, (posture, (180, 180, 180)))
         sub = label
@@ -346,15 +346,15 @@ def draw_bottom_hud(screen, battle, screen_w, top, height, fonts, status, status
         temper = getattr(cmd, 'temperament', None)
         if temper:
             sub += f" · {temper}"
-        screen.blit(tiny.render(sub, True, pcolor), (x, top + 46))
+        T.text(screen, sub, tiny, (x, top + 47), pcolor)
 
     cx = screen_w // 2
-    st = bold.render(status, True, status_color)
-    screen.blit(st, (cx - st.get_width() // 2, top + 6))
+    st = T.gold_text(status, T.font('title', 19), T.lighten(status_color, 0.3),
+                     T.darken(status_color, 0.15))
+    screen.blit(st, (cx - st.get_width() // 2, top + 5))
     sky = getattr(battle.battlefield, 'weather', None)
     sky_txt = f"   ·   {sky.label}" if sky is not None and sky.name != "Clair" else ""
-    info = tiny.render(f"Round {battle.round - 1}{sky_txt}   ·   zoom ×{zoom:g}   ·   {fps} i/s",
-                       True, (170, 175, 185))
-    screen.blit(info, (cx - info.get_width() // 2, top + 30))
-    hint = tiny.render(help_text, True, (130, 150, 180))
+    T.text(screen, f"Round {battle.round - 1}{sky_txt}   ·   zoom ×{zoom:g}   ·   {fps} i/s",
+           tiny, (cx, top + 31), T.PARCHMENT_DIM, align="center")
+    hint = tiny.render(help_text, True, T.MUTED)
     screen.blit(hint, (cx - hint.get_width() // 2, top + height - hint.get_height() - 4))

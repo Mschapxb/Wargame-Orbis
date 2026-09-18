@@ -6,6 +6,8 @@ deux couleurs proches pour savoir où l'on marche.
 """
 import pygame
 
+import theme as T
+
 import terrain as tr
 
 # Pseudo-terrain de légende: une case en feu n'est pas un terrain, mais le
@@ -157,13 +159,13 @@ def legend_surface(bf, font):
     if not rows:
         return None
     sw, pad, gap = 22, 10, 6
-    texts = [font.render(LEGEND[n], True, (228, 228, 220)) for n in rows]
-    title = font.render("Terrain  (L pour masquer)", True, (255, 220, 120))
+    texts = [font.render(LEGEND[n], True, T.PARCHMENT) for n in rows]
+    title = T.gold_text("Terrain  (L pour masquer)", T.font('title', max(12, font.get_height())))
     w = pad * 2 + max([sw + 10 + t.get_width() for t in texts] + [title.get_width()])
     h = pad * 2 + title.get_height() + gap + sum(max(sw, t.get_height()) + gap for t in texts)
     surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    surf.fill((12, 14, 18, 215))
-    pygame.draw.rect(surf, (255, 220, 120, 150), surf.get_rect(), 1)
+    T.glass(surf, surf.get_rect(), 225, 8)
+    T.corner_marks(surf, surf.get_rect(), T.GOLD_DIM, 6)
     surf.blit(title, (pad, pad))
     y = pad + title.get_height() + gap
     for n, t in zip(rows, texts):
@@ -176,7 +178,7 @@ def legend_surface(bf, font):
         swatch = pygame.Surface((sw, sw), pygame.SRCALPHA)
         draw_cell(swatch, n, pygame.Rect(0, 0, sw, sw), sw, 0x5A5A, (True, True, True, True))
         surf.blit(swatch, box)
-        pygame.draw.rect(surf, (200, 200, 200, 200), box, 1)
+        pygame.draw.rect(surf, (*T.GOLD_DIM, 220), box, 1)
         surf.blit(t, (pad + sw + 10, y + (sw - t.get_height()) // 2))
         y += max(sw, t.get_height()) + gap
     return surf

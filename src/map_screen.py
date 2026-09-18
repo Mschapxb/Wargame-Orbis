@@ -18,10 +18,11 @@ import pygame
 
 import maps as maps_mod
 import weather as weather_mod
-from menu import (BG, BORDER, BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, ORANGE,
+import theme as T
+from menu import (BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, ORANGE,
                   TEXT, TEXT_BRIGHT, TEXT_DIM, draw_button, draw_text)
 
-TEAM_COLORS = ((70, 140, 255), (235, 70, 70))
+TEAM_COLORS = T.TEAM
 _SEEDS = random.Random()          # jamais le random du moteur
 
 
@@ -126,13 +127,14 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
     """Boucle de l'écran. Retourne "launch" (COMBAT !) ou "back" (retour aux
     armées); `setup` est modifié en place. Quitter ferme le programme."""
     clock = pygame.time.Clock()
-    title_font = pygame.font.SysFont("arial", 24, bold=True)
-    body_font = pygame.font.SysFont("arial", 14)
-    small_font = pygame.font.SysFont("arial", 12)
+    body_font = T.font('ui', 14)
+    small_font = T.font('ui', 12)
+    label_font = T.font('title', 14)
+    background = T.background(screen_w, screen_h)
     grid_w, grid_h = grid_size
 
     margin = 15
-    rows_top = 56
+    rows_top = 62
     row_h = 32
     preview_top = rows_top + 4 * row_h + 8
     preview_rect = pygame.Rect(margin, preview_top, screen_w - 2 * margin,
@@ -157,11 +159,8 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
                 if event.key in (pygame.K_n, pygame.K_F5):
                     setup.new_seed()
 
-        screen.fill(BG)
-        title = title_font.render("— CHAMP DE BATAILLE —", True, GOLD)
-        tx0 = (screen_w - title.get_width()) // 2
-        screen.blit(title, (tx0, 10))
-        pygame.draw.line(screen, (140, 120, 40), (tx0, 40), (tx0 + title.get_width(), 40), 1)
+        screen.blit(background, (0, 0))
+        T.title(screen, "Champ de bataille", screen_w // 2, 8, 28)
 
         def choice_row(options, selected, x, y, min_w=70):
             for opt in options:
@@ -182,10 +181,10 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             draw_text(screen, text, small_font, (x, y + 6), TEXT_DIM)
             screen.set_clip(None)
 
-        label_w = 64
+        label_w = 84
         # ─── Carte ───
         y = rows_top
-        draw_text(screen, "Carte:", small_font, (margin, y + 6), TEXT)
+        T.text(screen, "Carte", label_font, (margin, y + 4), T.GOLD)
         new_map, x = choice_row(maps_mod.get_map_names(), setup.map_name, margin + label_w, y)
         setup.set_map(new_map)
         clipped_note(maps_mod.get_map_info(setup.map_name).get("description", ""), x + 10, y)
@@ -195,10 +194,10 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
         if setup.map_name in maps_mod.THEMED_MAPS:
             x = margin
             if setup.map_name not in maps_mod.OPEN_MAPS:
-                draw_text(screen, "Thème:", small_font, (x, y + 6), TEXT)
+                T.text(screen, "Thème", label_font, (x, y + 4), T.GOLD)
                 setup.biome, x = choice_row(maps_mod.BIOMES, setup.biome, x + label_w, y)
                 x += 18
-            draw_text(screen, "Relief:", small_font, (x, y + 6), TEXT)
+            T.text(screen, "Relief", label_font, (x, y + 4), T.GOLD)
             reliefs = list(maps_mod.RELIEFS) + [maps_mod.RANDOM_RELIEF]
             setup.relief, x = choice_row(reliefs, setup.relief, x + label_w, y)
         else:
@@ -206,7 +205,7 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
 
         # ─── Météo ───
         y += row_h
-        draw_text(screen, "Météo:", small_font, (margin, y + 6), TEXT)
+        T.text(screen, "Météo", label_font, (margin, y + 4), T.GOLD)
         skies = list(weather_mod.WEATHERS) + [weather_mod.RANDOM_WEATHER]
         setup.weather, x = choice_row(skies, setup.weather, margin + label_w, y)
         sky_desc = weather_mod.DESCRIPTIONS.get(setup.weather, "Tirée au sort selon le biome.")
@@ -217,13 +216,13 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
 
         # ─── Avantage du terrain ───
         y += row_h
-        draw_text(screen, "Avantage:", small_font, (margin, y + 6), TEXT)
+        T.text(screen, "Avantage", label_font, (margin, y + 4), T.GOLD)
         if setup.advantage_allowed:
             setup.advantage, x = choice_row(list(maps_mod.ADVANTAGE_SIDES), setup.advantage,
                                             margin + label_w, y)
             if setup.advantage != maps_mod.ADVANTAGE_NONE:
                 x += 18
-                draw_text(screen, "Intensité:", small_font, (x, y + 6), TEXT)
+                T.text(screen, "Intensité", label_font, (x, y + 4), T.GOLD)
                 setup.level, x = choice_row(maps_mod.ADVANTAGE_LEVELS, setup.level,
                                             x + label_w, y)
                 note = ("Hauteurs sous le front du camp favorisé."
@@ -241,13 +240,14 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             preview, preview_battle = build_preview(army1, army2, setup, grid_w, grid_h,
                                                     preview_rect.w - 8, preview_rect.h - 8)
             preview_key = setup.key()
-        pygame.draw.rect(screen, (12, 15, 19), preview_rect, border_radius=4)
-        pygame.draw.rect(screen, BORDER, preview_rect, 1, border_radius=4)
-        screen.blit(preview, (preview_rect.centerx - preview.get_width() // 2,
-                              preview_rect.centery - preview.get_height() // 2))
+        T.panel(screen, preview_rect)
+        map_rect = preview.get_rect(center=preview_rect.center)
+        screen.blit(preview, map_rect.topleft)
+        pygame.draw.rect(screen, T.INK, map_rect.inflate(2, 2), 1)
+        pygame.draw.rect(screen, T.GOLD_DIM, map_rect.inflate(6, 6), 1)
         summary = describe_setup(setup, preview_battle)
-        s_img = body_font.render(summary, True, TEXT)
-        screen.blit(s_img, ((screen_w - s_img.get_width()) // 2, preview_rect.bottom + 8))
+        T.text(screen, summary, T.font('serif', 15), (screen_w // 2, preview_rect.bottom + 6),
+               T.PARCHMENT, align="center")
         for side, col in enumerate(TEAM_COLORS):
             n = len(army1 if side == 0 else army2)
             lx = margin + side * 150
@@ -262,7 +262,7 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             return "back"
         reroll_rect = pygame.Rect(screen_w - margin - 200, by, 200, 40)
         if draw_button(screen, reroll_rect, "Nouvelle carte (N)", body_font, mouse_pos,
-                       ORANGE, (240, 180, 70)) and clicked:
+                       BTN_NORMAL, BTN_HOVER, T.GOLD_BRIGHT) and clicked:
             setup.new_seed()
         launch_rect = pygame.Rect((screen_w - 300) // 2, by - 2, 300, 44)
         if draw_button(screen, launch_rect, f"COMBAT ! — {setup.map_name}", body_font,
