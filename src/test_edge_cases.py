@@ -6,7 +6,6 @@ import os, sys, random, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unit_library as ul
 from battle import Battle
-from models import Arme
 from unit import Unit
 
 FAILS = []

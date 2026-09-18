@@ -1,4 +1,11 @@
 /.venv
-/tests
 __pycache__/
 *.pyc
+
+# Réglages locaux et dossiers parasites
+/.claude/settings.local.json
+/~/
+
+# Outils
+.pytest_cache/
+.ruff_cache/

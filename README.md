@@ -416,20 +416,24 @@ percentile (le budget à 60 i/s est de 16,6 ms). La pause fige aussi les effets.
 ```
 battle-simulator/
 ├── main.py              # Point d'entrée
-├── menu.py              # Écran 1: composition des armées (Pygame)
+├── menu.py              # Écran 1: composition des armées (ArmyState, ArmyMenu)
 ├── map_screen.py        # Écran 2: carte, météo, avantage, aperçu rechargeable
 ├── battle.py            # Boucle de simulation (rounds, phases, moral)
-├── battlefield.py       # Grille, pathfinding A*, calcul de mouvement
+├── deployment.py        # Déploiement: rangs par groupe, garnison de siège
+├── rng_scope.py         # Hasard de génération à portée limitée (graine de carte)
+├── battlefield.py       # Grille, pathfinding A*, calcul de mouvement (par phases)
 ├── ai_commander.py      # IA tactique (postures, manœuvres, ciblage)
 ├── tactics.py           # Maths de combat, carte de menace, anticipation
-├── renderer.py          # Rendu visuel Pygame (grille, unités, effets)
+├── renderer.py          # Primitives de rendu (terrain, structures, rapport)
+├── battle_view.py       # Écran de bataille: boucle, caméra, touches (KEY_ACTIONS), HUD
 ├── unit.py              # Classe Unit (stats, combat, animations)
 ├── unit_library.py      # Base de données d'unités et armées prédéfinies
 ├── models.py            # Armes et sorts (Arme, SpellFireball, etc.)
 ├── effects.py           # Données d'effets horodatées (projectiles, coups, sorts, morts)
 ├── fx_render.py         # Mise en scène: particules, décalques, animations de mort
 ├── sprites.py           # Sprites procéduraux mis en cache (projectiles, lames, sorts…)
-├── maps.py              # Définition des cartes et génération de terrain
+├── maps/                # Cartes: catalog, common, open_field, village, siege,
+│                        #   defile, themes, advantage, decor (tout réexporté par maps)
 ├── terrain.py           # Règles de terrain (coûts, vue, modificateurs)
 ├── terrain_render.py    # Motifs et légende du terrain
 ├── facing.py            # Orientation: arcs de face, de flanc, de dos
@@ -437,8 +441,12 @@ battle-simulator/
 ├── weather_render.py    # Météo: calque visuel (pluie, brume, vent…)
 ├── bench.py             # Bancs d'équilibrage unifiés (suites, comparaison)
 ├── tokens/              # Images PNG des tokens d'unités (optionnel)
-└── requirements.txt     # Dépendances Python
+├── requirements.txt     # Dépendances Python
+└── pyproject.toml       # Métadonnées du projet et configuration de ruff
 ```
+
+Les chemins ci-dessus sont relatifs à `src/`, sauf `requirements.txt` et
+`pyproject.toml` (racine).
 
 ### Déploiement
 
@@ -478,7 +486,12 @@ modification de mécanique ne fait pas basculer l'équilibre.
 ```bash
 python run_tests.py                         # toutes les suites, en parallèle (sans dépendance)
 python run_tests.py terrain ui              # seulement les suites nommées
+python -m ruff check src                    # lint (pip install ruff)
 ```
+
+L'intégration continue (`.github/workflows/ci.yml`, Linux et Windows) lance
+ruff, toutes les suites et `bench_fairness.py 60 --quick` (graines fixes; échoue
+si une situation est biaisée à |z| > 3).
 
 Chaque suite reste un script autonome:
 
@@ -496,7 +509,8 @@ python src/test_battle_plan.py              # plans de bataille: choix, phases, 
 python src/test_formation.py                # formations en bloc: géométrie, marche, rupture, cas exclus
 python src/test_ui.py                       # interface: zoom, mini-carte, fiche d'unité, bandeau, boucle réelle
 python src/test_themes.py                   # thèmes: biome × relief, symétrie, passages, déploiement
-python src/test_determinism.py              # une graine rejoue la même bataille
+python src/test_determinism.py              # une graine rejoue la même bataille; graine de carte isolée
+python src/test_main.py                     # unittest: armes, sorts, unités, cartes
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
 python src/test_ai_headless.py              # scénarios IA (sortie, rush, ligne de tir…)
 python src/measure_contact.py               # round du premier contact par carte

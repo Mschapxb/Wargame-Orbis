@@ -10,7 +10,7 @@
   "armes": [
     [
       "Tenebres",
-      10,
+      15,
       10,
       2,
       2,
@@ -28,7 +28,7 @@
     "Projectile magique",
     "Soin"
   ],
-  "token_path": "../tokens/token_1.png",
+  "token_path": "..\\tokens\\token_1.png",
   "color": [
     200,
     200,

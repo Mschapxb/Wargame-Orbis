@@ -1,4 +1,4 @@
-import random
+from rng_scope import RNG
 import heapq
 
 import facing
@@ -84,8 +84,8 @@ class Battlefield:
         attempts = 0
         while placed < count and attempts < max_attempts:
             attempts += 1
-            x = random.randint(min_x, max_x)
-            y = random.randint(min_y, max_y)
+            x = RNG.randint(min_x, max_x)
+            y = RNG.randint(min_y, max_y)
             if not any(abs(x - ox) + abs(y - oy) < min_distance for ox, oy in obstacles) and self.grid[x][y] == 0:
                 self.grid[x][y] = 1
                 obstacles.append((x, y))
@@ -667,220 +667,209 @@ class Battlefield:
                     best, best_key = (px, py), key
         return best
 
+    # ─── Déplacement d'une unité pour le round ───
+    # compute_move enchaîne des phases; chacune renvoie sa décision
+    # (case, cible) — (None, cible) = rester sur place — ou None pour
+    # laisser la main à la suivante.
+
     def compute_move(self, unit, battle, reserved_positions):
-        # Coût terrain réel du prochain déplacement, calculé ci-dessous quand
-        # le candidat retourné vient d'un chemin A* (path[i-1]/gpath[i-1]).
-        # Réinitialisé à chaque appel pour qu'une valeur d'un appel précédent
-        # ne puisse jamais être réutilisée pour une destination différente.
+        """(case où aller ou None, cible ou None) pour ce round."""
+        # Coût terrain réel du prochain déplacement, renseigné par
+        # _advance_along quand la case vient d'un chemin A*. Réinitialisé à
+        # chaque appel pour qu'une valeur d'un appel précédent ne puisse
+        # jamais servir pour une destination différente.
         unit._planned_move_cost = None
         unit._planned_move_dest = None
         if unit.fleeing:
-            # Unités en fuite: courir vers le bord le plus proche
-            flee_speed = max(2, unit.vitesse)  # Minimum 2 cases/round en fuite
-            ux, uy = unit.position
-            
-            # Trouver le bord le plus proche
-            dist_left = ux
-            dist_right = self.width - 1 - ux
-            dist_top = uy
-            dist_bottom = self.height - 1 - uy
-            
-            min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
-            
-            if min_dist == dist_top:
-                goal = (ux, 0)
-            elif min_dist == dist_bottom:
-                goal = (ux, self.height - 1)
-            elif min_dist == dist_left:
-                goal = (0, uy)
-            else:
-                goal = (self.width - 1, uy)
-            
-            # Essayer le A* en premier
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
-            if path:
-                steps = tr.steps_within(self, unit.position, path, flee_speed)
-                # Essayer le step le plus loin possible, puis réduire
-                for i in range(steps, 0, -1):
-                    new_pos = path[i - 1]
-                    if self._can_move_to(unit, new_pos, reserved_positions):
-                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
-                        unit._planned_move_dest = new_pos
-                        return new_pos, None
-            
-            # Fallback: mouvement direct vers le bord, en essayant plusieurs directions
-            gx, gy = goal
-            dx_main = 0 if gx == ux else (1 if gx > ux else -1)
-            dy_main = 0 if gy == uy else (1 if gy > uy else -1)
-            
-            # Essayer toutes les directions, triées par efficacité vers le bord
-            candidates = []
-            for step in range(flee_speed, 0, -1):
-                for ddx in [-1, 0, 1]:
-                    for ddy in [-1, 0, 1]:
-                        if ddx == 0 and ddy == 0:
-                            continue
-                        nx, ny = ux + ddx * step, uy + ddy * step
-                        pos = (nx, ny)
-                        if not (0 <= nx < self.width and 0 <= ny < self.height):
-                            # Case hors map = on s'y dirige quand même (pour atteindre le bord)
-                            # Clipper au bord
-                            nx = max(0, min(self.width - 1, nx))
-                            ny = max(0, min(self.height - 1, ny))
-                            pos = (nx, ny)
-                        if self._can_move_to(unit, pos, reserved_positions):
-                            # Score: distance au bord le plus proche (plus petit = mieux)
-                            border_dist = min(nx, self.width - 1 - nx, ny, self.height - 1 - ny)
-                            candidates.append((border_dist, pos))
-            
-            if candidates:
-                candidates.sort()
-                return candidates[0][1], None
-            
-            return None, None
-        
-        # Artillerie: ancrée tant qu'elle a une cible atteignable, sinon
-        # repositionnement lent (les machines de guerre ont vitesse 1-2).
-        # Unités vraiment immobiles (vitesse 0): ne bougent jamais.
-        if unit.vitesse <= 0 or getattr(unit, 'is_artillery', False):
-            enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
-            if not enemies:
-                return None, None
-            # L'artillerie ne vise QUE ce qu'elle peut atteindre ET voir
-            # (sinon elle "tirait" inutilement sur des cibles hors d'atteinte)
-            ux_a, uy_a = unit.position
-            reachable = [e for e in enemies
-                         if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
-                         and self.has_line_of_fire(unit, e)]
-            if reachable:
-                # Priorité: achever les blessés, sinon le plus proche
-                t = min(reachable, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                  abs(ux_a - e.position[0]) + abs(uy_a - e.position[1])))
-                return None, t
-            if unit.vitesse <= 0:
-                return None, None  # Immobile et rien d'atteignable: tenir, sans visée
-            _o = getattr(unit, '_tactical_order', None)
-            if _o is not None and _o.order_type == "demolish":
-                return None, None  # Elle abat ce qui masque sa cible: en place
-            # Artillerie mobile sans cible visible: si elle est sur un rempart
-            # en défense, elle y reste (descendre seule = suicide); sinon elle
-            # se repositionne lentement via la logique normale ci-dessous.
-            if (self.gate_hp and self.on_active_rampart(ux_a, uy_a, unit, battle)
-                    and not (_o is not None and _o.order_type == "withdraw")):
-                return None, None
-        
+            return self._flee_move(unit, battle, reserved_positions)
+        decision = self._artillery_decision(unit, battle)
+        if decision is not None:
+            return decision
         enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
         if not enemies:
             return None, None
-        
-        # === Siège: tireurs/mages sur rempart ne bougent JAMAIS ===
-        # (sauf ordre de repli vers l'enceinte suivante)
-        _wd = getattr(unit, '_tactical_order', None)
-        if (self.gate_hp and self.on_active_rampart(*unit.position, unit, battle)
-                and not (_wd is not None and _wd.order_type == "withdraw")):
-            if unit._max_range >= 4 or bool(unit.spells):
-                ux, uy = unit.position
-                in_range = [e for e in enemies
-                            if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
-                            and self.has_line_of_fire(unit, e)]
-                if in_range:
-                    return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
-                return None, None  # Rien à portée: pas de visée futile
-        
-        # === COMBAT COLLANT: si un ennemi est au contact (dist ≤ portée), ===
-        # === l'unité reste et le combat, elle ne se déplace PAS ===
-        # Exception: ordre "kite" (tireur qui recule en tirant)
-        _order = getattr(unit, '_tactical_order', None)
-        # "kite" (tireur qui recule en tirant) et "withdraw" (unité à
-        # l'agonie qui décroche) rompent volontairement le contact.
-        _is_kiting = (_order is not None
-                      and _order.order_type in ("kite", "withdraw"))
-        # Repli urgent: tireur en ordre "support" loin de son poste (très
-        # exposé devant la ligne) → ne pas rester collé, rejoindre l'arrière
-        _is_repositioning = (
-            _order is not None and _order.order_type == "support"
-            and _order.target_pos is not None and unit._max_range >= 4
-            and abs(unit.position[0] - _order.target_pos[0])
-            + abs(unit.position[1] - _order.target_pos[1]) > 3)
+        for phase in (self._rampart_shooter_decision, self._contact_decision,
+                      self._post_decision):
+            decision = phase(unit, battle, enemies)
+            if decision is not None:
+                return decision
+        return self._approach_move(unit, battle, enemies, reserved_positions)
+
+    def _advance_along(self, unit, path, speed, reserved_positions):
+        """Case la plus avancée de `path` atteignable ce round (≤ speed en
+        coût de terrain) et libre; None sinon. Mémorise son coût réel."""
+        steps = tr.steps_within(self, unit.position, path, speed)
+        for i in range(steps, 0, -1):
+            candidate = path[i - 1]
+            if self._can_move_to(unit, candidate, reserved_positions):
+                unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
+                unit._planned_move_dest = candidate
+                return candidate
+        return None
+
+    @staticmethod
+    def _weakest_then_closest(unit, candidates):
+        """Le plus blessé en proportion, puis le plus proche."""
         ux, uy = unit.position
-        closest_dist = 999
-        closest_enemy = None
-        for e in enemies:
-            d = self.unit_distance(unit, e)
-            if d < closest_dist:
-                closest_dist = d
-                closest_enemy = e
-        
-        if (closest_enemy is not None
-                and closest_dist <= tr.effective_range(self, unit, closest_enemy)
-                and not unit.fleeing and not _is_kiting and not _is_repositioning):
-            # En mêlée: ne pas bouger, combattre le plus proche (ou le plus blessé à portée)
-            in_range = [e for e in enemies
-                        if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)]
-            # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
-            # derrière la porte ne doit pas figer un arbalétrier sur place)
-            if unit._max_range >= 4:
-                in_range = [e for e in in_range if self.has_line_of_fire(unit, e)]
-            if in_range:
-                # Priorité: le plus blessé en proportion, puis le plus proche
-                best_target = min(in_range, key=lambda e: (e.hp / max(1, e.max_hp), abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                
-                # Exception siège: CaC séparé de sa cible par le mur (dans un sens
-                # comme dans l'autre) → la distance Manhattan ment, continuer le pathfinding
-                wall_x_s = self.wall_x
-                if (wall_x_s and unit._max_range < 4
-                        and ((ux < wall_x_s) != (best_target.position[0] < wall_x_s))
-                        and not self.gates_open):
-                    pass  # Continue vers le pathfinding normal
-                else:
-                    return None, best_target
-        
-        # Utiliser le ciblage tactique de l'IA si disponible
+        return min(candidates, key=lambda e: (e.hp / max(1, e.max_hp),
+                                              abs(ux - e.position[0]) + abs(uy - e.position[1])))
+
+    def _in_range(self, unit, enemies, need_sight=True):
+        """Ennemis à portée effective (et visibles si need_sight)."""
+        return [e for e in enemies
+                if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
+                and (not need_sight or self.has_line_of_fire(unit, e))]
+
+    def _flee_move(self, unit, battle, reserved_positions):
+        """Unité en fuite: courir vers le bord le plus proche (≥ 2 cases)."""
+        flee_speed = max(2, unit.vitesse)
+        ux, uy = unit.position
+        dist_left, dist_right = ux, self.width - 1 - ux
+        dist_top, dist_bottom = uy, self.height - 1 - uy
+        min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
+        if min_dist == dist_top:
+            goal = (ux, 0)
+        elif min_dist == dist_bottom:
+            goal = (ux, self.height - 1)
+        elif min_dist == dist_left:
+            goal = (0, uy)
+        else:
+            goal = (self.width - 1, uy)
+
+        path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
+        if path:
+            step = self._advance_along(unit, path, flee_speed, reserved_positions)
+            if step is not None:
+                return step, None
+
+        # Repli: pas direct dans les 8 directions (hors carte = case du bord),
+        # celui qui rapproche le plus d'un bord
+        candidates = []
+        for step in range(flee_speed, 0, -1):
+            for ddx in (-1, 0, 1):
+                for ddy in (-1, 0, 1):
+                    if ddx == 0 and ddy == 0:
+                        continue
+                    nx = max(0, min(self.width - 1, ux + ddx * step))
+                    ny = max(0, min(self.height - 1, uy + ddy * step))
+                    if self._can_move_to(unit, (nx, ny), reserved_positions):
+                        border_dist = min(nx, self.width - 1 - nx, ny, self.height - 1 - ny)
+                        candidates.append((border_dist, (nx, ny)))
+        if candidates:
+            candidates.sort()
+            return candidates[0][1], None
+        return None, None
+
+    def _artillery_decision(self, unit, battle):
+        """Artillerie: ancrée tant qu'elle a une cible atteignable et
+        visible (sinon elle « tirait » sur des cibles hors d'atteinte),
+        sinon repositionnement lent par la logique normale. Unités de
+        vitesse 0: ne bougent jamais."""
+        if not (unit.vitesse <= 0 or getattr(unit, 'is_artillery', False)):
+            return None
+        enemies = [e for e in battle.get_enemies(unit) if e.is_alive]
+        if not enemies:
+            return None, None
+        reachable = self._in_range(unit, enemies)
+        if reachable:
+            return None, self._weakest_then_closest(unit, reachable)
+        if unit.vitesse <= 0:
+            return None, None   # immobile et rien d'atteignable: tenir, sans visée
+        order = getattr(unit, '_tactical_order', None)
+        if order is not None and order.order_type == "demolish":
+            return None, None   # elle abat ce qui masque sa cible: en place
+        # Sur un rempart en défense, elle y reste (descendre seule = suicide)
+        if (self.gate_hp and self.on_active_rampart(*unit.position, unit, battle)
+                and not (order is not None and order.order_type == "withdraw")):
+            return None, None
+        return None
+
+    def _rampart_shooter_decision(self, unit, battle, enemies):
+        """Siège: tireurs et mages sur rempart ne bougent JAMAIS (sauf ordre
+        de repli vers l'enceinte suivante)."""
+        order = getattr(unit, '_tactical_order', None)
+        if not (self.gate_hp and self.on_active_rampart(*unit.position, unit, battle)
+                and not (order is not None and order.order_type == "withdraw")):
+            return None
+        if not (unit._max_range >= 4 or bool(unit.spells)):
+            return None
+        in_range = self._in_range(unit, enemies)
+        if in_range:
+            ux, uy = unit.position
+            return None, min(in_range, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+        return None, None   # rien à portée: pas de visée futile
+
+    def _separated_by_wall(self, unit, target):
+        """Siège: mêlée et cible de part et d'autre du mur, portes fermées —
+        la distance ment, il faut passer par une porte."""
+        wall_x = self.wall_x
+        return bool(wall_x and unit._max_range < 4
+                    and (unit.position[0] < wall_x) != (target.position[0] < wall_x)
+                    and not self.gates_open)
+
+    def _contact_decision(self, unit, battle, enemies):
+        """COMBAT COLLANT: un ennemi à portée → rester et combattre, sauf
+        ordre de rompre le contact (kite: tireur qui recule en tirant;
+        withdraw: unité à l'agonie qui décroche) ou tireur en « support »
+        très exposé loin de son poste (> 3 cases), qui rejoint l'arrière."""
+        order = getattr(unit, '_tactical_order', None)
+        if order is not None and order.order_type in ("kite", "withdraw"):
+            return None
+        if (order is not None and order.order_type == "support"
+                and order.target_pos is not None and unit._max_range >= 4
+                and abs(unit.position[0] - order.target_pos[0])
+                + abs(unit.position[1] - order.target_pos[1]) > 3):
+            return None
+        closest = min(enemies, key=lambda e: self.unit_distance(unit, e))
+        if self.unit_distance(unit, closest) > tr.effective_range(self, unit, closest):
+            return None
+        # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
+        # derrière la porte ne doit pas figer un arbalétrier sur place)
+        in_range = self._in_range(unit, enemies, need_sight=unit._max_range >= 4)
+        if not in_range:
+            return None
+        best = self._weakest_then_closest(unit, in_range)
+        if self._separated_by_wall(unit, best):
+            return None   # continuer vers le pathfinding normal
+        return None, best
+
+    def _post_decision(self, unit, battle, enemies):
+        """Ordres support/guard/form au poste (≤ 1 case): tenir la position
+        (sinon A* vers sa propre case + fallback_move faisaient dériver
+        l'unité vers l'ennemi). Un garde quitte son poste si un ennemi
+        approche à ≤ 6 cases."""
+        order = getattr(unit, '_tactical_order', None)
+        if not (order is not None and order.order_type in ("support", "guard", "form")
+                and order.target_pos is not None):
+            return None
+        px, py = order.target_pos
+        if abs(unit.position[0] - px) + abs(unit.position[1] - py) > 1:
+            return None
+        if order.order_type == "guard" and any(
+                abs(e.position[0] - px) + abs(e.position[1] - py) <= 6 for e in enemies):
+            return None
+        # Au poste: tirer si quelque chose est atteignable ET visible
+        in_range = self._in_range(unit, enemies, need_sight=unit._max_range >= 4)
+        if in_range:
+            return None, self._weakest_then_closest(unit, in_range)
+        return None, None
+
+    def _approach_move(self, unit, battle, enemies, reserved_positions):
+        """Marcher vers la position ou la cible choisie par l'IA tactique."""
         from ai_commander import select_tactical_target, select_tactical_move_target
-        
-        # === Ordres SUPPORT/GUARD au poste: tenir la position ===
-        # (sans ce bloc, A* vers sa propre case + fallback_move feraient
-        # dériver l'unité vers l'ennemi)
-        if (_order is not None and _order.order_type in ("support", "guard", "form")
-                and _order.target_pos is not None):
-            _post = _order.target_pos
-            _d_post = abs(ux - _post[0]) + abs(uy - _post[1])
-            if _d_post <= 1:
-                _guard_busy = False
-                if _order.order_type == "guard":
-                    _guard_busy = any(
-                        abs(e.position[0] - _post[0]) + abs(e.position[1] - _post[1]) <= 6
-                        for e in enemies)
-                if not _guard_busy:
-                    # Au poste: ne pas bouger; tirer si quelque chose est
-                    # atteignable ET visible, sinon pas de visée
-                    mr = unit._max_range
-                    in_r = [e for e in enemies
-                            if self.unit_distance(unit, e) <= tr.effective_range(self, unit, e)
-                            and (mr < 4 or self.has_line_of_fire(unit, e))]
-                    if in_r:
-                        return None, min(in_r, key=lambda e: (e.hp / max(1, e.max_hp),
-                                                              abs(ux - e.position[0]) + abs(uy - e.position[1])))
-                    return None, None
-        
         target_unit, move_pos = select_tactical_move_target(unit, battle, self)
-        
+
         # Flanquement/protection: se déplacer vers une position, pas une unité
         if move_pos and target_unit is None:
-            goal = move_pos
-            # Trouver une cible pour le combat (le plus proche)
             target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
+            path = self.a_star_path(unit.position, move_pos, unit, battle, reserved_positions,
+                                    partial=True)
             if path:
-                steps = tr.steps_within(self, unit.position, path, unit.vitesse)
-                for i in range(steps, 0, -1):
-                    candidate = path[i - 1]
-                    if self._can_move_to(unit, candidate, reserved_positions):
-                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
-                        unit._planned_move_dest = candidate
-                        return candidate, target
+                step = self._advance_along(unit, path, unit.vitesse, reserved_positions)
+                if step is not None:
+                    return step, target
             return self.fallback_move(unit, target, reserved_positions), target
-        
+
         # Ciblage tactique: attaquer l'unité assignée par l'IA
         if target_unit and target_unit.is_alive:
             target = target_unit
@@ -888,139 +877,117 @@ class Battlefield:
             target = select_tactical_target(unit, battle, self)
             if target is None:
                 target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
-        
+
         current_dist = self.unit_distance(unit, target)
-        
         if current_dist <= tr.effective_range(self, unit, target):
-            # Tireur à portée mais aveuglé (rocher, maison, bois): rester planté
-            # figeait les duels de tir jusqu'au plafond de rounds. On se décale
-            # vers une case d'où la cible est visible.
+            # Tireur à portée mais aveuglé (rocher, maison, bois): rester
+            # planté figeait les duels de tir jusqu'au plafond de rounds. On
+            # se décale vers une case d'où la cible est visible.
             if unit._max_range >= 4 and not self.has_line_of_fire(unit, target):
                 step = self._clear_line_step(unit, target, reserved_positions)
                 if step is not None:
                     return step, target
-            # Siège: vérifier qu'un mur ne bloque pas le CaC
-            wall_x_s = self.wall_x
-            if wall_x_s and unit._max_range < 4 and unit.position[0] < wall_x_s and target.position[0] >= wall_x_s:
-                # CaC côté attaquant, cible derrière le mur → pas vraiment à portée
-                pass  # Continue vers le pathfinding porte
-            else:
+            # Siège: mêlée côté assaillant, cible derrière le mur → pas
+            # vraiment à portée, continuer vers la porte
+            wall_x = self.wall_x
+            if not (wall_x and unit._max_range < 4 and unit.position[0] < wall_x
+                    and target.position[0] >= wall_x):
                 return None, target
-        
-        # Siège: défenseurs TIREURS sur rempart restent TOUJOURS en place
-        # Le rempart donne un avantage défensif trop précieux pour l'abandonner
+
+        # Siège: sur un rempart, tireurs et mages ne bougent jamais (l'avantage
+        # défensif est trop précieux); la mêlée y reste tant que les portes
+        # sont intactes ET fermées
         if self.on_active_rampart(*unit.position, unit, battle) and self.gate_hp:
             if unit._max_range >= 4 or bool(unit.spells):
-                # Tireur/mage sur rempart: ne jamais bouger
                 return None, target
-            # CaC sur rempart: rester tant que portes intactes ET fermées
-            intact_gates = any(hp > 0 for hp in self.active_gates.values()) and not self.gates_open
-            if intact_gates:
+            if any(hp > 0 for hp in self.active_gates.values()) and not self.gates_open:
                 return None, target
-        
-        # IA hold: rester en position si l'ordre est "hold" et pas d'ennemi au contact
+
+        # Ordre "hold": rester (en gardant la cible pour tirer) tant
+        # qu'aucun ennemi n'est au contact
         order = getattr(unit, '_tactical_order', None)
         if order and order.order_type == "hold" and current_dist > unit._max_range + 1:
-            # Rester mais garder la cible pour tirer si possible
             return None, target
-        
-        goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
-        
-        # Siège: si pas de position d'attaque valide côté attaquant, aller vers la porte
-        wall_x_siege = self.wall_x
-        if goal is None and wall_x_siege and unit.position[0] < wall_x_siege:
-            # Aller directement vers la porte
-            pass  # Tombe dans le block siège ci-dessous
-        elif goal is None:
-            return None, target
-        else:
-            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
-            if path:
-                steps = tr.steps_within(self, unit.position, path, unit.vitesse)
-                for i in range(steps, 0, -1):
-                    candidate = path[i - 1]
-                    if self._can_move_to(unit, candidate, reserved_positions):
-                        unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
-                        unit._planned_move_dest = candidate
-                        return candidate, target
 
-        # Siège: pas de chemin direct → passer par une porte
-        if self.gate_hp:
-            wall_x = self.wall_x
-            gates_now = self.active_gates
-            ux = unit.position[0]
-            
-            # Unité côté attaquant (à gauche du mur)?
-            if ux < wall_x:
-                # Chercher une porte franchissable (détruite OU ouverte)
-                if self.gates_open:
-                    destroyed_gates = list(gates_now.keys())
-                else:
-                    destroyed_gates = [pos for pos, hp in gates_now.items() if hp <= 0]
-                # Une brèche est une porte qui ne se referme pas
-                destroyed_gates += sorted(self.active_breaches)
-                if destroyed_gates:
-                    # Aller vers la porte désignée par le commandant (axe
-                    # d'assaut choisi), à défaut la plus proche
-                    nearest = self._preferred_gate(unit, destroyed_gates)
-                    gpath = self.a_star_path(unit.position, nearest, unit, battle, reserved_positions)
-                    if gpath:
-                        steps = tr.steps_within(self, unit.position, gpath, unit.vitesse)
-                        for i in range(steps, 0, -1):
-                            candidate = gpath[i - 1]
-                            if self._can_move_to(unit, candidate, reserved_positions):
-                                unit._planned_move_cost = tr.path_cost(self, unit.position, gpath[:i])
-                                unit._planned_move_dest = candidate
-                                return candidate, target
-                
-                # Sinon aller adjacent à la porte intacte la plus proche (pour la détruire au CaC)
-                intact_gates = [pos for pos, hp in gates_now.items() if hp > 0]
-                if intact_gates:
-                    nearest_gate = self._preferred_gate(unit, intact_gates)
-                    gate_goal = self._find_adjacent_free(nearest_gate, unit, reserved_positions, side="left", wall_x=wall_x)
-                    if gate_goal:
-                        gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
-                        if gpath:
-                            steps = tr.steps_within(self, unit.position, gpath, unit.vitesse)
-                            for i in range(steps, 0, -1):
-                                candidate = gpath[i - 1]
-                                if self._can_move_to(unit, candidate, reserved_positions):
-                                    unit._planned_move_cost = tr.path_cost(self, unit.position, gpath[:i])
-                                    unit._planned_move_dest = candidate
-                                    return candidate, target
-            
-            # Longer le mur vers la porte la plus proche (ou lane)
-            if ux < wall_x:
-                all_gates = list(gates_now.keys())
-                if all_gates:
-                    from ai_commander import get_lane_offset
-                    lane_y = get_lane_offset(unit, self)
-                    nearest = min(all_gates, key=lambda g: abs(unit.position[1] - g[1]))
-                    uy = unit.position[1]
-                    gy = nearest[1]
-                    dy = 0 if uy == gy else (1 if gy > uy else -1)
-                    
-                    # Essayer: vers la porte, vers la lane, latéral pur, reculer
-                    candidates = []
-                    if dy != 0:
-                        candidates.append((ux, uy + dy))
-                        candidates.append((ux - 1, uy + dy))
-                    # Vers la lane si on est pas aligné
-                    dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)
-                    if dy_lane != 0 and dy_lane != dy:
-                        candidates.append((ux, uy + dy_lane))
-                        candidates.append((ux - 1, uy + dy_lane))
-                    candidates.append((ux - 1, uy))
-                    if dy != 0:
-                        candidates.append((ux - 2, uy + dy))
-                    
-                    for cand in candidates:
-                        if self._can_move_to(unit, cand, reserved_positions):
-                            return cand, target
+        goal = self.find_best_attack_position(unit, target, battle, reserved_positions)
+        if goal is None:
+            # Siège, côté assaillant: passer par une porte (plus bas)
+            if not (self.wall_x and unit.position[0] < self.wall_x):
                 return None, target
-        
+        else:
+            path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions,
+                                    partial=True)
+            if path:
+                step = self._advance_along(unit, path, unit.vitesse, reserved_positions)
+                if step is not None:
+                    return step, target
+
+        if self.gate_hp:
+            return self._gate_move(unit, battle, target, reserved_positions)
         return self.fallback_move(unit, target, reserved_positions), target
-    
+
+    def _gate_move(self, unit, battle, target, reserved_positions):
+        """Siège, pas de chemin direct: passer par une porte. Côté
+        assaillant: vers une porte franchissable (détruite, ouverte, ou
+        brèche), sinon au contact de la porte intacte pour l'enfoncer,
+        sinon longer le mur vers la porte (ou le couloir d'assaut)."""
+        wall_x = self.wall_x
+        gates_now = self.active_gates
+        if unit.position[0] >= wall_x:
+            return self.fallback_move(unit, target, reserved_positions), target
+
+        if self.gates_open:
+            passable = list(gates_now.keys())
+        else:
+            passable = [pos for pos, hp in gates_now.items() if hp <= 0]
+        # Une brèche est une porte qui ne se referme pas
+        passable += sorted(self.active_breaches)
+        if passable:
+            # Vers la porte désignée par le commandant (axe d'assaut choisi),
+            # à défaut la plus proche
+            gpath = self.a_star_path(unit.position, self._preferred_gate(unit, passable),
+                                     unit, battle, reserved_positions)
+            if gpath:
+                step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions)
+                if step is not None:
+                    return step, target
+
+        intact = [pos for pos, hp in gates_now.items() if hp > 0]
+        if intact:
+            gate_goal = self._find_adjacent_free(self._preferred_gate(unit, intact), unit,
+                                                 reserved_positions, side="left", wall_x=wall_x)
+            if gate_goal:
+                gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
+                if gpath:
+                    step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions)
+                    if step is not None:
+                        return step, target
+
+        all_gates = list(gates_now.keys())
+        if all_gates:
+            return self._skirt_wall_step(unit, all_gates, reserved_positions), target
+        return None, target
+
+    def _skirt_wall_step(self, unit, gates, reserved_positions):
+        """Un pas le long du mur: vers la porte la plus proche, vers le
+        couloir d'assaut, sinon en recul. None si tout est bloqué."""
+        from ai_commander import get_lane_offset
+        lane_y = get_lane_offset(unit, self)
+        ux, uy = unit.position
+        gy = min(gates, key=lambda g: abs(uy - g[1]))[1]
+        dy = 0 if uy == gy else (1 if gy > uy else -1)
+        candidates = []
+        if dy != 0:
+            candidates += [(ux, uy + dy), (ux - 1, uy + dy)]
+        dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)
+        if dy_lane != 0 and dy_lane != dy:
+            candidates += [(ux, uy + dy_lane), (ux - 1, uy + dy_lane)]
+        candidates.append((ux - 1, uy))
+        if dy != 0:
+            candidates.append((ux - 2, uy + dy))
+        return next((c for c in candidates if self._can_move_to(unit, c, reserved_positions)),
+                    None)
+
     def _clear_line_step(self, unit, target, reserved_positions):
         """Case atteignable ce round (≤ vitesse pas) d'où `target` est à portée
         ET visible; la plus proche. None s'il n'y en a pas."""
@@ -1115,7 +1082,6 @@ class Battlefield:
         
         # Direction principale vers la cible
         dx_main = 0 if tx == ux else (1 if tx > ux else -1)
-        dy_main = 0 if ty == uy else (1 if ty > uy else -1)
         
         # Direction latérale vers la lane
         dy_lane = 0 if lane_y == uy else (1 if lane_y > uy else -1)

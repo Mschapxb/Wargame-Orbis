@@ -157,6 +157,35 @@ def test_boucle_reelle_zoom_survol_minicarte():
     assert st["n"] >= 260
 
 
+@test
+def test_boucle_relance_et_retour_menu():
+    """R relance la bataille (même carte si elle est graînée, état d'écran
+    remis à zéro), M renvoie "menu"; chaque touche mène à une action."""
+    import battle_view
+    pygame.display.set_mode((1400, 800))
+    random.seed(3)
+    comp = [("Infanterie régulière", 6), ("Arbaletrier régulier", 3)]
+    b = Battle(ul.build_army("Armée Skaldienne", comp), ul.build_army("Armée Skaldienne", comp),
+               90, 40, 8, map_name="Village", map_options={'seed': 12})
+    view = battle_view.BattleView(b, 20)
+    view.speed_fast()
+    for _ in range(30):
+        view.update()
+        view.draw(0)
+    assert b.round > 1
+    view._banner("test", (255, 255, 255), 50)
+    view.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_r, mod=0, unicode="r",
+                                         scancode=0))
+    assert view.battle is not b and view.battle.round == 1
+    assert view.event_banners == [] and view.winner is None
+    assert view.battle.battlefield.grid == b.battlefield.grid   # même carte graînée
+    view.handle_event(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_m, mod=0, unicode="m",
+                                         scancode=0))
+    assert not view.running and view.return_action == "menu"
+    for action in set(battle_view.KEY_ACTIONS.values()):
+        assert callable(getattr(view, action)), action
+
+
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──
 
 if __name__ == "__main__":

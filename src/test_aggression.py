@@ -9,7 +9,6 @@ import os, sys, random, traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import ai_commander as AC
 import unit_library as ul
 from ai_commander import TacticalOrder
 from battle import Battle

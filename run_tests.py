@@ -4,9 +4,8 @@
     python run_tests.py terrain ui   # seulement les suites dont le nom contient l'un des mots
     python run_tests.py -v           # affiche aussi la sortie des suites qui passent
 
-Chaque src/test_*.py est un script autonome (code de sortie 0 = succès);
-tests/ (unittest, non suivi par git) est lancé s'il existe. Aucune
-dépendance hors bibliothèque standard.
+Chaque src/test_*.py est un script autonome (code de sortie 0 = succès).
+Aucune dépendance hors bibliothèque standard.
 """
 import glob
 import os
@@ -20,12 +19,8 @@ SRC = os.path.join(ROOT, "src")
 
 
 def suites():
-    out = [(os.path.basename(p)[:-3], [sys.executable, p])
-           for p in sorted(glob.glob(os.path.join(SRC, "test_*.py")))]
-    if os.path.isdir(os.path.join(ROOT, "tests")):
-        out.append(("tests (unittest)",
-                    [sys.executable, "-m", "unittest", "discover", "-s", "tests"]))
-    return out
+    return [(os.path.basename(p)[:-3], [sys.executable, p])
+            for p in sorted(glob.glob(os.path.join(SRC, "test_*.py")))]
 
 
 def run(cmd):

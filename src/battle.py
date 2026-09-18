@@ -1,12 +1,14 @@
 import copy
+import deployment
 import weather as weather_mod
 import unit as unit_mod
 import facing
 import math
 import random
 
+import rng_scope
+
 import structures as st
-import maps
 import tactics
 import terrain as tr
 
@@ -68,28 +70,6 @@ class Battle:
         # Thème demandé (biome, relief), rejoué tel quel par un redémarrage
         self.map_options = map_options
         
-        # Graine de carte (écran « Champ de bataille »): la carte, la météo
-        # tirée au sort et le déploiement sont ceux de l'aperçu, et R rejoue
-        # la même carte. Le hasard de la bataille elle-même n'en dépend pas
-        # (état restauré après le déploiement).
-        map_seed = (map_options or {}).get('seed')
-        saved_state = None
-        if map_seed is not None:
-            saved_state = random.getstate()
-            random.seed(map_seed)
-
-        # Générer la map
-        from maps import generate_map
-        grid, map_data = generate_map(map_name, battlefield_width, battlefield_height,
-                                      map_options)
-        self.battlefield = Battlefield(battlefield_width, battlefield_height, 
-                                        obstacle_count, map_name, grid, map_data)
-        # Météo: argument explicite, sinon choix du menu (map_options)
-        if weather is None and map_options:
-            weather = map_options.get('weather')
-        theme = getattr(self.battlefield, 'theme', None) or {}
-        self.battlefield.weather = weather_mod.resolve(
-            weather, theme.get('biome', "Prairie"), siege=self.battlefield.is_siege)
         self.round = 1
         self.visual_effects = {'projectiles': [], 'attack_lines': [], 'target_indicators': []}
         
@@ -107,10 +87,15 @@ class Battle:
         self._restart_army1 = copy.deepcopy(self.army1)
         self._restart_army2 = copy.deepcopy(self.army2)
 
-        center_y = self.battlefield.height // 2
-        self._place_armies(center_y)
-        if saved_state is not None:
-            random.setstate(saved_state)
+        # Graine de carte (écran « Champ de bataille »): la carte, la météo
+        # tirée au sort et le déploiement sont ceux de l'aperçu, et R rejoue
+        # la même carte. Ils tirent leur hasard d'un générateur à part: le
+        # random global de la bataille n'est ni lu ni réinitialisé.
+        map_seed = (map_options or {}).get('seed')
+        gen_rng = random.Random(map_seed) if map_seed is not None else random
+        with rng_scope.using(gen_rng):
+            self._build_field(battlefield_width, battlefield_height, obstacle_count,
+                              map_name, map_options, weather)
         if self.battlefield.is_siege:
             for u in self.army1:
                 u.refill_ammo(unit_mod.SIEGE_TRAIN_FACTOR)
@@ -151,6 +136,24 @@ class Battle:
             u._prev_position = u.position
 
     # ─── Rythme du round: chaque action est estampillée dans le temps ───
+
+    def _build_field(self, battlefield_width, battlefield_height, obstacle_count,
+                     map_name, map_options, weather):
+        """Carte, météo et déploiement: tout le hasard passe par rng_scope.RNG."""
+        # Générer la map
+        from maps import generate_map
+        grid, map_data = generate_map(map_name, battlefield_width, battlefield_height,
+                                      map_options)
+        self.battlefield = Battlefield(battlefield_width, battlefield_height, 
+                                        obstacle_count, map_name, grid, map_data)
+        # Météo: argument explicite, sinon choix du menu (map_options)
+        if weather is None and map_options:
+            weather = map_options.get('weather')
+        theme = getattr(self.battlefield, 'theme', None) or {}
+        self.battlefield.weather = weather_mod.resolve(
+            weather, theme.get('biome', "Prairie"), rng=rng_scope.RNG,
+            siege=self.battlefield.is_siege)
+        self._place_armies(self.battlefield.height // 2)
 
     def _set_action_time(self, t01):
         """Positionne l'horloge d'effets: t01 ∈ [0,1] = instant de l'action
@@ -253,392 +256,7 @@ class Battle:
         self.round_events.append((text, color, importance))
 
     def _place_armies(self, center_y):
-        bf = self.battlefield
-
-        def _effective_role(u):
-            """Les unités fragiles (tireurs, mages) sont TOUJOURS placées
-            à l'arrière, protégées par la mêlée — quel que soit leur rôle
-            déclaré dans la base."""
-            if u._max_range >= 4 or u.spells:
-                return 'back'
-            return u.role
-
-        def place_rank(units, x_start, step_x, band_top, band_h, min_x=0):
-            """Range des unités en RANGS dans la bande qui leur est allouée.
-
-            Une colonne ne dépasse jamais la hauteur de bande: au-delà, on
-            ouvre une colonne supplémentaire en arrière. Sans cela, une
-            armée nombreuse formait une file unique plus haute que la carte,
-            et tout le monde finissait tassé contre le bord inférieur.
-
-            Retourne le nombre de colonnes occupées (pour décaler la suite).
-            """
-            if not units:
-                return 0
-            units = sorted(units, key=lambda u: -u.size)
-            band_h = max(1, band_h)
-
-            columns = []
-            cur, cur_h = [], 0
-            for u in units:
-                uh = bf.get_unit_dims(u)[1]
-                if cur and cur_h + uh > band_h:
-                    columns.append((cur, cur_h))
-                    cur, cur_h = [], 0
-                cur.append(u)
-                cur_h += uh
-            if cur:
-                columns.append((cur, cur_h))
-
-            for ci, (col_units, col_h) in enumerate(columns):
-                x_col = max(min_x, min(bf.width - 1, x_start + ci * step_x))
-                y = band_top + max(0, (band_h - col_h) // 2)
-                for u in col_units:
-                    w, h = bf.get_unit_dims(u)
-                    ty = max(1, min(bf.height - 1 - h, y))
-                    pos = (x_col, ty)
-                    if not bf.can_place_unit(*pos, u):
-                        pos = self._find_free_near_unit(x_col, ty, u, bf, min_x=min_x)
-                    if pos is not None:
-                        u.position = pos
-                        bf.place_unit(u)
-                    y += h
-            return len(columns)
-
-        def place_support(units, x_start, step_x, band_top, band_h, min_x=0):
-            """Arrière du groupe: tireurs et machines de guerre.
-
-            Les pièces volumineuses (balistes, catapultes) sont espacées
-            dans la bande — elles ont besoin d'angle de tir — le reste
-            s'aligne en rangs derrière la mêlée.
-            """
-            if not units:
-                return 0
-            large = [u for u in units if u.size >= 2]
-            normal = [u for u in units if u.size < 2]
-            used = 0
-            if large:
-                spacing = max(2, band_h // (len(large) + 1))
-                for i, u in enumerate(large):
-                    w, h = bf.get_unit_dims(u)
-                    ty = band_top + spacing * (i + 1) - h // 2
-                    ty = max(1, min(bf.height - 1 - h, ty))
-                    pos = (max(min_x, x_start), ty)
-                    if not bf.can_place_unit(*pos, u):
-                        pos = self._find_free_near_unit(pos[0], ty, u, bf, min_x=min_x)
-                    if pos is not None:
-                        u.position = pos
-                        bf.place_unit(u)
-                used = 1
-            if normal:
-                used = max(used, place_rank(normal, x_start, step_x,
-                                            band_top, band_h, min_x))
-            return max(1, used)
-
-        def deploy_contingents(units, base_x, step_x, min_x=0):
-            """Déploie une armée GROUPE PAR GROUPE, en rangs.
-
-            Une armée peut être articulée en plusieurs groupes: chacun forme
-            un corps distinct (sa ligne de front, son centre, ses tireurs),
-            occupe une bande de terrain proportionnelle à son effectif, et
-            reste séparé du voisin par un intervalle. L'ensemble est centré
-            sur la carte et ne peut plus déborder: si les effectifs ne
-            tiennent pas sur une seule ligne, les rangs s'épaississent au
-            lieu de s'entasser contre un bord.
-            """
-            if not units:
-                return
-            order, groups = [], {}
-            for u in units:
-                key = u.contingent or ""
-                if key not in groups:
-                    groups[key] = {'front': [], 'mid': [], 'back': []}
-                    order.append(key)
-                groups[key][_effective_role(u)].append(u)
-
-            import random as _rng
-            for key in order:
-                for role_list in groups[key].values():
-                    _rng.shuffle(role_list)
-
-            # Hauteur utilisable: le plus long tronçon praticable de la colonne
-            # de déploiement (celui qui passe par le centre de préférence).
-            # Dans un défilé, déployer sur toute la hauteur jetait la moitié
-            # des unités dans les parois rocheuses.
-            col = max(0, min(bf.width - 1, base_x))
-            mid_y = bf.height // 2
-
-            def walkable(yy):
-                if bf.is_valid(col, yy):
-                    return True
-                # Un obstacle ISOLÉ (arbre de lisière, rocher) ne coupe pas la
-                # colonne: l'unité qui y tomberait est simplement décalée.
-                return (0 < yy < bf.height - 1 and bf.is_valid(col, yy - 1)
-                        and bf.is_valid(col, yy + 1))
-
-            best, best_score = (1, max(4, bf.height - 2)), None
-            y = 1
-            while y < bf.height - 1:
-                if walkable(y):
-                    y0 = y
-                    while y < bf.height - 1 and walkable(y):
-                        y += 1
-                    length = y - y0
-                    # Le tronçon le plus proche du centre l'emporte: un long
-                    # tronçon excentré enverrait l'armée au bord de la carte
-                    dist = 0 if y0 <= mid_y < y else min(abs(mid_y - y0), abs(mid_y - (y - 1)))
-                    score = length - 4 * dist
-                    if best_score is None or score > best_score:
-                        best, best_score = (y0, length), score
-                else:
-                    y += 1
-            top_margin, usable = best
-            usable = max(4, usable)
-            gap = 2 if len(order) > 1 else 0
-            avail = max(len(order) * 3, usable - gap * (len(order) - 1))
-
-            # Hauteur "naturelle" d'un groupe = sa colonne de rôle la plus fournie
-            weights = []
-            for key in order:
-                g = groups[key]
-                weights.append(max(1, max(
-                    sum(bf.get_unit_dims(u)[1] for u in g['front']),
-                    sum(bf.get_unit_dims(u)[1] for u in g['mid']),
-                    sum(bf.get_unit_dims(u)[1] for u in g['back']))))
-            total_w = sum(weights)
-
-            if total_w <= avail:
-                bands = weights          # tout tient: une colonne par rôle
-            else:
-                # Trop d'hommes pour la hauteur disponible: on répartit au
-                # prorata et les rangs s'épaississent d'eux-mêmes.
-                bands = [max(3, int(avail * w / total_w)) for w in weights]
-                over = sum(bands) - avail
-                i = 0
-                while over > 0 and any(b > 3 for b in bands):
-                    j = i % len(bands)
-                    if bands[j] > 3:
-                        bands[j] -= 1
-                        over -= 1
-                    i += 1
-
-            total_h = sum(bands) + gap * (len(order) - 1)
-            # Centré sur le MILIEU DE LA CARTE, borné au tronçon praticable
-            # (et non centré dans le tronçon, qui peut être excentré)
-            lo = top_margin
-            hi = max(lo, top_margin + usable - total_h)
-            cur_y = max(lo, min(hi, bf.height // 2 - total_h // 2))
-
-            for key, band_h in zip(order, bands):
-                g = groups[key]
-                x_cursor = base_x
-                # Un rôle vide ne consomme pas de colonne: sans cela, un
-                # groupe sans unité de « front » laissait un trou béant
-                # dans la ligne, son centre planté un rang en arrière.
-                x_cursor += place_rank(g['front'], x_cursor, step_x,
-                                       cur_y, band_h, min_x) * step_x
-                x_cursor += place_rank(g['mid'], x_cursor, step_x,
-                                       cur_y, band_h, min_x) * step_x
-                place_support(g['back'], x_cursor, step_x, cur_y, band_h, min_x)
-                cur_y += band_h + gap
-
-        army2_roles = {'front': [], 'mid': [], 'back': []}
-        for u in self.army2:
-            army2_roles[_effective_role(u)].append(u)
-        import random as _rng
-        for role_list in army2_roles.values():
-            _rng.shuffle(role_list)
-
-        # Placement attaquant (armée 1) — à gauche du centre
-        # Lignes resserrées pour que l'armée avance de manière cohésive
-        mid_x = bf.width // 2
-        # Demi-écart entre les fronts: les armées doivent marcher un peu
-        # avant le choc (~7 rounds pour l'infanterie en terrain découvert).
-        # La forêt et le village imposent le leur: on se déploie dans les
-        # champs, juste à l'extérieur du terrain central. Le siège garde son
-        # placement historique. Formule partagée avec la génération des
-        # cartes (rien de procédural ne doit tomber dans les zones de
-        # déploiement).
-        a1_front = maps.deploy_front(bf.width, bf.deploy_gap, bf.is_siege)
-        deploy_contingents(self.army1, a1_front, -1)
-        
-        if bf.is_siege:
-            # Les défenseurs se déploient sur l'enceinte EXTÉRIEURE
-            wall_x = bf.rings[0]['wall_x']
-            defender_min_x = wall_x + 1
-            gate_positions = bf.siege_data.get('gate_positions', [])
-            gate_center = gate_positions[0] if gate_positions else center_y
-            
-            # Trouver les Y des portes (cases type 3 sur wall_x)
-            gate_y_set = set()
-            for y in range(bf.height):
-                if bf.grid[wall_x][y] == 3:
-                    gate_y_set.add(y)
-            # Zone porte élargie (±2 cases) pour garder les CaC proches
-            gate_zone = set()
-            for gy in gate_y_set:
-                for dy in range(-2, 3):
-                    gate_zone.add(gy + dy)
-            
-            # === Séparer les unités par CAPACITÉ, pas par rôle ===
-            # Tireurs = unités avec arme portée >= 4 OU mage avec sorts
-            # CaC = tout le reste (y compris officiers sans arme à distance)
-            wall_units = []    # Vont sur les remparts (tireurs + mages)
-            gate_units = []    # Vont derrière la porte (CaC + officiers)
-            
-            all_defenders = army2_roles['front'] + army2_roles['mid'] + army2_roles['back']
-            for u in all_defenders:
-                if u._max_range >= 4 or u.spells:
-                    wall_units.append(u)
-                else:
-                    gate_units.append(u)
-            
-            # === Cases rempart disponibles, triées par distance à la porte ===
-            # Alterner haut/bas de la porte pour étaler les tireurs
-            rampart_slots = []
-            for y in range(1, bf.height - 1):
-                if y not in gate_zone and bf.grid[wall_x + 1][y] == 4:
-                    rampart_slots.append(y)
-            
-            # Trier par distance au centre de la porte (les plus proches d'abord)
-            # en alternant haut et bas pour un étalement symétrique
-            rampart_above = sorted([y for y in rampart_slots if y < gate_center], reverse=True)
-            rampart_below = sorted([y for y in rampart_slots if y >= gate_center])
-            rampart_sorted = []
-            i_a, i_b = 0, 0
-            while i_a < len(rampart_above) or i_b < len(rampart_below):
-                if i_b < len(rampart_below):
-                    rampart_sorted.append(rampart_below[i_b])
-                    i_b += 1
-                if i_a < len(rampart_above):
-                    rampart_sorted.append(rampart_above[i_a])
-                    i_a += 1
-            
-            # === TIREURS/MAGES → remparts étalés autour de la porte ===
-            placed_wall = set()
-            for u in wall_units:
-                placed = False
-                for ry in rampart_sorted:
-                    if ry in placed_wall:
-                        continue
-                    pos = (wall_x + 1, ry)
-                    if bf.can_place_unit(*pos, u):
-                        u.position = pos
-                        bf.place_unit(u)
-                        placed_wall.add(ry)
-                        placed = True
-                        break
-                if not placed:
-                    # Débordement: 2e rang de rempart (wall_x + 2)
-                    for ry in rampart_sorted:
-                        pos = (wall_x + 2, ry)
-                        if bf.can_place_unit(*pos, u):
-                            u.position = pos
-                            bf.place_unit(u)
-                            placed = True
-                            break
-                if not placed:
-                    # Dernier recours
-                    pos = self._find_free_near_unit(wall_x + 2, gate_center, u, bf, min_x=defender_min_x)
-                    if pos:
-                        u.position = pos
-                        bf.place_unit(u)
-            
-            # === CaC → derrière la porte (PAS sur le rempart) ===
-            # Cases valides: juste derrière la porte (wall_x+1 sur les Y de porte)
-            # puis débordement sur wall_x+2, wall_x+3 etc.
-            gate_ys_sorted = sorted(gate_y_set)
-            
-            placed_gate_positions = set()
-            for u in gate_units:
-                placed = False
-                # D'abord: cases directement derrière la porte (non-rempart)
-                for dx in range(1, 6):
-                    for gy in gate_ys_sorted:
-                        pos = (wall_x + dx, gy)
-                        if pos in placed_gate_positions:
-                            continue
-                        cell = bf.grid[pos[0]][pos[1]] if 0 <= pos[0] < bf.width and 0 <= pos[1] < bf.height else -1
-                        # Éviter les remparts pour les CaC
-                        if cell == 4:
-                            continue
-                        if bf.can_place_unit(*pos, u):
-                            u.position = pos
-                            bf.place_unit(u)
-                            placed_gate_positions.add(pos)
-                            placed = True
-                            break
-                    if placed:
-                        break
-                
-                if not placed:
-                    # Débordement: chercher une case libre proche de la porte, pas sur rempart
-                    for dx in range(1, 8):
-                        for dy_offset in range(0, bf.height // 2):
-                            for sign in [1, -1]:
-                                ny = gate_center + dy_offset * sign
-                                pos = (wall_x + dx, ny)
-                                if not (0 <= pos[0] < bf.width and 0 <= pos[1] < bf.height):
-                                    continue
-                                cell = bf.grid[pos[0]][pos[1]]
-                                if cell == 4:  # Pas de CaC sur rempart
-                                    continue
-                                if pos in placed_gate_positions:
-                                    continue
-                                if bf.can_place_unit(*pos, u):
-                                    u.position = pos
-                                    bf.place_unit(u)
-                                    placed_gate_positions.add(pos)
-                                    placed = True
-                                    break
-                            if placed:
-                                break
-                        if placed:
-                            break
-            
-            # NOTE: l'ouverture des portes n'est plus décidée ici de façon
-            # statique. Le CommanderAI (posture "sortie") ouvre dynamiquement
-            # les portes en cours de bataille si les défenseurs se font
-            # canarder sans pouvoir répliquer — y compris si leurs tireurs
-            # meurent en cours de partie.
-        else:
-            # Reflet exact de l'armée 1 (le terrain est mis en miroir par
-            # x → width-1-x): `mid_x + gap` la plaçait une colonne plus loin.
-            a2_front = bf.width - 1 - a1_front
-            deploy_contingents(self.army2, a2_front, +1)
-    
-    def _place_column(self, units, x_col, center_y, bf, min_x=0):
-        if not units:
-            return
-        units_sorted = sorted(units, key=lambda u: -u.size)
-        total_h = sum(bf.get_unit_dims(u)[1] for u in units_sorted)
-        start_y = center_y - total_h // 2
-        
-        cur_y = start_y
-        for u in units_sorted:
-            w, h = bf.get_unit_dims(u)
-            target_y = max(1, min(bf.height - 1 - h, cur_y))
-            pos = (x_col, target_y)
-            if not bf.can_place_unit(*pos, u):
-                pos = self._find_free_near_unit(x_col, target_y, u, bf, min_x=min_x)
-            if pos is not None:
-                u.position = pos
-                bf.place_unit(u)
-            cur_y += h
-
-    def _find_free_near_unit(self, x, y, unit, bf, min_x=0):
-        """Cherche une position libre pour une unité (multi-cases supporté)."""
-        for radius in range(0, max(bf.width, bf.height)):
-            for dx in range(-radius, radius + 1):
-                for dy in range(-radius, radius + 1):
-                    if abs(dx) != radius and abs(dy) != radius:
-                        continue
-                    nx, ny = x + dx, y + dy
-                    if nx < min_x:
-                        continue
-                    if bf.can_place_unit(nx, ny, unit):
-                        return (nx, ny)
-        return None
+        deployment.deploy_armies(self.battlefield, self.army1, self.army2, center_y)
 
     def get_all_alive(self):
         if self._alive_cache['dirty']:

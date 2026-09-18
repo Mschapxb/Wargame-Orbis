@@ -9,7 +9,7 @@ import os
 import pygame
 
 import theme as T
-import sys
+from unit_library import install_token
 
 # ═══════════════════════════════════════════════════════════════
 #                    CONSTANTES VISUELLES
@@ -319,7 +319,7 @@ def run_file_browser(screen, screen_w, screen_h, start_dir=None):
                         pw = min(150, preview_img.get_width())
                         ph = int(preview_img.get_height() * pw / preview_img.get_width())
                         preview_img = pygame.transform.smoothscale(preview_img, (pw, ph))
-                    except Exception:
+                    except (pygame.error, OSError, ValueError, ZeroDivisionError):
                         preview_img = None
 
         # Aperçu du token sélectionné
@@ -394,7 +394,6 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
 
     # Champs de saisie
     col1_x = 20
-    col2_x = screen_w // 2 + 10
     cy_start = 60
     fw = screen_w // 2 - 40  # field width
     fh = 24
@@ -428,7 +427,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
         try:
             token_preview = pygame.image.load(token_path).convert_alpha()
             token_preview = pygame.transform.smoothscale(token_preview, (48, 48))
-        except Exception:
+        except (pygame.error, OSError, ValueError, ZeroDivisionError):
             token_preview = None
 
     scroll_y = 0
@@ -543,7 +542,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
                     try:
                         token_preview = pygame.image.load(token_path).convert_alpha()
                         token_preview = pygame.transform.smoothscale(token_preview, (48, 48))
-                    except Exception:
+                    except (pygame.error, OSError, ValueError, ZeroDivisionError):
                         token_preview = None
                 # Reafficher
                 screen.blit(T.background(screen_w, screen_h), (0, 0))
@@ -652,16 +651,7 @@ def run_unit_editor(screen, screen_w, screen_h, unit_data=None):
                     error_msg = result
                 else:
                     # Copier le token dans tokens/ si nécessaire
-                    if token_path and os.path.exists(token_path):
-                        tokens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
-                        os.makedirs(tokens_dir, exist_ok=True)
-                        dest = os.path.join(tokens_dir, f"{result['nom']}.png")
-                        if os.path.abspath(token_path) != os.path.abspath(dest):
-                            import shutil
-                            try:
-                                shutil.copy2(token_path, dest)
-                            except Exception:
-                                pass
+                    install_token(token_path, result['nom'])
                     save_custom_unit(result)
                     return result
 
@@ -841,7 +831,7 @@ def run_custom_units_screen(screen, screen_w, screen_h):
                         img = pygame.image.load(token_path).convert_alpha()
                         img = pygame.transform.smoothscale(img, (36, 36))
                         screen.blit(img, (30, cy + 7))
-                    except Exception:
+                    except (pygame.error, OSError, ValueError, ZeroDivisionError):
                         ucol = tuple(data.get("color", [200, 200, 200]))
                         pygame.draw.circle(screen, ucol, (48, cy + 25), 16)
                 else:

@@ -1,0 +1,35 @@
+[project]
+name = "wargame-orbis"
+version = "0.1.0"
+description = "Simulateur de batailles tactiques au D6 (pygame)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pygame>=2.5.0"]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+# Les modules vivent à plat dans src/ et s'importent entre eux par leur
+# nom (python src/main.py). Tests: python run_tests.py
+
+[tool.ruff]
+src = ["src"]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+# Erreurs réelles d'abord: syntaxe, noms non définis, imports et variables
+# inutilisés, comparaisons douteuses, pièges de boucle (bugbear).
+select = ["E9", "F", "B", "E711", "E712", "E721", "E722"]
+ignore = [
+    "B007",   # variable de boucle inutilisée: courant et lisible (for _i, x ...)
+    "B008",   # appel de fonction en valeur par défaut
+    "B905",   # zip() sans strict=
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Les scripts de test et de banc ajoutent src/ au chemin avant d'importer
+"src/test_*.py" = ["E402"]
+"src/bench*.py" = ["E402"]
+"src/measure_contact.py" = ["E402"]

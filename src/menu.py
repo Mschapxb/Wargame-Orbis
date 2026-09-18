@@ -9,7 +9,7 @@ import sys
 
 import theme as T
 
-from unit_library import get_library, list_armies, build_army
+from unit_library import get_library, list_armies
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -58,10 +58,6 @@ def draw_text(screen, text, font, pos, color=TEXT):
     r = T.text(screen, text, font, pos, color)
     return r.w, r.h
 
-
-# ═══════════════════════════════════════════════════════════════
-#                       MENU PRINCIPAL
-# ═══════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════
 #                   ÉTAT D'UN CAMP (testable)
@@ -228,495 +224,449 @@ class ArmyState:
         return all_units
 
 
-def run_army_menu(screen_w=None, screen_h=None):
-    """Menu en deux écrans: composition des armées, puis champ de bataille
-    (map_screen.py: carte, thème, relief, météo, avantage, aperçu).
-    Retourne (army1_list, army2_list, map_name, map_options).
-    map_options: {'biome', 'relief', 'weather', 'seed', 'advantage'…}
-    (cf. maps.generate_map, weather.resolve, Battle)."""
-    
-    if screen_w is None or screen_h is None:
-        info = pygame.display.Info()
-        screen_w = max(MIN_W, info.current_w)
-        screen_h = max(MIN_H, info.current_h)
-    
-    screen = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
-    pygame.display.set_caption("Composition des armées")
-    clock = pygame.time.Clock()
-    
-    db = get_library()
-    army_names = list_armies()
-    
-    # Polices
-    title_font  = T.font('title', 26)
-    header_font = T.font('title', 20)
-    faction_font = T.font('title', 14)
-    name_font   = T.font('ui_bold', 14)
-    body_font   = T.font('ui', 14)
-    small_font  = T.font('ui', 12)
-    stat_font   = T.font('ui', 11)
-    
-    states = [ArmyState(0), ArmyState(1)]
-    # Choix de la carte: écran « Champ de bataille » (map_screen.py). Gardé
-    # d'un aller-retour à l'autre entre les deux écrans.
-    from map_screen import MapSetup, run_map_screen
-    setup = MapSetup()
+BONUS_LABELS = {
+    "mouvement": "Mouv",
+    "pv": "PV",
+    "moral": "Moral",
+    "sauvegarde": "Svg",
+    "toucher": "Touch",
+    "blesser": "Bless",
+    "perforation": "Perf",
+    "degats": "Dégâts",
+}
 
-    def next_screen():
+HELP_TEXT = ("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  "
+             "ENTRÉE = choisir le champ de bataille  |  ÉCHAP = quitter")
+
+PANEL_MARGIN = 15
+PANEL_TOP = 58
+FACTION_HEADER_H = 24
+UNIT_ROW_H = 38
+SCROLL_STEP_PX = 20   # pixels par cran de défilement
+
+
+def _quit():
+    pygame.quit()
+    sys.exit()
+
+
+class ArmyMenu:
+    """Écran 1: composition des deux armées, côte à côte.
+
+    Interface en mode immédiat: chaque image redessine tout, et un clic
+    agit sur le bouton qu'il survole au moment où celui-ci est dessiné.
+    """
+
+    def __init__(self, screen_w, screen_h):
+        self.screen_w, self.screen_h = screen_w, screen_h
+        self.screen = pygame.display.set_mode((screen_w, screen_h), pygame.NOFRAME)
+        pygame.display.set_caption("Composition des armées")
+        self.clock = pygame.time.Clock()
+        self.db = get_library()
+        self.army_names = list_armies()
+
+        self.title_font = T.font('title', 26)
+        self.header_font = T.font('title', 20)
+        self.faction_font = T.font('title', 14)
+        self.name_font = T.font('ui_bold', 14)
+        self.body_font = T.font('ui', 14)
+        self.small_font = T.font('ui', 12)
+        self.stat_font = T.font('ui', 11)
+
+        self.states = [ArmyState(0), ArmyState(1)]
+        # Choix de la carte: écran « Champ de bataille » (map_screen.py).
+        # Gardé d'un aller-retour à l'autre entre les deux écrans.
+        from map_screen import MapSetup
+        self.setup = MapSetup()
+        self.bg_surface = T.background(screen_w, screen_h)
+
+        # Entrées de l'image en cours
+        self.mouse_pos = (0, 0)
+        self.clicked = False
+        self.right_clicked = False
+        self.scroll_delta = 0
+
+    # ─── Boucle ───
+
+    def run(self):
+        while True:
+            self.mouse_pos = pygame.mouse.get_pos()
+            result = self._handle_events()
+            if result is not None:
+                return result
+            result = self._draw()
+            if result is not None:
+                return result
+            pygame.display.flip()
+            self.clock.tick(60)
+
+    @property
+    def can_launch(self):
+        return self.states[0].total_units > 0 and self.states[1].total_units > 0
+
+    def _handle_events(self):
+        self.clicked = self.right_clicked = False
+        self.scroll_delta = 0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                _quit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:
+                    self.clicked = True
+                elif event.button == 3:
+                    self.right_clicked = True
+                elif event.button == 4:
+                    self.scroll_delta = -1
+                elif event.button == 5:
+                    self.scroll_delta = 1
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    _quit()
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE) and self.can_launch:
+                    result = self.next_screen()
+                    if result is not None:
+                        return result
+        return None
+
+    def next_screen(self):
         """Écran 2. Retourne le résultat final du menu, ou None (retour)."""
+        from map_screen import run_map_screen
         from renderer import compute_grid_from_screen
-        a1 = states[0].build()
-        a2 = states[1].build()
+        a1 = self.states[0].build()
+        a2 = self.states[1].build()
         grid_w, grid_h, _cell = compute_grid_from_screen()
-        if run_map_screen(screen, screen_w, screen_h, a1, a2, setup,
+        if run_map_screen(self.screen, self.screen_w, self.screen_h, a1, a2, self.setup,
                           (grid_w, grid_h)) == "launch":
-            return a1, a2, setup.map_name, setup.options()
+            return a1, a2, self.setup.map_name, self.setup.options()
         pygame.display.set_caption("Composition des armées")
         return None
-    
-    # ─── Fond (thème commun, calculé une fois) ───
-    bg_surface = T.background(screen_w, screen_h)
 
-    def army_summary(state):
-        """Compte CaC / Tir / Cavalerie / Sorts de la composition."""
+    def _button(self, rect, text, font, color=BTN_NORMAL, hover_color=BTN_HOVER,
+                text_color=TEXT):
+        """Dessine un bouton; True s'il vient d'être cliqué."""
+        return (draw_button(self.screen, rect, text, font, self.mouse_pos, color, hover_color,
+                            text_color)
+                and self.clicked)
+
+    # ─── Dessin ───
+
+    def _draw(self):
+        screen = self.screen
+        screen.blit(self.bg_surface, (0, 0))
+        T.title(screen, "Composition des armées", self.screen_w // 2, 8, 28)
+        panel_w = (self.screen_w - PANEL_MARGIN * 3) // 2
+        panel_h = self.screen_h - PANEL_TOP - 80
+        rows = self._unit_rows()
+        for i, state in enumerate(self.states):
+            px = PANEL_MARGIN + i * (panel_w + PANEL_MARGIN)
+            self._draw_panel(i, state, pygame.Rect(px, PANEL_TOP, panel_w, panel_h), rows)
+        self._draw_custom_units_button()
+        result = self._draw_launch_button()
+        help_txt = self.small_font.render(HELP_TEXT, True, TEXT_DIM)
+        screen.blit(help_txt, ((self.screen_w - help_txt.get_width()) // 2, self.screen_h - 16))
+        return result
+
+    def _unit_rows(self):
+        """[("header", faction, couleur) | ("unit", faction, unit_def)]."""
+        rows = []
+        for army_name in self.army_names:
+            army_data = self.db.get(army_name, {})
+            rows.append(("header", army_name, army_data.get("color", (180, 180, 180))))
+            for unit_def in army_data.get("units", []):
+                rows.append(("unit", army_name, unit_def))
+        return rows
+
+    def _draw_panel(self, i, state, panel, rows):
+        team_color = HIGHLIGHT if i == 0 else HIGHLIGHT2
+        T.panel(self.screen, panel, accent=team_color)
+        cx, cy = panel.x + 12, panel.y + 12
+        cy = self._draw_panel_header(i, state, cx, cy, team_color)
+        cy = self._draw_group_tabs(i, state, cx, cy)
+        T.divider(self.screen, cx, panel.right - 12, cy + 2, gem=False)
+        cy += 8
+
+        # Liste de toutes les factions et unités (défilante)
+        bonus_extra = 100 if state.show_bonuses else 0
+        list_area = pygame.Rect(panel.x, cy, panel.w, panel.h - (cy - panel.y) - 120 - bonus_extra)
+        if panel.collidepoint(self.mouse_pos) and self.scroll_delta != 0:
+            state.scroll_offset = max(0, state.scroll_offset + self.scroll_delta * 3)
+        self._draw_unit_list(state, rows, list_area, cx)
+
+        compo_y = self._draw_composition_bar(i, state, panel, cx, list_area.bottom + 5)
+        if state.show_bonuses:
+            compo_y = self._draw_bonus_editor(state, panel, cx, compo_y)
+        self._draw_composition_list(state, panel, cx, compo_y)
+
+    def _draw_panel_header(self, i, state, cx, cy, team_color):
+        hdr = T.text(self.screen, f"Armée {i + 1}", self.header_font, (cx + 2, cy - 2),
+                     T.lighten(team_color, 0.25))
+        if state.total_units:
+            T.pill(self.screen, (hdr.right + 12, cy + 2, 74, 20), f"{state.total_units} unités",
+                   self.small_font, team_color)
+        return cy + 28
+
+    def _draw_group_tabs(self, i, state, cx, cy):
+        """Onglets de groupes: une armée peut être articulée en plusieurs
+        corps. Les unités ajoutées vont dans le groupe SÉLECTIONNÉ; chaque
+        groupe est déployé à part sur le terrain."""
+        draw_text(self.screen, "Groupes:", self.small_font, (cx, cy + 3), TEXT_DIM)
+        tab_x = cx + 56
+        for gi in range(len(state.groups)):
+            tab_w = 46
+            tab_rect = pygame.Rect(tab_x, cy, tab_w, 19)
+            is_active = (gi == state.active)
+            base = T.TEAM_DARK[i] if is_active else BTN_NORMAL
+            if self._button(tab_rect, f"G{gi + 1} ({state.group_size(gi)})", self.stat_font,
+                            base, (110, 120, 140)):
+                state.active = gi
+            if is_active:
+                pygame.draw.rect(self.screen, GOLD, tab_rect, 1)
+            tab_x += tab_w + 3
+        if len(state.groups) < state.MAX_GROUPS:
+            if self._button(pygame.Rect(tab_x, cy, 22, 19), "+", self.small_font, T.BTN_GREEN):
+                state.add_group()
+            tab_x += 25
+        if len(state.groups) > 1:
+            if self._button(pygame.Rect(tab_x, cy, 22, 19), "x", self.small_font,
+                            BTN_DANGER, (220, 70, 70)):
+                state.remove_group(state.active)
+        return cy + 23
+
+    def _draw_unit_list(self, state, rows, area, cx):
+        screen = self.screen
+        screen.set_clip(area)
+        scroll_px = state.scroll_offset * SCROLL_STEP_PX
+        draw_y = area.top - scroll_px
+        total_h = 0
+        for row in rows:
+            rh = FACTION_HEADER_H if row[0] == "header" else UNIT_ROW_H
+            if draw_y + rh > area.top and draw_y < area.bottom:
+                if row[0] == "header":
+                    self._draw_faction_header(row[1], row[2], cx, draw_y, area.w)
+                else:
+                    self._draw_unit_row(state, row[1], row[2], cx, draw_y, area.w)
+            draw_y += rh
+            total_h += rh
+        screen.set_clip(None)
+
+        max_scroll_px = max(0, total_h - area.h)
+        state.scroll_offset = min(state.scroll_offset, max_scroll_px // SCROLL_STEP_PX)
+        if total_h > area.h:   # indicateur de défilement
+            sb_h = max(20, int(area.h * area.h / total_h))
+            sb_y = (area.top + int((area.h - sb_h) * scroll_px / max_scroll_px)
+                    if max_scroll_px > 0 else area.top)
+            pygame.draw.rect(screen, (34, 36, 43), (area.right - 9, area.top, 5, area.h),
+                             border_radius=3)
+            pygame.draw.rect(screen, T.GOLD_DIM, (area.right - 9, sb_y, 5, sb_h), border_radius=3)
+
+    def _draw_faction_header(self, army_name, fc, cx, y, panel_w):
+        rh = FACTION_HEADER_H
+        self.screen.blit(T.rounded_gradient(panel_w - 24, rh - 3, T.darken(fc, 0.62),
+                                            T.darken(fc, 0.78), 4), (cx, y + 1))
+        pygame.draw.rect(self.screen, T.lighten(fc, 0.1), (cx, y + 1, 3, rh - 3))
+        T.diamond(self.screen, cx + 13, y + rh // 2, 3, T.lighten(fc, 0.3))
+        T.text(self.screen, army_name, self.faction_font, (cx + 22, y + 3), T.lighten(fc, 0.35))
+
+    def _draw_unit_row(self, state, army_name, unit_def, cx, y, panel_w):
+        """Une unité: nom, stats, boutons -5/-1/+1/+5 et compteur du groupe
+        actif. Clic gauche sur la ligne (hors boutons) = +1, droit = -1."""
+        screen = self.screen
+        uname = unit_def["nom"]
+        key = (army_name, uname)
+        row_rect = pygame.Rect(cx, y, panel_w - 24, UNIT_ROW_H - 3)
+        if state.current.get(key, 0) > 0:
+            screen.blit(T.rounded_gradient(row_rect.w, row_rect.h, (52, 46, 32), (38, 35, 28), 5),
+                        row_rect.topleft)
+            pygame.draw.rect(screen, T.GOLD, (row_rect.x, row_rect.y + 3, 3, row_rect.h - 6))
+        if row_rect.collidepoint(self.mouse_pos):
+            screen.blit(T.rounded_gradient(row_rect.w, row_rect.h, (255, 255, 255),
+                                           (255, 255, 255), 5, 16), row_rect.topleft)
+
+        draw_text(screen, uname, self.name_font, (cx + 10, y + 1), TEXT_BRIGHT)
+        traits = ", ".join(unit_def.get("traits", [])) or "-"
+        stat_line = (f"Dép:{unit_def['deplacement']} Ble:{unit_def['blessure']} "
+                     f"Brv:{unit_def['bravoure']} Svg:{unit_def['sauvegarde']} | "
+                     f"{unit_def.get('unit_type', '?')} | {traits}")
+        draw_text(screen, stat_line, self.stat_font, (cx + 10, y + 19), TEXT_DIM)
+
+        count = state.current.get(key, 0)
+        count_all = state.composition.get(key, 0)
+        btn_y, btn_h = y + 8, 20
+        bx = cx + panel_w - 200
+        minus_hover, plus_hover = T.lighten(T.DANGER, 0.15), T.lighten(T.SUCCESS, 0.1)
+        if self._button(pygame.Rect(bx, btn_y, 26, btn_h), "-5", self.small_font,
+                        BTN_NORMAL, minus_hover):
+            state.remove_unit(army_name, uname, 5)
+        if self._button(pygame.Rect(bx + 28, btn_y, 26, btn_h), "-1", self.small_font,
+                        BTN_NORMAL, minus_hover):
+            state.remove_unit(army_name, uname, 1)
+        # Compteur du GROUPE actif (c'est lui que +/- modifie); le total
+        # tous groupes confondus est rappelé dessous.
+        if count > 0:
+            T.pill(screen, (bx + 57, btn_y, 23, btn_h), str(count), self.name_font, T.GOLD, 55)
+        else:
+            T.text(screen, "0", self.body_font, (bx + 68, btn_y + 1), T.MUTED, align="center")
+        if count_all != count:
+            tot = self.stat_font.render(f"/{count_all}", True, TEXT_DIM)
+            screen.blit(tot, (bx + 68 - tot.get_width() // 2, btn_y + 20))
+        if self._button(pygame.Rect(bx + 82, btn_y, 26, btn_h), "+1", self.small_font,
+                        BTN_NORMAL, plus_hover):
+            state.add_unit(army_name, uname, 1)
+        if self._button(pygame.Rect(bx + 110, btn_y, 26, btn_h), "+5", self.small_font,
+                        BTN_NORMAL, plus_hover):
+            state.add_unit(army_name, uname, 5)
+
+        buttons_zone = pygame.Rect(bx, btn_y, 140, btn_h)
+        if row_rect.collidepoint(self.mouse_pos):
+            if self.clicked and not buttons_zone.collidepoint(self.mouse_pos):
+                state.add_unit(army_name, uname, 1)
+            elif self.right_clicked:
+                state.remove_unit(army_name, uname, 1)
+
+    def army_summary(self, state):
+        """Compte CaC / Tir / Sorts / Cavalerie de la composition."""
         melee = ranged = cav = mages = 0
         for (army_name, uname), count in state.composition.items():
             if count <= 0:
                 continue
-            army_data = db.get(army_name, {})
-            udef = next((u for u in army_data.get("units", []) if u["nom"] == uname), None)
+            udef = next((u for u in self.db.get(army_name, {}).get("units", [])
+                         if u["nom"] == uname), None)
             if udef is None:
                 continue
-            is_ranged = any(a[1] >= 4 for a in udef.get("armes", []))
-            has_spells = bool(udef.get("sorts"))
-            if has_spells:
+            if udef.get("sorts"):
                 mages += count
-            elif is_ranged:
+            elif any(a[1] >= 4 for a in udef.get("armes", [])):
                 ranged += count
             else:
                 melee += count
             if udef.get("deplacement", 0) >= 6:
                 cav += count
         return melee, ranged, mages, cav
-    
-    running = True
-    
-    while running:
-        mouse_pos = pygame.mouse.get_pos()
-        clicked = False
-        right_clicked = False
-        scroll_delta = 0
-        
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:
-                    clicked = True
-                elif event.button == 3:
-                    right_clicked = True
-                elif event.button == 4:
-                    scroll_delta = -1
-                elif event.button == 5:
-                    scroll_delta = 1
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    pygame.quit()
-                    sys.exit()
-                if event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
-                    if states[0].total_units > 0 and states[1].total_units > 0:
-                        result = next_screen()
-                        if result is not None:
-                            return result
-        
-        screen.blit(bg_surface, (0, 0))
-        
-        # ─── TITRE ───
-        T.title(screen, "Composition des armées", screen_w // 2, 8, 28)
 
-        # ─── DEUX PANNEAUX CÔTE À CÔTE ───
-        panel_margin = 15
-        panel_top = 58
-        panel_w = (screen_w - panel_margin * 3) // 2
-        panel_h = screen_h - panel_top - 80
-        
-        for i, state in enumerate(states):
-            px = panel_margin + i * (panel_w + panel_margin)
-            py = panel_top
-            
-            panel_rect = pygame.Rect(px, py, panel_w, panel_h)
-            team_border = HIGHLIGHT if i == 0 else HIGHLIGHT2
-            T.panel(screen, panel_rect, accent=team_border)
+    def _draw_composition_bar(self, i, state, panel, cx, compo_y):
+        """Total, résumé tactique et boutons Vider / Copier / Bonus."""
+        screen = self.screen
+        T.divider(screen, cx, panel.right - 12, compo_y + 1)
+        compo_y += 8
+        n_groups = sum(1 for gi in range(len(state.groups)) if state.group_size(gi) > 0)
+        total_txt = f"Composition: {state.total_units} unités"
+        if n_groups > 1:
+            total_txt += f"  —  {n_groups} groupes"
+        draw_text(screen, total_txt, self.name_font, (cx, compo_y),
+                  T.GOLD if state.total_units > 0 else TEXT_DIM)
+        if n_groups > 1:
+            draw_text(screen, "(chaque groupe est déployé et compté à part)",
+                      self.stat_font, (cx, compo_y + 15), TEXT_DIM)
+            compo_y += 14
 
-            cx = px + 12
-            cy = py + 12
+        # Résumé tactique (aide à équilibrer la composition)
+        if state.total_units > 0:
+            counts = zip(self.army_summary(state), ("CaC", "Tir", "Mage", "Cav"))
+            summary = "  ·  ".join(f"{n} {label}" for n, label in counts if n)
+            T.text(screen, summary, self.stat_font, (cx + 175, compo_y + 3), (170, 186, 206))
 
-            # ─── Titre armée ───
-            label = f"Armée {i+1}"
-            hdr = T.text(screen, label, header_font, (cx + 2, cy - 2), T.lighten(team_border, 0.25))
-            n_units_hdr = state.total_units
-            if n_units_hdr:
-                T.pill(screen, (hdr.right + 12, cy + 2, 74, 20), f"{n_units_hdr} unités",
-                       small_font, team_border)
-            cy += 28
+        if self._button(pygame.Rect(panel.right - 70, compo_y - 2, 60, 22), "Vider",
+                        self.small_font, BTN_DANGER, (220, 70, 70)):
+            state.clear()
+        # Miroir: copier cette composition vers l'autre armée
+        mirror_label = "Copier →" if i == 0 else "← Copier"
+        if (self._button(pygame.Rect(panel.right - 212, compo_y - 2, 64, 22), mirror_label,
+                         self.small_font)
+                and state.total_units > 0):
+            self.states[1 - i].copy_from(state)
+        has_bonus = any(v != 0 for v in state.bonuses.values())
+        if self._button(pygame.Rect(panel.right - 140, compo_y - 2, 64, 22), "Bonus",
+                        self.small_font, ORANGE if has_bonus else BTN_NORMAL,
+                        (240, 180, 70) if has_bonus else BTN_HOVER):
+            state.show_bonuses = not state.show_bonuses
+        return compo_y + 22
 
-            # ─── Groupes: une armée peut être articulée en plusieurs corps ───
-            # Les unités ajoutées vont dans le groupe SÉLECTIONNÉ; chaque
-            # groupe est déployé à part sur le terrain.
-            draw_text(screen, "Groupes:", small_font, (cx, cy + 3), TEXT_DIM)
-            tab_x = cx + 56
-            for gi in range(len(state.groups)):
-                n_g = state.group_size(gi)
-                tab_w = 46
-                tab_rect = pygame.Rect(tab_x, cy, tab_w, 19)
-                is_act = (gi == state.active)
-                base_c = T.TEAM_DARK[i] if is_act else BTN_NORMAL
-                if draw_button(screen, tab_rect, f"G{gi+1} ({n_g})", stat_font,
-                               mouse_pos, base_c, (110, 120, 140)):
-                    if clicked:
-                        state.active = gi
-                if is_act:
-                    pygame.draw.rect(screen, GOLD, tab_rect, 1)
-                tab_x += tab_w + 3
-            if len(state.groups) < state.MAX_GROUPS:
-                add_rect = pygame.Rect(tab_x, cy, 22, 19)
-                if draw_button(screen, add_rect, "+", small_font, mouse_pos,
-                               T.BTN_GREEN):
-                    if clicked:
-                        state.add_group()
-                tab_x += 25
+    def _draw_bonus_editor(self, state, panel, cx, compo_y):
+        """Bonus globaux de l'armée, deux colonnes de -/valeur/+ (±5)."""
+        screen = self.screen
+        pygame.draw.line(screen, ORANGE, (cx, compo_y), (panel.right - 10, compo_y), 1)
+        compo_y += 4
+        col_w = (panel.w - 30) // 2
+        keys = list(state.bonuses.keys())
+        for idx, key in enumerate(keys):
+            bx = cx + (idx % 2) * col_w
+            by = compo_y + (idx // 2) * 22
+            val = state.bonuses[key]
+            draw_text(screen, f"{BONUS_LABELS.get(key, key)}:", self.stat_font, (bx, by + 2),
+                      TEXT_DIM)
+            if self._button(pygame.Rect(bx + 50, by, 20, 18), "-", self.small_font,
+                            BTN_NORMAL, T.lighten(T.DANGER, 0.15)):
+                state.bonuses[key] = max(-5, val - 1)
+            val_color = GREEN if val > 0 else RED if val < 0 else TEXT_DIM
+            vt = self.body_font.render(f"{val:+d}" if val != 0 else "0", True, val_color)
+            screen.blit(vt, (bx + 76 - vt.get_width() // 2, by))
+            if self._button(pygame.Rect(bx + 90, by, 20, 18), "+", self.small_font,
+                            BTN_NORMAL, T.lighten(T.SUCCESS, 0.1)):
+                state.bonuses[key] = min(5, val + 1)
+        return compo_y + (len(keys) + 1) // 2 * 22 + 4
+
+    def _draw_composition_list(self, state, panel, cx, compo_y):
+        """Liste compacte: groupe par groupe, puis faction; « ... » si elle
+        déborde du panneau."""
+        screen = self.screen
+        for gi, comp in enumerate(state.groups):
+            if not any(c > 0 for c in comp.values()):
+                continue
             if len(state.groups) > 1:
-                del_rect = pygame.Rect(tab_x, cy, 22, 19)
-                if draw_button(screen, del_rect, "x", small_font, mouse_pos,
-                               BTN_DANGER, (220, 70, 70)):
-                    if clicked:
-                        state.remove_group(state.active)
-            cy += 23
-
-            T.divider(screen, cx, px + panel_w - 12, cy + 2, gem=False)
-            cy += 8
-
-            # ─── Liste de toutes les factions+ unités (scrollable) ───
-            units_area_top = cy
-            bonus_extra = 100 if state.show_bonuses else 0
-            units_area_h = panel_h - (cy - py) - 120 - bonus_extra
-            
-            if panel_rect.collidepoint(mouse_pos) and scroll_delta != 0:
-                state.scroll_offset = max(0, state.scroll_offset + scroll_delta * 3)
-            
-            clip_rect = pygame.Rect(px, units_area_top, panel_w, units_area_h)
-            screen.set_clip(clip_rect)
-            
-            # Construire la liste : [(type, data), ...]
-            # type="header" → faction header, type="unit" → unit row
-            rows = []
-            for army_name in army_names:
-                army_data = db.get(army_name, {})
-                rows.append(("header", army_name, army_data.get("color", (180, 180, 180))))
-                for unit_def in army_data.get("units", []):
-                    rows.append(("unit", army_name, unit_def))
-            
-            header_h = 24
-            row_h = 38
-            
-            # Pixel offset scroll
-            scroll_px = state.scroll_offset * 20
-            
-            draw_y = units_area_top - scroll_px
-            total_content_h = 0
-            
-            for row in rows:
-                if row[0] == "header":
-                    rh = header_h
-                    if draw_y + rh > units_area_top and draw_y < units_area_top + units_area_h:
-                        fc = row[2]
-                        band_w = panel_w - 24
-                        screen.blit(T.rounded_gradient(band_w, rh - 3, T.darken(fc, 0.62),
-                                                       T.darken(fc, 0.78), 4), (cx, draw_y + 1))
-                        pygame.draw.rect(screen, T.lighten(fc, 0.1), (cx, draw_y + 1, 3, rh - 3))
-                        T.diamond(screen, cx + 13, draw_y + rh // 2, 3, T.lighten(fc, 0.3))
-                        T.text(screen, row[1], faction_font, (cx + 22, draw_y + 3), T.lighten(fc, 0.35))
-                    draw_y += rh
-                    total_content_h += rh
-                else:
-                    rh = row_h
-                    if draw_y + rh > units_area_top and draw_y < units_area_top + units_area_h:
-                        army_name = row[1]
-                        unit_def = row[2]
-                        uname = unit_def["nom"]
-                        
-                        # Fond hover
-                        row_rect = pygame.Rect(cx, draw_y, panel_w - 24, rh - 3)
-                        count_sel = state.current.get((army_name, uname), 0)
-                        if count_sel > 0:
-                            screen.blit(T.rounded_gradient(row_rect.w, row_rect.h, (52, 46, 32),
-                                                           (38, 35, 28), 5), row_rect.topleft)
-                            pygame.draw.rect(screen, T.GOLD, (row_rect.x, row_rect.y + 3, 3, row_rect.h - 6))
-                        if row_rect.collidepoint(mouse_pos):
-                            screen.blit(T.rounded_gradient(row_rect.w, row_rect.h, (255, 255, 255),
-                                                           (255, 255, 255), 5, 16), row_rect.topleft)
-
-                        # Nom
-                        draw_text(screen, uname, name_font, (cx + 10, draw_y + 1), TEXT_BRIGHT)
-                        
-                        # Stats compactes
-                        utype = unit_def.get("unit_type", "?")
-                        traits_str = ", ".join(unit_def.get("traits", [])) or "-"
-                        stat_line = f"Dép:{unit_def['deplacement']} Ble:{unit_def['blessure']} Brv:{unit_def['bravoure']} Svg:{unit_def['sauvegarde']} | {utype} | {traits_str}"
-                        draw_text(screen, stat_line, stat_font, (cx + 10, draw_y + 19), TEXT_DIM)
-                        
-                        # Boutons
-                        key = (army_name, uname)
-                        count = state.current.get(key, 0)
-                        count_all = state.composition.get(key, 0)
-                        
-                        btn_y = draw_y + 8
-                        btn_h = 20
-                        btn_set_x = cx + panel_w - 200
-                        
-                        # -5
-                        b1 = pygame.Rect(btn_set_x, btn_y, 26, btn_h)
-                        if draw_button(screen, b1, "-5", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.DANGER, 0.15)):
-                            if clicked:
-                                state.remove_unit(army_name, uname, 5)
-                        
-                        # -1
-                        b2 = pygame.Rect(btn_set_x + 28, btn_y, 26, btn_h)
-                        if draw_button(screen, b2, "-1", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.DANGER, 0.15)):
-                            if clicked:
-                                state.remove_unit(army_name, uname, 1)
-                        
-                        # Compteur du GROUPE actif (c'est lui que +/- modifie);
-                        # le total tous groupes confondus est rappelé dessous.
-                        if count > 0:
-                            T.pill(screen, (btn_set_x + 57, btn_y, 23, btn_h), str(count),
-                                   name_font, T.GOLD, 55)
-                        else:
-                            T.text(screen, "0", body_font, (btn_set_x + 68, btn_y + 1),
-                                   T.MUTED, align="center")
-                        if count_all != count:
-                            tot_t = stat_font.render(f"/{count_all}", True, TEXT_DIM)
-                            screen.blit(tot_t, (btn_set_x + 68 - tot_t.get_width() // 2, btn_y + 20))
-                        
-                        # +1
-                        b3 = pygame.Rect(btn_set_x + 82, btn_y, 26, btn_h)
-                        if draw_button(screen, b3, "+1", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.SUCCESS, 0.1)):
-                            if clicked:
-                                state.add_unit(army_name, uname, 1)
-                        
-                        # +5
-                        b4 = pygame.Rect(btn_set_x + 110, btn_y, 26, btn_h)
-                        if draw_button(screen, b4, "+5", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.SUCCESS, 0.1)):
-                            if clicked:
-                                state.add_unit(army_name, uname, 5)
-                        
-                        # Clic direct sur la ligne (hors boutons):
-                        # gauche = +1, droit = -1 — ajout/retrait rapide
-                        buttons_zone = pygame.Rect(btn_set_x, btn_y, 140, btn_h)
-                        if row_rect.collidepoint(mouse_pos):
-                            if clicked and not buttons_zone.collidepoint(mouse_pos):
-                                state.add_unit(army_name, uname, 1)
-                            elif right_clicked:
-                                state.remove_unit(army_name, uname, 1)
-                        
-                    
-                    draw_y += rh
-                    total_content_h += rh
-            
-            screen.set_clip(None)
-            
-            # Max scroll
-            max_scroll_px = max(0, total_content_h - units_area_h)
-            max_scroll = max_scroll_px // 20
-            state.scroll_offset = min(state.scroll_offset, max_scroll)
-            
-            # Scrollbar indicateur
-            if total_content_h > units_area_h:
-                sb_h = max(20, int(units_area_h * units_area_h / total_content_h))
-                sb_y = units_area_top + int((units_area_h - sb_h) * scroll_px / max_scroll_px) if max_scroll_px > 0 else units_area_top
-                pygame.draw.rect(screen, (34, 36, 43),
-                                 (px + panel_w - 9, units_area_top, 5, units_area_h), border_radius=3)
-                pygame.draw.rect(screen, T.GOLD_DIM,
-                                 (px + panel_w - 9, sb_y, 5, sb_h), border_radius=3)
-            
-            # ─── Composition actuelle (en bas) ───
-            compo_y = units_area_top + units_area_h + 5
-            T.divider(screen, cx, px + panel_w - 12, compo_y + 1)
-            compo_y += 8
-            
-            n_groups = sum(1 for gi in range(len(state.groups)) if state.group_size(gi) > 0)
-            total_txt = f"Composition: {state.total_units} unités"
-            if n_groups > 1:
-                total_txt += f"  —  {n_groups} groupes"
-            draw_text(screen, total_txt, name_font, (cx, compo_y),
-                      T.GOLD if state.total_units > 0 else TEXT_DIM)
-            if n_groups > 1:
-                draw_text(screen, "(chaque groupe est déployé et compté à part)",
-                          stat_font, (cx, compo_y + 15), TEXT_DIM)
-                compo_y += 14
-            
-            # Résumé tactique de l'armée (aide à équilibrer la compo)
-            if state.total_units > 0:
-                n_melee, n_ranged, n_mages, n_cav = army_summary(state)
-                parts = []
-                if n_melee: parts.append(f"{n_melee} CaC")
-                if n_ranged: parts.append(f"{n_ranged} Tir")
-                if n_mages: parts.append(f"{n_mages} Mage")
-                if n_cav: parts.append(f"{n_cav} Cav")
-                summary_txt = "  ·  ".join(parts)
-                T.text(screen, summary_txt, stat_font, (cx + 175, compo_y + 3), (170, 186, 206))
-            
-            clear_btn = pygame.Rect(px + panel_w - 70, compo_y - 2, 60, 22)
-            if draw_button(screen, clear_btn, "Vider", small_font, mouse_pos,
-                           BTN_DANGER, (220, 70, 70)):
-                if clicked:
-                    state.clear()
-            
-            # Bouton miroir: copier cette composition vers l'autre armée
-            mirror_btn = pygame.Rect(px + panel_w - 212, compo_y - 2, 64, 22)
-            mirror_label = "Copier →" if i == 0 else "← Copier"
-            if draw_button(screen, mirror_btn, mirror_label, small_font, mouse_pos):
-                if clicked and state.total_units > 0:
-                    states[1 - i].copy_from(state)
-            
-            # Bouton toggle bonus
-            bonus_toggle_btn = pygame.Rect(px + panel_w - 140, compo_y - 2, 64, 22)
-            has_any_bonus = any(v != 0 for v in state.bonuses.values())
-            toggle_color = ORANGE if has_any_bonus else BTN_NORMAL
-            if draw_button(screen, bonus_toggle_btn, "Bonus", small_font, mouse_pos,
-                           toggle_color, (240, 180, 70) if has_any_bonus else BTN_HOVER):
-                if clicked:
-                    state.show_bonuses = not state.show_bonuses
-            
-            compo_y += 22
-            
-            # ─── Section Bonus (collapsible) ───
-            if state.show_bonuses:
-                pygame.draw.line(screen, ORANGE, (cx, compo_y), (px + panel_w - 10, compo_y), 1)
-                compo_y += 4
-                
-                # Disposition: 2 colonnes de 4 stats
-                bonus_keys = list(state.bonuses.keys())
-                # Noms courts pour l'affichage
-                bonus_labels = {
-                    "mouvement": "Mouv",
-                    "pv": "PV",
-                    "moral": "Moral",
-                    "sauvegarde": "Svg",
-                    "toucher": "Touch",
-                    "blesser": "Bless",
-                    "perforation": "Perf",
-                    "degats": "Dégâts",
-                }
-                col_w = (panel_w - 30) // 2
-                
-                for idx, key in enumerate(bonus_keys):
-                    col = idx % 2
-                    row = idx // 2
-                    bx = cx + col * col_w
-                    by = compo_y + row * 22
-                    
-                    label = bonus_labels.get(key, key)
-                    val = state.bonuses[key]
-                    
-                    # Label
-                    draw_text(screen, f"{label}:", stat_font, (bx, by + 2), TEXT_DIM)
-                    
-                    # Bouton -
-                    minus_btn = pygame.Rect(bx + 50, by, 20, 18)
-                    if draw_button(screen, minus_btn, "-", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.DANGER, 0.15)):
-                        if clicked:
-                            state.bonuses[key] = max(-5, val - 1)
-                    
-                    # Valeur
-                    val_str = f"{val:+d}" if val != 0 else "0"
-                    val_color = GREEN if val > 0 else RED if val < 0 else TEXT_DIM
-                    vt = body_font.render(val_str, True, val_color)
-                    screen.blit(vt, (bx + 76 - vt.get_width() // 2, by))
-                    
-                    # Bouton +
-                    plus_btn = pygame.Rect(bx + 90, by, 20, 18)
-                    if draw_button(screen, plus_btn, "+", small_font, mouse_pos, BTN_NORMAL, T.lighten(T.SUCCESS, 0.1)):
-                        if clicked:
-                            state.bonuses[key] = min(5, val + 1)
-                
-                compo_y += (len(bonus_keys) + 1) // 2 * 22 + 4
-            
-            # Liste compacte: groupe par groupe, puis faction
-            stop = False
-            for gi, comp_g in enumerate(state.groups):
-                if stop:
-                    break
-                if not any(c > 0 for c in comp_g.values()):
+                gc = GOLD if gi == state.active else TEXT_DIM
+                draw_text(screen, f"▸ {state.group_label(gi)}", self.small_font, (cx, compo_y), gc)
+                compo_y += 13
+            last_faction = None
+            for (army_name, uname), count in sorted(comp.items()):
+                if count <= 0:
                     continue
-                if len(state.groups) > 1:
-                    gc = GOLD if gi == state.active else TEXT_DIM
-                    draw_text(screen, f"▸ {state.group_label(gi)}", small_font,
-                              (cx, compo_y), gc)
+                if army_name != last_faction:
+                    fc = self.db.get(army_name, {}).get("color", TEXT_DIM)
+                    draw_text(screen, f" {army_name}:", self.small_font, (cx + 6, compo_y), fc)
                     compo_y += 13
-                last_faction = None
-                for (army_name, uname), count in sorted(comp_g.items()):
-                    if count <= 0:
-                        continue
-                    if army_name != last_faction:
-                        fc = db.get(army_name, {}).get("color", TEXT_DIM)
-                        draw_text(screen, f" {army_name}:", small_font, (cx + 6, compo_y), fc)
-                        compo_y += 13
-                        last_faction = army_name
-                    draw_text(screen, f"   {uname} x{count}", small_font,
-                              (cx + 6, compo_y), TEXT)
-                    compo_y += 13
-                    if compo_y > py + panel_h - 10:
-                        draw_text(screen, "  ...", small_font, (cx, compo_y), TEXT_DIM)
-                        stop = True
-                        break
-        
-        # ─── BOUTON ÉDITEUR D'UNITÉS ───
-        custom_btn = pygame.Rect(screen_w - 180, screen_h - 52, 160, 36)
+                    last_faction = army_name
+                draw_text(screen, f"   {uname} x{count}", self.small_font, (cx + 6, compo_y), TEXT)
+                compo_y += 13
+                if compo_y > panel.bottom - 10:
+                    draw_text(screen, "  ...", self.small_font, (cx, compo_y), TEXT_DIM)
+                    return
+
+    def _draw_custom_units_button(self):
         from unit_editor import list_custom_units
         nb_custom = len(list_custom_units())
-        custom_label = f"Unités custom ({nb_custom})" if nb_custom > 0 else "Créer unités"
-        if draw_button(screen, custom_btn, custom_label, small_font, mouse_pos,
-                       BTN_NORMAL, BTN_HOVER, T.GOLD_BRIGHT if nb_custom > 0 else TEXT):
-            if clicked:
-                from unit_editor import run_custom_units_screen
-                run_custom_units_screen(screen, screen_w, screen_h)
-                # Recharger la librairie après édition
-                from unit_library import load_custom_units_into_db
-                load_custom_units_into_db()
-                # Refresh db reference
-                db.update(get_library())
-        
-        # ─── BOUTON LANCER ───
-        can_launch = states[0].total_units > 0 and states[1].total_units > 0
-        
-        launch_w = 420
-        launch_h = 44
-        launch_rect = pygame.Rect(
-            (screen_w - launch_w) // 2,
-            screen_h - 55,
-            launch_w, launch_h
-        )
-        
-        if can_launch:
-            label = f"SUIVANT : CHAMP DE BATAILLE →  ({states[0].total_units} vs {states[1].total_units})"
-            hovered = draw_button(screen, launch_rect, label,
-                                  body_font, mouse_pos, BTN_ACTIVE, (100, 180, 255), TEXT_BRIGHT)
-            if hovered and clicked:
-                result = next_screen()
-                if result is not None:
-                    return result
-        else:
-            draw_button(screen, launch_rect,
-                        "Ajoutez des unités aux deux armées",
-                        body_font, mouse_pos, (40, 45, 50), (40, 45, 50), TEXT_DIM)
-        
-        # Aide
-        help_txt = small_font.render("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  ENTRÉE = choisir le champ de bataille  |  ÉCHAP = quitter", True, TEXT_DIM)
-        screen.blit(help_txt, ((screen_w - help_txt.get_width()) // 2, screen_h - 16))
-        
-        pygame.display.flip()
-        clock.tick(60)
-    
-    return None
+        label = f"Unités custom ({nb_custom})" if nb_custom > 0 else "Créer unités"
+        rect = pygame.Rect(self.screen_w - 180, self.screen_h - 52, 160, 36)
+        if self._button(rect, label, self.small_font, BTN_NORMAL, BTN_HOVER,
+                        T.GOLD_BRIGHT if nb_custom > 0 else TEXT):
+            from unit_editor import run_custom_units_screen
+            from unit_library import load_custom_units_into_db
+            run_custom_units_screen(self.screen, self.screen_w, self.screen_h)
+            # Recharger la bibliothèque après édition
+            load_custom_units_into_db()
+            self.db.update(get_library())
+
+    def _draw_launch_button(self):
+        launch_w, launch_h = 420, 44
+        rect = pygame.Rect((self.screen_w - launch_w) // 2, self.screen_h - 55, launch_w, launch_h)
+        if not self.can_launch:
+            draw_button(self.screen, rect, "Ajoutez des unités aux deux armées", self.body_font,
+                        self.mouse_pos, (40, 45, 50), (40, 45, 50), TEXT_DIM)
+            return None
+        n1, n2 = self.states[0].total_units, self.states[1].total_units
+        label = f"SUIVANT : CHAMP DE BATAILLE →  ({n1} vs {n2})"
+        if self._button(rect, label, self.body_font, BTN_ACTIVE, (100, 180, 255), TEXT_BRIGHT):
+            return self.next_screen()
+        return None
+
+
+def run_army_menu(screen_w=None, screen_h=None):
+    """Menu en deux écrans: composition des armées, puis champ de bataille
+    (map_screen.py: carte, thème, relief, météo, avantage, aperçu).
+    Retourne (army1_list, army2_list, map_name, map_options).
+    map_options: {'biome', 'relief', 'weather', 'seed', 'advantage'…}
+    (cf. maps.generate_map, weather.resolve, Battle)."""
+    if screen_w is None or screen_h is None:
+        info = pygame.display.Info()
+        screen_w = max(MIN_W, info.current_w)
+        screen_h = max(MIN_H, info.current_h)
+    return ArmyMenu(screen_w, screen_h).run()

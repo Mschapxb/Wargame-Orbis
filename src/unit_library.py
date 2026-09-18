@@ -22,6 +22,7 @@ Champs d'une unité:
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
 from unit import Unit
 import os
+import shutil
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -569,6 +570,27 @@ def build_army(army_name, composition):
 #               CHARGEMENT DES UNITÉS CUSTOM
 # ═══════════════════════════════════════════════════════════════
 
+TOKENS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
+
+
+def install_token(token_path, unit_name):
+    """Copie l'image token_path dans tokens/<unit_name>.png (nom que le rendu
+    cherche). Renvoie True si le token est en place, False sinon (avec un
+    avertissement: un token manquant ne doit pas passer inaperçu)."""
+    if not token_path or not os.path.exists(token_path):
+        return False
+    os.makedirs(TOKENS_DIR, exist_ok=True)
+    dest = os.path.join(TOKENS_DIR, f"{unit_name}.png")
+    if os.path.abspath(token_path) == os.path.abspath(dest):
+        return True
+    try:
+        shutil.copy2(token_path, dest)
+    except OSError as e:
+        print(f"  ATTENTION: token de '{unit_name}' non copié ({token_path}): {e}")
+        return False
+    return True
+
+
 CUSTOM_ARMY_NAME = "Unités custom"
 CUSTOM_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_units")
 
@@ -618,16 +640,7 @@ def load_custom_units_into_db():
             token_path = data.get("token_path", "")
             if token_path and not os.path.isabs(token_path):
                 token_path = os.path.normpath(os.path.join(os.path.dirname(filepath), token_path))
-            if token_path and os.path.exists(token_path):
-                tokens_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tokens")
-                os.makedirs(tokens_dir, exist_ok=True)
-                dest = os.path.join(tokens_dir, f"{data['nom']}.png")
-                if os.path.abspath(token_path) != os.path.abspath(dest):
-                    import shutil
-                    try:
-                        shutil.copy2(token_path, dest)
-                    except Exception:
-                        pass
+            install_token(token_path, data["nom"])
             
             units.append(unit_def)
         except (json.JSONDecodeError, KeyError, TypeError) as e:

@@ -293,7 +293,6 @@ class FxRenderer:
 
     def _draw_death(self, screen, d, ox, oy, move_progress):
         snap = self._token_snapshot(d)
-        cs = self.cs
         ur = snap.get_width() // 2 - 4
         fdx, fdy = math.cos(d.fall_angle), math.sin(d.fall_angle)
 

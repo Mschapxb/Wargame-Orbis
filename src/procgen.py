@@ -3,8 +3,8 @@
 Primitives de peinture sur `grid` (bâti) et `terr` (terrain à effets),
 sans politique de carte: c'est `maps.py` qui décide où et quand les poser.
 
-Toutes les couches tirent leurs dés dans le flux `random` global (comme les
-générateurs historiques): une graine rejoue la même carte. Une couche qui
+Toutes les couches tirent leurs dés via `rng_scope.RNG` (random global, ou
+générateur de la graine de carte): une graine rejoue la même carte. Une couche qui
 n'a rien à faire ne tire AUCUN dé, pour que les cartes par défaut restent
 identiques à la case près.
 
@@ -14,7 +14,7 @@ Symétrie: une carte de bataille rangée doit rester équitable. Les couches
 """
 
 import math
-import random
+from rng_scope import RNG
 
 import terrain as tr
 
@@ -28,11 +28,11 @@ def _in(width, height, x, y):
 def smooth_walk(n, lo, hi, step_p=0.35, start=None):
     """Marche aléatoire bornée de longueur n (entiers dans [lo, hi]): un
     tracé qui ondule sans zigzaguer à chaque case."""
-    v = random.randint(lo, hi) if start is None else start
+    v = RNG.randint(lo, hi) if start is None else start
     out = []
     for _ in range(n):
-        if random.random() < step_p:
-            v = max(lo, min(hi, v + random.choice((-1, 1))))
+        if RNG.random() < step_p:
+            v = max(lo, min(hi, v + RNG.choice((-1, 1))))
         out.append(v)
     return out
 
@@ -48,7 +48,7 @@ def pick_rows(height, n, margin=3, forced=()):
     for i in range(n):
         a = int(lo + i * span)
         b = max(a, int(lo + (i + 1) * span) - 1)
-        y = random.randint(a, b)
+        y = RNG.randint(a, b)
         if all(abs(y - r) > 4 for r in rows):
             rows.append(y)
     return sorted(rows)
@@ -60,7 +60,7 @@ def smooth_noise(n, amp, waves=((0.9, 1.0), (0.4, 0.55), (0.17, 0.3))):
     """Bruit 1D lisse de longueur n, dans [-amp, amp]: somme de sinus de
     longueurs d'onde (en fraction de n) et de phases tirées au hasard. Donne
     des courbes douces — une marche aléatoire case à case fait des dents."""
-    comps = [(max(2.0, n * wl * random.uniform(0.8, 1.25)), w, random.uniform(0, math.tau))
+    comps = [(max(2.0, n * wl * RNG.uniform(0.8, 1.25)), w, RNG.uniform(0, math.tau))
              for wl, w in waves]
     total = sum(w for _, w, _ in comps)
     return [amp * sum(w * math.sin(math.tau * i / L + ph) for L, w, ph in comps) / total
@@ -174,7 +174,7 @@ def paint_banks(grid, terr, width, height, spans, name, p, skip=(), symmetric=Fa
                 if symmetric and x > half:
                     continue
                 if (_in(width, height, x, y) and (x, y) not in skip and grid[x][y] == 0
-                        and terr[x][y] == tr.PLAIN and random.random() < p):
+                        and terr[x][y] == tr.PLAIN and RNG.random() < p):
                     terr[x][y] = name
                     if symmetric:
                         xm = width - 1 - x
@@ -190,7 +190,7 @@ def paint_blob(terr, grid, width, height, cx, cy, rx, ry, angle, name,
     les terrains `allowed` et les cases libres, bornée à x_range=(lo, hi).
     Retourne les cases peintes."""
     ca, sa = math.cos(angle), math.sin(angle)
-    ph = (random.uniform(0, math.tau), random.uniform(0, math.tau))
+    ph = (RNG.uniform(0, math.tau), RNG.uniform(0, math.tau))
     R = int(math.ceil(max(rx, ry) * (1 + rough))) + 1
     painted = []
     for x in range(int(cx) - R, int(cx) + R + 2):
@@ -224,19 +224,19 @@ def scatter_blobs(terr, grid, width, height, n, x_range, y_range, size, name,
     painted = []
     for _ in range(n):
         for _try in range(12):
-            cx = random.uniform(x_lo, x_hi)
-            cy = random.uniform(*y_range)
+            cx = RNG.uniform(x_lo, x_hi)
+            cy = RNG.uniform(*y_range)
             if all(abs(cy - r) > size[1] + 1 for r in avoid_rows):
                 break
         else:
             continue
-        r = random.uniform(*size)
+        r = RNG.uniform(*size)
         if elongated:
-            rx, ry = r * 0.6, r * random.uniform(1.8, 2.6)
-            ang = random.uniform(-0.6, 0.6)
+            rx, ry = r * 0.6, r * RNG.uniform(1.8, 2.6)
+            ang = RNG.uniform(-0.6, 0.6)
         else:
-            rx, ry = r, r * random.uniform(0.7, 1.0)
-            ang = random.uniform(0, math.pi)
+            rx, ry = r, r * RNG.uniform(0.7, 1.0)
+            ang = RNG.uniform(0, math.pi)
         painted += paint_blob(terr, grid, width, height, cx, cy, rx, ry, ang, name,
                               allowed=allowed, x_range=(x_lo, x_hi))
     if symmetric:
@@ -260,11 +260,11 @@ def scatter_rocks(grid, width, height, n, x_range, y_range, cluster=(2, 4),
     if x_hi < x_lo:
         return
     for _ in range(n):
-        cx = random.randint(x_lo, x_hi)
-        cy = random.randint(*y_range)
-        for _k in range(random.randint(*cluster)):
-            x = cx + random.randint(-1, 1)
-            y = cy + random.randint(-1, 1)
+        cx = RNG.randint(x_lo, x_hi)
+        cy = RNG.randint(*y_range)
+        for _k in range(RNG.randint(*cluster)):
+            x = cx + RNG.randint(-1, 1)
+            y = cy + RNG.randint(-1, 1)
             if not (x_lo <= x <= x_hi and 1 < y < height - 2) or (x, y) in keep:
                 continue
             if terr is not None and terr[x][y] in WET + (tr.MARSH,):

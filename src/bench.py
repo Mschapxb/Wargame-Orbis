@@ -18,9 +18,6 @@ Options:
     --save FICHIER  écrit aussi le résultat dans FICHIER
     --compare FICH  compare à un résultat sauvegardé (écart en victoires A1)
     --weather M     impose une météo (cf. weather.py) à toutes les parties
-
-Les anciens scripts bench_balance.py, bench_maps.py et bench_sides.py
-appellent ce module.
 """
 import os
 import random
@@ -197,16 +194,6 @@ def main(argv):
     if opts['--save']:
         with open(opts['--save'], "w", encoding="utf-8") as f:
             f.write("\n".join(lines + [footer]) + "\n")
-
-
-def legacy_main(suite, argv):
-    """Anciens scripts: arguments positionnels N OFF W H."""
-    args = [suite] + argv[:1]
-    if len(argv) > 1:
-        args += ['--off', argv[1]]
-    if len(argv) > 3:
-        args += ['--size', argv[2], argv[3]]
-    main(args)
 
 
 if __name__ == "__main__":

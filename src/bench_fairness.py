@@ -124,4 +124,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    # Code de sortie 1 si une situation est signalée (|z| > 3): la CI s'en sert
+    sys.exit(1 if main(sys.argv[1:]) else 0)

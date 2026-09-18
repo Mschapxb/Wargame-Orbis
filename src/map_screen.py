@@ -19,8 +19,7 @@ import pygame
 import maps as maps_mod
 import weather as weather_mod
 import theme as T
-from menu import (BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, ORANGE,
-                  TEXT, TEXT_BRIGHT, TEXT_DIM, draw_button, draw_text)
+from menu import (BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, TEXT, TEXT_BRIGHT, TEXT_DIM, draw_button, draw_text)
 
 TEAM_COLORS = T.TEAM
 _SEEDS = random.Random()          # jamais le random du moteur
@@ -162,14 +161,15 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
         screen.blit(background, (0, 0))
         T.title(screen, "Champ de bataille", screen_w // 2, 8, 28)
 
+        # Redéfinie à chaque image: elle lit mouse_pos/clicked de l'image en cours
         def choice_row(options, selected, x, y, min_w=70):
             for opt in options:
                 is_sel = (opt == selected)
                 rect = pygame.Rect(x, y, max(min_w, small_font.size(opt)[0] + 20), 26)
-                if draw_button(screen, rect, opt, small_font, mouse_pos,
+                if draw_button(screen, rect, opt, small_font, mouse_pos,  # noqa: B023
                                BTN_ACTIVE if is_sel else BTN_NORMAL,
                                (100, 180, 255) if is_sel else BTN_HOVER,
-                               TEXT_BRIGHT if is_sel else TEXT) and clicked:
+                               TEXT_BRIGHT if is_sel else TEXT) and clicked:  # noqa: B023
                     selected = opt
                 if is_sel:
                     pygame.draw.rect(screen, GOLD, rect, 2, border_radius=4)

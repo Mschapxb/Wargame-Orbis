@@ -101,7 +101,7 @@ def test_passages_d_un_camp_a_l_autre():
                 random.seed(200 + seed)
                 grid, data = maps.generate_map(name, w, h, opts)
                 terr = data['terrain']
-                ok = lambda x, y: grid[x][y] == 0 and tr.MOVE[terr[x][y]] is not None
+                ok = lambda x, y: grid[x][y] == 0 and tr.MOVE[terr[x][y]] is not None  # noqa: B023
                 left = [(1, y) for y in range(h) if ok(1, y)]
                 right = [(w - 2, y) for y in range(h) if ok(w - 2, y)]
                 p1 = maps._bfs_path(grid, w, h, left, right, terr)

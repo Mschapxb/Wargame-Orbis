@@ -14,7 +14,6 @@ position s'exprime en (proj, lat) relatifs à une origine commune.
 import math
 
 import tactics
-import terrain as tr
 
 
 def files_per_rank(n):
