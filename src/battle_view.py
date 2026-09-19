@@ -76,6 +76,22 @@ def _unit_dims(u):
     return 2, 4
 
 
+def _along_path(path, t):
+    """Point (en cases, flottant) à la fraction `t` ∈ [0, 1] de la longueur
+    de la ligne brisée `path` (une diagonale compte √2)."""
+    segs = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path, path[1:])]
+    total = sum(segs)
+    if total <= 0:
+        return path[-1]
+    d = max(0.0, min(1.0, t)) * total
+    for (a, b), s in zip(zip(path, path[1:]), segs):
+        if d <= s and s > 0:
+            k = d / s
+            return a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k
+        d -= s
+    return path[-1]
+
+
 class BattleView:
     def __init__(self, battle, cell_size):
         info = pygame.display.Info()
@@ -557,12 +573,22 @@ class BattleView:
             t_u = 1.0
         # Ease-out pour un mouvement plus naturel (rapide au début, lent à la fin)
         t_ease = 1.0 - (1.0 - t_u) * (1.0 - t_u)
-        cx = int((prev_x + (x - prev_x) * t_ease) * cs + (uw * cs) // 2) + ox
-        cy = int((prev_y + (y - prev_y) * t_ease) * cs + (uh * cs) // 2) + oy
+        path = getattr(u, '_move_path', None)
+        if is_moving and path and len(path) > 2 and path[-1] == (x, y):
+            # Case par case: on suit le chemin réellement parcouru (contour
+            # d'un bois, d'un allié) au lieu d'un trait droit qui traversait
+            # tout ce qui se trouvait entre le départ et l'arrivée
+            fx, fy = _along_path(path, t_ease)
+        else:
+            path = None
+            fx, fy = prev_x + (x - prev_x) * t_ease, prev_y + (y - prev_y) * t_ease
+        cx = int(fx * cs + (uw * cs) // 2) + ox
+        cy = int(fy * cs + (uh * cs) // 2) + oy
 
         # Balancement de marche: un "pas" par case parcourue, amorti en fin
         if is_moving and t_u < 1.0 and u.is_alive and not u.fleeing:
-            steps = max(1, min(4, abs(x - prev_x) + abs(y - prev_y)))
+            steps = (len(path) - 1) if path else abs(x - prev_x) + abs(y - prev_y)
+            steps = max(1, min(6, steps))
             cy -= int(abs(math.sin(t_u * math.pi * steps)) * cs * 0.07 * (1.0 - t_u * 0.5))
 
         # Secousse d'impact: l'unité tremble brièvement quand elle encaisse

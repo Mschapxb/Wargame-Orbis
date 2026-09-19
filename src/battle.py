@@ -825,6 +825,7 @@ class Battle:
                 continue
 
             start_pos = unit.position
+            unit._move_path = (unit._move_path or [start_pos]) + list(path)
             self.battlefield.move_unit(unit, charge_pos)
             unit._cells_moved += cost
             unit.has_charged = True
@@ -1316,15 +1317,16 @@ class Battle:
         # === Pass 1: statiques — réservent leur position ===
         reserved = set()
         moves = {}
+        bf.leaving = set()
 
         for unit in static_units:
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
             if target:
                 self.visual_effects['target_indicators'].append((unit, target))
-            if new_pos and bf._can_move_to(unit, new_pos, reserved):
-                moves[unit] = new_pos
-                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            new_pos = self._legal_move(unit, new_pos, reserved)
+            if new_pos:
+                self._commit_move(unit, new_pos, reserved, moves)
             elif unit.position:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
 
@@ -1338,9 +1340,9 @@ class Battle:
             unit.current_target = target
             if target:
                 self.visual_effects['target_indicators'].append((unit, target))
-            if new_pos and bf._can_move_to(unit, new_pos, reserved):
-                moves[unit] = new_pos
-                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            new_pos = self._legal_move(unit, new_pos, reserved)
+            if new_pos:
+                self._commit_move(unit, new_pos, reserved, moves)
             elif unit.position:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
 
@@ -1387,9 +1389,9 @@ class Battle:
             unit.current_target = target
             if target:
                 self.visual_effects['target_indicators'].append((unit, target))
-            if new_pos and bf._can_move_to(unit, new_pos, reserved):
-                moves[unit] = new_pos
-                reserved.update(bf._get_reserved_cells(unit, new_pos))
+            new_pos = self._legal_move(unit, new_pos, reserved)
+            if new_pos:
+                self._commit_move(unit, new_pos, reserved, moves)
             elif unit.position:
                 # Bloqué: mouvement latéral seulement si aucun ennemi au contact
                 ux, uy = unit.position
@@ -1398,10 +1400,10 @@ class Battle:
                     for e in self.get_enemies(unit) if e.is_alive
                 )
                 if not enemy_in_range:
-                    alt_pos = bf.find_lateral_advance(unit, self, reserved)
-                    if alt_pos and bf._can_move_to(unit, alt_pos, reserved):
-                        moves[unit] = alt_pos
-                        reserved.update(bf._get_reserved_cells(unit, alt_pos))
+                    alt_pos = self._legal_move(
+                        unit, bf.find_lateral_advance(unit, self, reserved), reserved)
+                    if alt_pos:
+                        self._commit_move(unit, alt_pos, reserved, moves)
                     else:
                         reserved.update(bf._get_reserved_cells(unit, unit.position))
                 else:
@@ -1409,6 +1411,28 @@ class Battle:
 
             unit.vitesse = orig_speed
         return moves
+
+    def _legal_move(self, unit, new_pos, reserved):
+        """Destination validée par un vrai chemin case par case (cf.
+        Battlefield.route_to), ou None."""
+        if not new_pos:
+            return None
+        if new_pos == unit.position:
+            # « Rester » est une décision (poste tenu, garde): la case est
+            # réservée, et l'unité ne part pas en glissade latérale
+            return new_pos if self.battlefield._can_move_to(unit, new_pos, reserved) else None
+        budget = max(2, unit.vitesse) if unit.fleeing else unit.vitesse
+        return self.battlefield.route_to(unit, self, new_pos, reserved, budget)
+
+    def _commit_move(self, unit, new_pos, reserved, moves):
+        """Inscrit le déplacement: la destination est réservée, et la case
+        quittée devient disponible pour les unités planifiées ensuite (une
+        colonne avance d'un bloc au lieu de piétiner derrière sa tête)."""
+        bf = self.battlefield
+        moves[unit] = new_pos
+        reserved.update(bf._get_reserved_cells(unit, new_pos))
+        if new_pos != unit.position:
+            bf.leaving.add(id(unit))
 
     def _apply_moves(self, moves):
         """Applique les déplacements échelonnés dans le temps, avec leurs réactions (opportunité, tir d'arrêt)."""
@@ -1426,7 +1450,7 @@ class Battle:
         random.shuffle(ordered_moves)
         ordered_moves.sort(key=lambda kv: -kv[0].vitesse)
         n_mv = max(1, len(ordered_moves))
-        for i, (unit, new_pos) in enumerate(ordered_moves):
+        for i, (unit, new_pos) in enumerate(self._dependency_order(ordered_moves)):
             if not unit.is_alive:
                 continue
             t01 = T_MOVE_START + (T_MOVE_END - T_MOVE_START) * (i / n_mv)
@@ -1451,11 +1475,49 @@ class Battle:
             else:
                 cost = tr.move_cost(self.battlefield, old_pos, new_pos)
             unit._cells_moved += cost
+            planned_path = getattr(unit, '_planned_path', None)
+            if planned_path and planned_path[-1] == new_pos:
+                unit._move_path = [old_pos] + list(planned_path)
+            else:
+                unit._move_path = [old_pos, new_pos]
             bf.move_unit(unit, new_pos)
             movers[id(unit)] = (old_pos, new_pos)
 
         self._reaction_fire(movers, T_MOVE_END - 0.06)
         return movers
+
+    def _dependency_order(self, ordered_moves):
+        """Ordre d'application: une case libérée par un allié n'est prise
+        qu'APRÈS son départ. Un déplacement dont l'arrivée est encore tenue
+        attend son tour (l'ordre de vitesse est conservé d'une vague à
+        l'autre). Si plus rien ne se libère (échange de places, chaîne
+        bloquée), les restants ne bougent pas: jamais deux unités vivantes
+        sur une même case."""
+        bf = self.battlefield
+        occupied = {c: u for c, u in bf.units.items() if u.is_alive}
+
+        def clear(unit, pos):
+            w, h = bf.get_unit_dims(unit)
+            return all(occupied.get((pos[0] + i, pos[1] + j)) in (None, unit)
+                       for i in range(w) for j in range(h))
+
+        order, pending = [], [kv for kv in ordered_moves if kv[0].is_alive]
+        while pending:
+            now = [kv for kv in pending if clear(*kv)]
+            if not now:
+                break
+            for unit, pos in now:
+                for c in bf.get_unit_cells(unit):
+                    if occupied.get(c) is unit:
+                        del occupied[c]
+                w, h = bf.get_unit_dims(unit)
+                for i in range(w):
+                    for j in range(h):
+                        occupied[(pos[0] + i, pos[1] + j)] = unit
+            order.extend(now)
+            pending = [kv for kv in pending if kv not in now]
+        bf.leaving = set()
+        return order
 
     def _update_facings(self, movers):
         """Orientation après le mouvement. Au contact, on fait face à un

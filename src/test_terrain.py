@@ -29,6 +29,7 @@ class U:
     def __init__(self, pos, max_range=1):
         self.position = pos
         self._max_range = max_range
+        self.size = 1
 
 
 # ── terrain.py: règles pures ──
@@ -139,6 +140,9 @@ from battlefield import Battlefield
 
 class FakeBattle:
     def get_allies(self, unit):
+        return []
+
+    def get_enemies(self, unit):
         return []
 
 

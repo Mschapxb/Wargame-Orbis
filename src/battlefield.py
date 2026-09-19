@@ -58,7 +58,11 @@ class Battlefield:
         # Ouvertes PAR CASE: ouvrir le donjon n'ouvre pas l'enceinte
         # extérieure. Une porte ouverte est traversable par TOUT le monde.
         self.open_gate_cells = set()
-        
+        # Unités (id) qui ont prévu de quitter leur case ce round: la
+        # planification peut réserver ces cases pour qui les suit. Vidé en
+        # dehors de la phase de mouvement.
+        self.leaving = set()
+
         if grid is not None:
             self.grid = grid
         else:
@@ -389,6 +393,63 @@ class Battlefield:
     def chebyshev_distance(self, a, b):
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
+    def _occupancy_split(self, unit, battle):
+        """(cases ennemies, cases alliées) occupées par des unités vivantes,
+        toutes cases de l'empreinte comprises, `unit` exclue."""
+        foes = {id(e) for e in battle.get_enemies(unit)}
+        enemy_cells, ally_cells = set(), set()
+        for cell, occ in self.units.items():
+            if occ is unit or not occ.is_alive:
+                continue
+            (enemy_cells if id(occ) in foes else ally_cells).add(cell)
+        return enemy_cells, ally_cells
+
+    def _footprint_checker(self, w, h, enemy_cells, ally_cells, reserved):
+        """Fonction mémoïsée (x, y) → None si l'empreinte w×h ancrée en
+        (x, y) est infranchissable, sinon (coût de terrain, en hauteur,
+        chevauche un allié). Le terrain le plus lent de l'empreinte fixe le
+        coût: un bloc de cavalerie avance au pas de sa case la plus boueuse."""
+        grid, width, height = self.grid, self.width, self.height
+        gate_hp, open_cells = self.gate_hp, self.open_gate_cells
+        terr = self.terrain
+        fires = getattr(self, 'fires', None)
+        memo = {}
+
+        def check(x, y):
+            key = (x, y)
+            if key in memo:
+                return memo[key]
+            res = None
+            if 0 <= x and x + w <= width and 0 <= y and y + h <= height:
+                mc_max, elevated, ally = 1.0, False, False
+                for i in range(w):
+                    for j in range(h):
+                        cx, cy = x + i, y + j
+                        c = grid[cx][cy]
+                        if (c == 1 or c == 2 or (cx, cy) in reserved
+                                or (cx, cy) in enemy_cells
+                                or (c == 3 and (cx, cy) not in open_cells
+                                    and gate_hp.get((cx, cy), 0) > 0)):
+                            break
+                        mc = 1.0
+                        if terr is not None:
+                            mc, el = tr.MOVE_ELEV[terr[cx][cy]]
+                            if mc is None:
+                                break
+                            elevated = elevated or el
+                        if fires and (cx, cy) in fires:
+                            mc *= tr.FIRE_MOVE_FACTOR
+                        mc_max = max(mc_max, mc)
+                        ally = ally or (cx, cy) in ally_cells
+                    else:
+                        continue
+                    break
+                else:
+                    res = (mc_max, elevated, ally)
+            memo[key] = res
+            return res
+        return check
+
     def a_star_path(self, start, goal, unit, battle, reserved_positions=None, max_nodes=1200,
                     partial=False):
         """A* optimisé — opérations inlinées pour la performance.
@@ -399,16 +460,21 @@ class Battlefield:
         Sans cela, l'unité retombait sur un déplacement glouton et venait
         buter contre les bosquets. Réservé au mouvement: une charge, elle,
         doit réellement atteindre sa case.
+
+        Le chemin est parcouru CASE PAR CASE et doit être praticable pour
+        toute l'empreinte de l'unité (1×1, 2×2, 2×4): on ne traverse jamais
+        un ennemi, on ne se faufile pas en diagonale entre deux ennemis, et
+        un allié se traverse (avec une pénalité) sans qu'on puisse s'arrêter
+        sur lui — l'arrivée est vérifiée par _can_move_to.
         """
         if reserved_positions is None:
             reserved_positions = set()
-        
+
         if start == goal:
             return [goal]
-        
-        allies = battle.get_allies(unit)
-        ally_positions = {u.position for u in allies if u.is_alive and u is not unit}
-        
+
+        enemy_cells, ally_positions = self._occupancy_split(unit, battle)
+
         # Pénalité réduite quand loin de la cible
         sx, sy = start
         gx, gy = goal
@@ -448,6 +514,10 @@ class Battlefield:
         
         _DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
         _DIAG_COST = 1.414
+        uw, uh = self.get_unit_dims(unit)
+        big = uw > 1 or uh > 1
+        footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
+                                              reserved) if big else None
         nodes_explored = 0
         _heappush = heapq.heappush
         _heappop = heapq.heappop
@@ -492,31 +562,45 @@ class Battlefield:
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
 
-                # is_valid inliné
-                if nx < 0 or nx >= width or ny < 0 or ny >= height:
-                    continue
-                cell = grid[nx][ny]
-                if cell == 1 or cell == 2:
-                    continue
-                if cell == 3 and (nx, ny) not in open_cells and gate_hp.get((nx, ny), 0) > 0:
-                    continue
-
                 neighbor = (nx, ny)
-                if neighbor in reserved:
+                if big:
+                    info = footprint_ok(nx, ny)
+                    if info is None:
+                        continue
+                    base_cost = (_DIAG_COST if (dx and dy) else 1.0) * info[0]
+                    if info[1] and not cur_elevated:
+                        base_cost *= _uphill
+                    ally_hit = info[2]
+                else:
+                    # is_valid inliné
+                    if nx < 0 or nx >= width or ny < 0 or ny >= height:
+                        continue
+                    cell = grid[nx][ny]
+                    if cell == 1 or cell == 2:
+                        continue
+                    if cell == 3 and (nx, ny) not in open_cells and gate_hp.get((nx, ny), 0) > 0:
+                        continue
+                    if neighbor in reserved or neighbor in enemy_cells:
+                        continue
+
+                    base_cost = _DIAG_COST if (dx and dy) else 1.0
+                    if terr is not None:
+                        mc, n_elevated = _move_elev[terr[nx][ny]]
+                        if mc is None:
+                            continue  # rivière
+                        if n_elevated and not cur_elevated:
+                            mc *= _uphill
+                        base_cost *= mc
+                    if fires and neighbor in fires:
+                        base_cost *= _fire_factor
+                    ally_hit = neighbor in ally_positions
+                # Pas de faufilage en diagonale entre deux ennemis qui se
+                # touchent par le coin: une ligne en quinconce reste une ligne
+                if dx and dy and enemy_cells and (
+                        (cx + dx, cy) in enemy_cells and (cx, cy + dy) in enemy_cells):
                     continue
 
-                base_cost = _DIAG_COST if (dx and dy) else 1.0
-                if terr is not None:
-                    mc, n_elevated = _move_elev[terr[nx][ny]]
-                    if mc is None:
-                        continue  # rivière
-                    if n_elevated and not cur_elevated:
-                        mc *= _uphill
-                    base_cost *= mc
-                if fires and neighbor in fires:
-                    base_cost *= _fire_factor
-
-                if neighbor in ally_positions and neighbor != goal:
+                if ally_hit and neighbor != goal:
                     new_g = g + base_cost + ALLY_PENALTY
                 else:
                     new_g = g + base_cost
@@ -680,6 +764,7 @@ class Battlefield:
         # jamais servir pour une destination différente.
         unit._planned_move_cost = None
         unit._planned_move_dest = None
+        unit._planned_path = None
         if unit.fleeing:
             return self._flee_move(unit, battle, reserved_positions)
         decision = self._artillery_decision(unit, battle)
@@ -695,17 +780,61 @@ class Battlefield:
                 return decision
         return self._approach_move(unit, battle, enemies, reserved_positions)
 
-    def _advance_along(self, unit, path, speed, reserved_positions):
+    def _advance_along(self, unit, path, speed, reserved_positions, battle):
         """Case la plus avancée de `path` atteignable ce round (≤ speed en
-        coût de terrain) et libre; None sinon. Mémorise son coût réel."""
+        coût de terrain) et libre; None sinon. Mémorise son coût réel et le
+        chemin suivi (animation case par case).
+
+        ARRÊT AU CONTACT: la marche s'arrête sur la première case où un
+        ennemi qu'on ne touchait pas au départ vient au contact. On ne
+        longe plus une ligne adverse pour aller la prendre à revers dans le
+        même round. Les fuyards y échappent (les coups d'opportunité les
+        punissent déjà en se dérobant)."""
         steps = tr.steps_within(self, unit.position, path, speed)
+        if steps and not unit.fleeing:
+            steps = min(steps, self._contact_stop(unit, path[:steps], battle))
         for i in range(steps, 0, -1):
             candidate = path[i - 1]
             if self._can_move_to(unit, candidate, reserved_positions):
                 unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
                 unit._planned_move_dest = candidate
+                unit._planned_path = list(path[:i])
                 return candidate
         return None
+
+    def _contact_stop(self, unit, path, battle):
+        """Nombre de pas de `path` jouables avant d'entrer au contact d'un
+        nouvel ennemi (la case de contact comprise)."""
+        start = unit.position
+        reach = len(path) + 3
+        near = [e for e in battle.get_enemies(unit)
+                if e.is_alive and e.position is not None
+                and self.chebyshev_distance(start, e.position) <= reach]
+        if not near:
+            return len(path)
+        fresh = [e for e in near if self.unit_distance(unit, e) > 1]
+        for i, cell in enumerate(path):
+            if any(self.unit_distance(unit, e, a_pos=cell) <= 1 for e in fresh):
+                return i + 1
+        return len(path)
+
+    def route_to(self, unit, battle, dest, reserved_positions, budget):
+        """Garantit qu'un déplacement vers `dest` suit un vrai chemin case
+        par case (A*: ni ennemi traversé, empreinte complète praticable) à
+        la portée du budget. Les pas « directs » des replis (latéral, fuite,
+        dégagement de ligne de tir) sautaient sinon par-dessus les unités.
+        Renvoie la case réellement atteinte (éventuellement tronquée par
+        l'arrêt au contact) ou None."""
+        if dest is None or dest == unit.position:
+            return None
+        if (getattr(unit, '_planned_move_dest', None) == dest
+                and getattr(unit, '_planned_path', None)):
+            return dest
+        path = self.a_star_path(unit.position, dest, unit, battle, reserved_positions,
+                                max_nodes=300)
+        if not path or path[-1] != dest:
+            return None
+        return self._advance_along(unit, path, budget, reserved_positions, battle)
 
     @staticmethod
     def _weakest_then_closest(unit, candidates):
@@ -738,7 +867,7 @@ class Battlefield:
 
         path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
         if path:
-            step = self._advance_along(unit, path, flee_speed, reserved_positions)
+            step = self._advance_along(unit, path, flee_speed, reserved_positions, battle)
             if step is not None:
                 return step, None
 
@@ -865,7 +994,7 @@ class Battlefield:
             path = self.a_star_path(unit.position, move_pos, unit, battle, reserved_positions,
                                     partial=True)
             if path:
-                step = self._advance_along(unit, path, unit.vitesse, reserved_positions)
+                step = self._advance_along(unit, path, unit.vitesse, reserved_positions, battle)
                 if step is not None:
                     return step, target
             return self.fallback_move(unit, target, reserved_positions), target
@@ -918,7 +1047,7 @@ class Battlefield:
             path = self.a_star_path(unit.position, goal, unit, battle, reserved_positions,
                                     partial=True)
             if path:
-                step = self._advance_along(unit, path, unit.vitesse, reserved_positions)
+                step = self._advance_along(unit, path, unit.vitesse, reserved_positions, battle)
                 if step is not None:
                     return step, target
 
@@ -948,7 +1077,7 @@ class Battlefield:
             gpath = self.a_star_path(unit.position, self._preferred_gate(unit, passable),
                                      unit, battle, reserved_positions)
             if gpath:
-                step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions)
+                step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions, battle)
                 if step is not None:
                     return step, target
 
@@ -959,7 +1088,7 @@ class Battlefield:
             if gate_goal:
                 gpath = self.a_star_path(unit.position, gate_goal, unit, battle, reserved_positions)
                 if gpath:
-                    step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions)
+                    step = self._advance_along(unit, gpath, unit.vitesse, reserved_positions, battle)
                     if step is not None:
                         return step, target
 
@@ -1043,10 +1172,18 @@ class Battlefield:
                         best_d = d
         return best
 
+    def _cell_open(self, x, y, unit):
+        """Case praticable, et vide — ou tenue par `unit` elle-même, ou par
+        une unité qui a déjà prévu d'en partir ce round (cf. `leaving`)."""
+        if not self.is_valid(x, y):
+            return False
+        occ = self.units.get((x, y))
+        return occ is None or occ is unit or id(occ) in self.leaving
+
     def _can_move_to(self, unit, pos, reserved_positions):
         """Vérifie si une unité peut se déplacer vers pos (multi-cases)."""
         if unit.size <= 1:
-            return self.is_free(*pos, unit) and pos not in reserved_positions
+            return pos not in reserved_positions and self._cell_open(*pos, unit)
         # Multi-case : vérifier toutes les cases de destination
         w, h = self.get_unit_dims(unit)
         for dx in range(w):
@@ -1054,7 +1191,7 @@ class Battlefield:
                 cell = (pos[0] + dx, pos[1] + dy)
                 if cell in reserved_positions:
                     return False
-                if not self.is_free(*cell, unit):
+                if not self._cell_open(*cell, unit):
                     return False
         return True
 

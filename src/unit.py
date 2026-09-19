@@ -117,6 +117,7 @@ class Unit:
         
         # Animation: position précédente pour interpolation fluide
         self._prev_position = (0, 0)  # Position au début du round
+        self._move_path = None
         self._last_step = (0, 0)      # Déplacement du round précédent
         self._lunge_target = None     # Position pixel de la cible pour lunge CaC
         self._lunge_timer = 0         # Timer du lunge (frames restantes)
@@ -273,6 +274,8 @@ class Unit:
             pp = self._prev_position or self.position
             self._last_step = (self.position[0] - pp[0], self.position[1] - pp[1])
             self._prev_position = self.position
+        # Cases traversées ce round, départ compris (animation case par case)
+        self._move_path = None
         self._opportunity_used = False
         self._momentum_used = False
         self._acted_this_round = False

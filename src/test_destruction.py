@@ -99,6 +99,9 @@ def test_feu_astar_contourne():
     class FB:
         def get_allies(self, unit):
             return []
+
+        def get_enemies(self, unit):
+            return []
     path = bf.a_star_path((2, 2), (8, 2), u, FB(), max_nodes=4000)
     assert path and (5, 2) not in path, path
 
