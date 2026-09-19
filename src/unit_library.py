@@ -469,9 +469,14 @@ def _norm(text):
 
 
 def _trait_number(trait, default):
-    """Valeur N d'un trait « Nom (N) » ou « Nom [N] »."""
-    m = re.search(r'[\(\[]\s*(\d+)\s*[\)\]]', trait)
+    """Valeur N d'un trait « Nom (N) », « Nom [N] » ou « Nom (xN) »."""
+    m = re.search(r'[\(\[]\s*x?\s*(\d+)\s*x?\s*[\)\]]', trait)
     return int(m.group(1)) if m else default
+
+
+# Traits de lanceur de sorts (nom normalisé), dont les synonymes du livre
+_CASTER_TRAITS = ("sort de bataille", "sorts de bataille", "sortilege", "lanceur de sort",
+                  "sort (", "sort eternel", "sorts du tao")
 
 
 # Traits qui alimentent Unit.special (cf. Unit.__init__). Nom normalisé
@@ -482,6 +487,10 @@ _SPECIAL_TRAITS = (
     ("terreur", lambda t: {"causes_terror": True}),       # aura -3 moral
     ("intimidant", lambda t: {"awe:1": True}),            # mêlée: test de moral pour frapper
     ("immunite mentale", lambda t: {"immune_mind": True}),
+    # Synonymes du livre: morts-vivants, créatures artificielles, moines...
+    ("mort vivant", lambda t: {"immune_mind": True}),
+    ("etre artificiel", lambda t: {"immune_mind": True}),
+    ("indemoralisable", lambda t: {"immune_mind": True}),
     ("regeneration", lambda t: {"regeneration": _trait_number(t, 10)}),  # % PV max / round
     ("vengeance de sang", lambda t: {"blood_vengeance": _trait_number(t, 1)}),
     ("munitions", lambda t: {f"ammo:{_trait_number(t, 10)}": True}),
@@ -520,26 +529,27 @@ def create_unit(unit_def, army_color):
     unit.token_name = unit_def["nom"]
     unit.traits = list(unit_def.get("traits", []))  # affichés sur la fiche d'unité
 
-    # Traits
+    # Traits (nom normalisé: sans accent ni majuscule)
     for t in unit_def.get("traits", []):
-        tl = t.lower()
-        if "encouragement" in tl:
+        n = _norm(t)
+        if "encouragement" in n:
             unit.encouragement_range = 4
-        if "anti-infanterie" in tl or "anti infanterie" in tl:
+        if "anti-infanterie" in n or "anti infanterie" in n:
             unit.anti_infanterie = True
-        if "anti-large" in tl or "anti large" in tl:
+        if "anti-large" in n or "anti large" in n:
             unit.anti_large = True
-        if "phalange" in tl:
+        if "phalange" in n:
             unit.phalange = True
-        if "charge montée" in tl or "charge montee" in tl:
-            unit.charge_montee = True
-        if "charge d'aïda" in tl or "charge d'aida" in tl or "charge aida" in tl:
+        # Charges: d'Aïda (« Charge Aïdatienne » du livre) = -1 blesser;
+        # toutes les autres (montée, de char, du minotaure, volante...)
+        # sont traitées en charge montée (+1 dégât)
+        if n.startswith(("charge d'aid", "charge aid")):
             unit.charge_aida = True
-        # "Sort de bataille (N)" → N sorts par round
-        if "sort de bataille" in tl:
-            m = re.search(r'\((\d+)\)', t)
-            if m:
-                unit.spells_per_round = int(m.group(1))
+        elif n.startswith("charge"):
+            unit.charge_montee = True
+        # « Sort de bataille (N) » et synonymes du livre → N sorts par round
+        if n.startswith(_CASTER_TRAITS):
+            unit.spells_per_round = _trait_number(t, unit.spells_per_round)
     
     # Sorts
     SPELL_CATALOG = {
@@ -710,5 +720,45 @@ def load_custom_units_into_db():
         UNIT_DATABASE.pop(CUSTOM_ARMY_NAME, None)
 
 
-# Chargement automatique au démarrage
+# ═══════════════════════════════════════════════════════════════
+#          ARMÉES DU LIVRE DE RÈGLES (armees_livre.json)
+# ═══════════════════════════════════════════════════════════════
+
+LIVRE_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "armees_livre.json")
+
+
+def load_livre_into_db(path=LIVRE_JSON):
+    """Ajoute les armées et unités du livre (générées par livre_import.py).
+
+    Une unité déjà définie à la main dans son armée n'est JAMAIS remplacée:
+    le livre ne fait que compléter (nouvelles armées, unités manquantes).
+    Renvoie le nombre d'unités ajoutées."""
+    import json
+
+    if not os.path.exists(path):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            armies = json.load(f).get("armies", {})
+    except (OSError, ValueError) as e:
+        print(f"  ATTENTION: {os.path.basename(path)} illisible: {e}")
+        return 0
+    added = 0
+    for army_name, data in armies.items():
+        army = UNIT_DATABASE.setdefault(
+            army_name, {"color": tuple(data.get("color", (160, 160, 160))), "units": []})
+        known = {_norm(u["nom"]) for u in army["units"]}
+        for u in data.get("units", []):
+            if _norm(u["nom"]) in known:
+                continue
+            u = dict(u, armes=[tuple(a) for a in u["armes"]], source="livre")
+            army["units"].append(u)
+            known.add(_norm(u["nom"]))
+            added += 1
+    return added
+
+
+# Chargement automatique au démarrage (livre d'abord: les unités custom
+# gardent leur propre armée)
+load_livre_into_db()
 load_custom_units_into_db()

@@ -701,6 +701,24 @@ Exemple : pour une unité avec `token_name = "chevalier"`, créez `tokens/cheval
 
 ## 🔧 Personnalisation
 
+### Armées du livre de règles
+
+Les armées et unités du livre `src/Livre_des_armées_d_Orbis_Naturae.xlsx`
+sont importées dans `src/armees_livre.json`, que le jeu charge au démarrage.
+Après toute modification du livre:
+
+```bash
+python src/livre_import.py
+```
+
+Le script affiche un rapport (unités ignorées, valeurs devinées). Les unités
+réglées à la main dans `unit_library.py` restent prioritaires: le livre ne
+fait qu'ajouter les armées et unités manquantes. Conversions: portées
+divisées par deux (mêlée plafonnée à 3), valeur normale pour « a/b* », « [N] »
+sur une arme de tir = Munitions (N), et les lanceurs de sorts reçoivent les
+sorts du Mage de guerre (le livre ne les précise pas). `test_livre` échoue si
+le JSON n'a pas été régénéré.
+
 ### Ajouter une unité
 
 Éditez `unit_library.py` et ajoutez une entrée dans le dictionnaire de la faction :
