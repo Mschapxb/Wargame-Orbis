@@ -345,6 +345,126 @@ class Battlefield:
         dy = max(0, by - (ay + ah - 1), ay - (by + bh - 1))
         return dx + dy
 
+    def reachable_cells(self, unit, battle, budget=None):
+        """Cases où `unit` pourrait s'ARRÊTER au prochain round, avec les
+        mêmes règles que le moteur: ennemis infranchissables, alliés
+        traversables mais pas d'arrêt dessus, empreinte complète, terrain,
+        recul à coût double, arrêt au contact (sauf Débordement). Sert à
+        l'affichage au survol."""
+        if unit.position is None:
+            return set()
+        budget = unit.vitesse if budget is None else budget
+        if budget < 1:
+            return set()
+        enemy_cells, ally_cells = self._occupancy_split(unit, battle)
+        w, h = self.get_unit_dims(unit)
+        check = self._footprint_checker(w, h, enemy_cells, ally_cells, set())
+        foes = [e for e in battle.get_enemies(unit) if e.is_alive and e.position is not None]
+        start = unit.position
+        stop_at_contact = not unit.fleeing and not getattr(unit, 'contact_breakthrough', False)
+        fresh = [e for e in foes if self.unit_distance(unit, e) > 1]
+        best = {start: 0.0}
+        heap = [(0.0, start)]
+        out = set()
+        while heap:
+            g, cur = heapq.heappop(heap)
+            if g > best.get(cur, 1e9):
+                continue
+            if cur != start:
+                if not check(*cur)[2]:
+                    out.add(cur)
+                if stop_at_contact and any(
+                        self.unit_distance(unit, e, a_pos=cur) <= 1 for e in fresh):
+                    continue
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if not (dx or dy):
+                        continue
+                    nxt = (cur[0] + dx, cur[1] + dy)
+                    info = check(*nxt)
+                    if info is None:
+                        continue
+                    c = self.footprint_step_cost(unit, cur, nxt)
+                    if facing.step_is_backward(unit, cur, nxt) and not unit.fleeing:
+                        c *= facing.BACKWARD_FACTOR
+                    ng = g + c
+                    # Même règle que steps_within: le premier pas passe toujours
+                    if (ng > budget + 1e-9 and cur != start) or ng >= best.get(nxt, 1e9):
+                        continue
+                    best[nxt] = ng
+                    heapq.heappush(heap, (ng, nxt))
+        return out
+
+    def terrain_path(self, start, goal, max_nodes=3000):
+        """Chemin 8-directions du TERRAIN seul (unités ignorées), coûts de
+        terrain compris: celui du chef d'un bloc en formation, un repère
+        virtuel que ses membres suivent chacun à son décalage. [] si
+        l'objectif est hors d'atteinte."""
+        if start == goal:
+            return [goal]
+        if not (self.is_valid(*start) and self.is_valid(*goal)):
+            return []
+        gx, gy = goal
+        dirs = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+        g_score = {start: 0.0}
+        came = {}
+        h0 = max(abs(gx - start[0]), abs(gy - start[1]))
+        heap = [(h0, 0.0, start)]
+        seen = 0
+        while heap and seen < max_nodes:
+            _, g, cur = heapq.heappop(heap)
+            if cur == goal:
+                path = []
+                while cur in came:
+                    path.append(cur)
+                    cur = came[cur]
+                return path[::-1]
+            if g > g_score.get(cur, 1e9):
+                continue
+            seen += 1
+            for dx, dy in dirs:
+                nxt = (cur[0] + dx, cur[1] + dy)
+                if not self.is_valid(*nxt):
+                    continue
+                c = tr.step_cost(self, cur, nxt) * (1.414 if dx and dy else 1.0)
+                ng = g + c
+                if ng < g_score.get(nxt, 1e9):
+                    g_score[nxt] = ng
+                    came[nxt] = cur
+                    h = max(abs(gx - nxt[0]), abs(gy - nxt[1]))
+                    heapq.heappush(heap, (ng + h, ng, nxt))
+        return []
+
+    def footprint_step_cost(self, unit, frm, to):
+        """Coût d'un pas pour TOUTE l'empreinte: le terrain le plus lent
+        sous l'unité. Compter la seule case d'ancre (coin haut-gauche)
+        faisait payer à une cavalerie 2×2 le bois de sa case ARRIÈRE en
+        marchant vers l'est, de sa case AVANT vers l'ouest: le camp de
+        droite s'enlisait plus tôt (Forêt · cavalerie: 64 % pour la gauche)."""
+        w, h = self.get_unit_dims(unit)
+        if w == 1 and h == 1:
+            return tr.step_cost(self, frm, to)
+        return max(tr.step_cost(self, (frm[0] + i, frm[1] + j), (to[0] + i, to[1] + j))
+                   for i in range(w) for j in range(h))
+
+    def footprint_path_cost(self, unit, start, path):
+        total, prev = 0.0, start
+        for cell in path:
+            total += self.footprint_step_cost(unit, prev, cell)
+            prev = cell
+        return total
+
+    def footprints_touch(self, a, b):
+        """Les empreintes de a et b se touchent (côté ou coin), sans se
+        chevaucher."""
+        ax, ay = a.position
+        bx, by = b.position
+        aw, ah = self.get_unit_dims(a)
+        bw, bh = self.get_unit_dims(b)
+        gx = max(0, bx - (ax + aw - 1), ax - (bx + bw - 1))
+        gy = max(0, by - (ay + ah - 1), ay - (by + bh - 1))
+        return max(gx, gy) == 1
+
     def get_unit_cells(self, unit):
         """Retourne toutes les cases occupées par une unité. Ancré en haut-gauche."""
         x, y = unit.position
@@ -518,6 +638,20 @@ class Battlefield:
         big = uw > 1 or uh > 1
         footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
                                               reserved) if big else None
+        # Objectif lui-même infranchissable (ennemi, case réservée, obstacle):
+        # l'A* fouillait jusqu'au plafond de nœuds avant d'abandonner — la
+        # moitié du temps de calcul des grandes cartes (178×64). On le sait
+        # d'avance: sans repli partiel, c'est non; avec, on borne la fouille
+        # au voisinage que le détour peut raisonnablement couvrir.
+        if big:
+            goal_blocked = footprint_ok(gx, gy) is None
+        else:
+            goal_blocked = (not self.is_valid(gx, gy) or goal in reserved
+                            or goal in enemy_cells)
+        if goal_blocked:
+            if not partial:
+                return []
+            max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
         nodes_explored = 0
         _heappush = heapq.heappush
         _heappop = heapq.heappop
@@ -557,7 +691,12 @@ class Battlefield:
             # depuis `terr` local ci-dessus — donc toujours cohérente avec
             # les valeurs lues pour chaque voisin dans la même boucle.
             if terr is not None:
-                cur_elevated = _move_elev[terr[cx][cy]][1]
+                if big:
+                    # Toute l'empreinte, comme pour la case voisine
+                    cur_info = footprint_ok(cx, cy)
+                    cur_elevated = bool(cur_info and cur_info[1])
+                else:
+                    cur_elevated = _move_elev[terr[cx][cy]][1]
 
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
@@ -595,8 +734,10 @@ class Battlefield:
                         base_cost *= _fire_factor
                     ally_hit = neighbor in ally_positions
                 # Pas de faufilage en diagonale entre deux ennemis qui se
-                # touchent par le coin: une ligne en quinconce reste une ligne
-                if dx and dy and enemy_cells and (
+                # touchent par le coin: une ligne en quinconce reste une ligne.
+                # (Grosses unités: l'empreinte d'arrivée suffit — tester les
+                # voisines de l'ANCRE dépendrait du sens de marche.)
+                if dx and dy and not big and enemy_cells and (
                         (cx + dx, cy) in enemy_cells and (cx, cy + dy) in enemy_cells):
                     continue
 
@@ -765,6 +906,7 @@ class Battlefield:
         unit._planned_move_cost = None
         unit._planned_move_dest = None
         unit._planned_path = None
+        unit._planned_backpedal = False
         if unit.fleeing:
             return self._flee_move(unit, battle, reserved_positions)
         decision = self._artillery_decision(unit, battle)
@@ -790,17 +932,68 @@ class Battlefield:
         longe plus une ligne adverse pour aller la prendre à revers dans le
         même round. Les fuyards y échappent (les coups d'opportunité les
         punissent déjà en se dérobant)."""
-        steps = tr.steps_within(self, unit.position, path, speed)
+        costs, turned = self._walk_costs(unit, path)
+        steps = self._steps_for(costs, speed)
         if steps and not unit.fleeing:
             steps = min(steps, self._contact_stop(unit, path[:steps], battle))
         for i in range(steps, 0, -1):
             candidate = path[i - 1]
             if self._can_move_to(unit, candidate, reserved_positions):
-                unit._planned_move_cost = tr.path_cost(self, unit.position, path[:i])
+                unit._planned_move_cost = sum(costs[:i])
                 unit._planned_move_dest = candidate
                 unit._planned_path = list(path[:i])
+                # Recul sans volte-face: l'unité garde son orientation
+                unit._planned_backpedal = (not turned and any(
+                    facing.step_is_backward(unit, a, b)
+                    for a, b in zip([unit.position] + path[:i - 1], path[:i])))
                 return candidate
         return None
+
+    def _walk_costs(self, unit, path):
+        """(coût de chaque pas, demi-tour fait): terrain × orientation.
+
+        Un pas vers l'arrière coûte double (facing.BACKWARD_FACTOR). Si le
+        trajet part vers l'arrière, l'unité choisit le moins cher: reculer
+        face à l'ennemi, ou faire demi-tour (facing.ABOUT_FACE_COST) et
+        marcher — ses anciens pas « avant » devenant alors des reculs."""
+        start = unit.position
+        base, prev = [], start
+        for cell in path:
+            base.append(self.footprint_step_cost(unit, prev, cell))
+            prev = cell
+        f = getattr(unit, 'facing', None)
+        if f is None or unit.fleeing or not path:
+            return base, False
+        dots = []
+        for a, b in zip([start] + path[:-1], path):
+            d = facing.direction(a, b)
+            dots.append(0.0 if d is None else f[0] * d[0] + f[1] * d[1])
+        k = facing.BACKWARD_FACTOR
+        lim = facing._COS_FRONT
+        if all(x > -lim for x in dots):
+            return base, False
+        backpedal = [c * k if x <= -lim else c for c, x in zip(base, dots)]
+        about = [c * k if x >= lim else c for c, x in zip(base, dots)]
+        about[0] += facing.ABOUT_FACE_COST
+        if sum(about) < sum(backpedal):
+            return about, True
+        return backpedal, False
+
+    @staticmethod
+    def _steps_for(costs, budget):
+        """Pas jouables avec `budget` (même règle que terrain.steps_within:
+        au moins un pas si le budget vaut 1, sinon on resterait figé)."""
+        if budget < 1:
+            return 0
+        spent, n = 0.0, 0
+        for c in costs:
+            if c >= tr._INF:
+                break
+            if n >= 1 and spent + c > budget + 1e-9:
+                break
+            spent += c
+            n += 1
+        return n
 
     def _contact_stop(self, unit, path, battle):
         """Nombre de pas de `path` jouables avant d'entrer au contact d'un
@@ -812,10 +1005,13 @@ class Battlefield:
                 and self.chebyshev_distance(start, e.position) <= reach]
         if not near:
             return len(path)
+        if getattr(unit, 'contact_breakthrough', False):
+            return len(path)        # Débordement: on passe (au prix fort)
         fresh = [e for e in near if self.unit_distance(unit, e) > 1]
+        slip = getattr(unit, 'contact_slip', 0)   # Tirailleur
         for i, cell in enumerate(path):
             if any(self.unit_distance(unit, e, a_pos=cell) <= 1 for e in fresh):
-                return i + 1
+                return min(len(path), i + 1 + slip)
         return len(path)
 
     def route_to(self, unit, battle, dest, reserved_positions, budget):

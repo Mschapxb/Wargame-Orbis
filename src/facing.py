@@ -71,6 +71,56 @@ def face_unit(unit, other):
     face_towards(unit, center(other))
 
 
+# ── Pivoter a un prix ──
+# Tourner jusqu'à 90° est gratuit. Un DEMI-TOUR (plus de 90°) coûte une case
+# de mouvement; une unité qui a déjà épuisé sa marche du round ne pivote
+# alors que de 90°. Reculer sans se retourner coûte le double par case
+# (cf. Battlefield._walk_costs). Sans ce prix, une troupe prise à revers
+# faisait volte-face gratuitement et le dos ne se prenait jamais.
+ABOUT_FACE_COST = 1
+BACKWARD_FACTOR = 2.0
+
+
+def _rotate_quarter(f, d):
+    """f tourné de 90° du côté de d. Sens exactement opposé: vers le sud
+    pour tous — un départage identique pour les deux camps (en miroir
+    gauche/droite), là où « toujours à gauche » les aurait distingués."""
+    cross = f[0] * d[1] - f[1] * d[0]
+    if abs(cross) < 1e-9:
+        cross = 1.0 if f[0] >= 0 else -1.0
+    return (-f[1], f[0]) if cross > 0 else (f[1], -f[0])
+
+
+def turn_toward(unit, point):
+    """Tourne l'unité vers `point` en payant le demi-tour (cf. ci-dessus)."""
+    d = direction(center(unit), point)
+    if d is None:
+        return
+    f = getattr(unit, 'facing', None)
+    if f is None or f[0] * d[0] + f[1] * d[1] >= -1e-9:
+        unit.facing = d
+        return
+    moved = getattr(unit, '_cells_moved', 0)
+    if moved + ABOUT_FACE_COST <= getattr(unit, 'vitesse', 0):
+        unit._cells_moved = moved + ABOUT_FACE_COST
+        unit.facing = d
+        return
+    unit.facing = _rotate_quarter(f, d)
+
+
+def turn_to_unit(unit, other):
+    turn_toward(unit, center(other))
+
+
+def step_is_backward(unit, frm, to):
+    """Le pas frm → to part-il vers l'arrière de l'unité ?"""
+    f = getattr(unit, 'facing', None)
+    if f is None:
+        return False
+    d = direction(frm, to)
+    return d is not None and f[0] * d[0] + f[1] * d[1] <= -_COS_FRONT
+
+
 def arc(attacker, target):
     """D'où vient le coup, vu de la cible: FRONT, FLANK ou REAR."""
     if attacker.position is None:

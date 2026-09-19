@@ -1283,6 +1283,10 @@ class CommanderAI:
                 dp = 0.0 if no_advance else max(-speed, min(speed, dest_proj - cur_p))
                 dl = max(-2.0, min(2.0, dest_lat - cur_l))
                 anchor = formation.to_world(origin, axis, cur_p + dp, cur_l + dl)
+                if not no_advance:
+                    anchor = self._leader_anchor(
+                        formation.to_world(origin, axis, cur_p, cur_l), anchor,
+                        formation.to_world(origin, axis, dest_proj, dest_lat), speed)
             ordered = formation.arrange(units, anchor, axis, self._block_memory.get(key))
             self._block_memory[key] = [id(u) for u in ordered]
             placed = formation.slots(bf, ordered, anchor, axis, start_rank, taken, step)
@@ -1357,6 +1361,42 @@ class CommanderAI:
                     form(ckey, g['cav'], level, inf_lat + side * wing,
                          min(u.vitesse for u in g['cav']))
         self._blocks_engaged = engaged_now
+
+    def _leader_anchor(self, cur, straight, dest, speed):
+        """Ancre du bloc pour ce round: le CHEF DE BLOC (repère virtuel du
+        premier rang) suit un vrai chemin de terrain; chaque membre garde
+        son décalage autour de lui (formation.slots).
+
+        En terrain dégagé, la marche droite d'avant est conservée telle
+        quelle. Si un obstacle ou un terrain lent (bois, marais, maison)
+        barre la ligne droite, l'ancre avançait à travers et les cases du
+        bloc tombaient dans l'obstacle: chacun cherchait alors la case libre
+        la plus proche et le bloc s'effilochait. Le chef contourne, le bloc
+        suit d'un seul tenant."""
+        bf = self.battlefield
+        terr = getattr(bf, 'terrain', None)
+
+        def cell(p):
+            # Arrondi en miroir (round() arrondit les demis vers le pair:
+            # une demi-case ne tombait pas du même côté pour les deux camps)
+            return (max(0, min(bf.width - 1, tactics.mirror_round_x(p[0], bf.width))),
+                    max(0, min(bf.height - 1, int(math.floor(p[1] + 0.5)))))
+
+        def open_ground(c):
+            return bf.is_valid(*c) and (terr is None or (tr.MOVE[terr[c[0]][c[1]]] or 99) <= 1.0)
+
+        c0, c1 = cell(cur), cell(straight)
+        # _line_cells exclut les extrémités: l'arrivée se vérifie à part
+        if c0 == c1 or all(open_ground(c) for c in bf._line_cells(*c0, *c1) + [c1]):
+            return straight
+        goal = cell(dest)
+        if not bf.is_valid(*goal):
+            goal = formation.nearest_walkable(bf, goal[0], goal[1], set(), radius=4)
+        path = bf.terrain_path(c0, goal) if goal is not None else []
+        if not path:
+            return straight
+        steps = tr.steps_within(bf, c0, path, speed)
+        return path[steps - 1] if steps else straight
 
     def _visible_target(self, unit, enemies):
         """Le tireur ou le mage a-t-il une cible à portée (et en vue) ?"""

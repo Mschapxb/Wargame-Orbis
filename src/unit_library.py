@@ -31,6 +31,10 @@ Champs d'une unité:
         Vengeance de sang (N)  peut renvoyer un coup reçu à l'attaquant
         Munitions (N)       N volées de tir (défaut 10)
         Rechargement (N)    N rounds de rechargement après un tir sur des troupes
+        Débordement         n'est pas arrêté en passant au contact (cavalerie),
+                            mais tout coup d'opportunité sur lui touche à -1
+        Tirailleur (N)      peut encore faire N cases (défaut 1) après être
+                            entré au contact (infanterie légère, escarmouche)
 """
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
@@ -80,7 +84,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Coutelas", 1, 2, 4, 4, 1, "1"),
                 ],
-                "traits": [],
+                "traits": ["Tirailleur"],
             },
             {
                 "nom": "Arbaletrier régulier",
@@ -234,7 +238,7 @@ UNIT_DATABASE = {
                     ("Lance", 2, 1, 3, 3, 0, "1"),
                     ("Arc",   9, 1, 3, 3, 0, "1"),
                 ],
-                "traits": ["Charge montée"],
+                "traits": ["Débordement", "Charge montée"],
             },
             {
                 "nom": "Officier covaliir",
@@ -327,7 +331,7 @@ UNIT_DATABASE = {
                 "armes": [
                     ("Sabots", 1, 2, 3, 3, 0, "1"),
                 ],
-                "traits": ["Charge montée"],
+                "traits": ["Débordement", "Charge montée"],
             },
             {
                 "nom": "Pourfendeur de Draconie",
@@ -547,6 +551,11 @@ def create_unit(unit_def, army_color):
             unit.charge_aida = True
         elif n.startswith("charge"):
             unit.charge_montee = True
+        # Règles de contact (cf. Battlefield._contact_stop)
+        if n.startswith(("debordement", "cavalerie legere")):
+            unit.contact_breakthrough = True
+        if n.startswith(("tirailleur", "escarmouche")):
+            unit.contact_slip = _trait_number(t, 1)
         # « Sort de bataille (N) » et synonymes du livre → N sorts par round
         if n.startswith(_CASTER_TRAITS):
             unit.spells_per_round = _trait_number(t, unit.spells_per_round)

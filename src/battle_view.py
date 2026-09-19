@@ -40,6 +40,11 @@ _TARGET_LINE_COLORS = {"spell": (120, 60, 180), "ranged": (60, 120, 180),
                        "reach": (180, 150, 40)}
 _TARGET_LINE_MELEE = (180, 60, 60)
 
+# Survol d'une unité: zone atteignable au prochain round et chemin suivi
+_REACH_FILL = (120, 200, 255, 38)
+_REACH_EDGE = (150, 215, 255, 90)
+_PATH_COLOR = (255, 225, 120)
+
 KEY_ACTIONS = {
     pygame.K_SPACE: "toggle_pause",
     pygame.K_f: "speed_fast",
@@ -492,6 +497,8 @@ class BattleView:
             self._draw_target_lines(surf, ox, oy)
         if self.show_intents:
             R.draw_intents(surf, self.battle, self.cell_size, ox, oy)
+        if hovered is not None and hovered.is_alive:
+            self._draw_move_overlay(surf, hovered, ox, oy)
         # Décalques au sol et animations de mort (sous les vivants)
         self.fxr.draw_ground(surf, self.battle, ox, oy, view_w, view_h, self.move_anim_progress)
         # Incendies: sous les unités, au-dessus du sol
@@ -507,6 +514,40 @@ class BattleView:
             real_screen.set_clip(pygame.Rect(0, 0, self.screen_w, self.view_h))
             real_screen.blit(scaled, (0, 0))
             real_screen.set_clip(None)
+
+    def _draw_move_overlay(self, surf, u, ox, oy):
+        """Au survol: cases où l'unité peut s'arrêter au prochain round
+        (mêmes règles que le moteur) et chemin réellement suivi ce round.
+        Utile pour lire l'IA et repérer un déplacement aberrant."""
+        cs = self.cell_size
+        key = (id(u), self.battle.round, u.position, u.vitesse)
+        if getattr(self, '_reach_key', None) != key:
+            self._reach_key = key
+            # Ancres atteignables → toutes les cases que l'empreinte couvrirait
+            uw, uh = _unit_dims(u)
+            self._reach_cells = {(x + i, y + j)
+                                 for x, y in self.battle.battlefield.reachable_cells(u, self.battle)
+                                 for i in range(uw) for j in range(uh)}
+        cells = self._reach_cells
+        if cells:
+            xs = [c[0] for c in cells]
+            ys = [c[1] for c in cells]
+            x0, y0 = min(xs), min(ys)
+            layer = pygame.Surface(((max(xs) - x0 + 1) * cs, (max(ys) - y0 + 1) * cs),
+                                   pygame.SRCALPHA)
+            for (x, y) in cells:
+                r = pygame.Rect((x - x0) * cs, (y - y0) * cs, cs, cs)
+                layer.fill(_REACH_FILL, r)
+                pygame.draw.rect(layer, _REACH_EDGE, r, 1)
+            surf.blit(layer, (x0 * cs + ox, y0 * cs + oy))
+        path = getattr(u, '_move_path', None)
+        if path and len(path) > 1:
+            uw, uh = _unit_dims(u)
+            pts = [(x * cs + (uw * cs) // 2 + ox, y * cs + (uh * cs) // 2 + oy)
+                   for x, y in path]
+            pygame.draw.lines(surf, _PATH_COLOR, False, pts, 2)
+            for p in pts[:-1]:
+                pygame.draw.circle(surf, _PATH_COLOR, p, max(2, cs // 10))
 
     def _draw_target_lines(self, surf, ox, oy):
         """Lignes de ciblage, couleur selon le type d'attaque."""

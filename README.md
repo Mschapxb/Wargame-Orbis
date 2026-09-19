@@ -297,6 +297,26 @@ les chercher** au lieu de se débander (mesuré: 2/30 → 30/30 victoires).
 - Les charges nécessitent un chemin libre (pas de téléportation)
 - Seule la première arme de mêlée frappe pendant la charge
 
+### Déplacement — case par case
+
+- **Chemin réel**: chaque déplacement suit un chemin case par case (8
+  directions). On ne traverse jamais un ennemi, on ne se faufile pas en
+  diagonale entre deux ennemis qui se touchent par le coin; un allié se
+  traverse, mais on ne s'arrête pas sur lui. Deux unités ne partagent jamais
+  une case. Les grosses unités (2×2, 2×4) passent là où passe **toute** leur
+  empreinte, au pas de leur case la plus lente.
+- **Arrêt au contact**: la marche s'arrête dès qu'un nouvel ennemi vient au
+  contact (se dégager reste permis, contre un coup d'opportunité).
+  *Débordement* et *Tirailleur* (traits) assouplissent la règle.
+- **Colonnes fluides**: une case libérée par un allié est reprise dans le
+  même round, après son départ.
+- **Relève**: une unité de mêlée fatiguée au contact échange sa place avec
+  une alliée fraîche collée à elle et hors combat, sans coup d'opportunité.
+- **Formations**: le chef de bloc (repère virtuel du premier rang) contourne
+  les obstacles; chaque membre garde son décalage autour de lui.
+- **Au survol**: le chemin suivi pendant le round et les cases où l'unité
+  peut s'arrêter au prochain (mêmes règles que le moteur).
+
 ### Orientation — de face, de flanc, de dos
 
 Chaque unité regarde dans une direction (chevron sur son anneau). Elle se
@@ -308,6 +328,11 @@ marche; un fuyard tourne le dos. Au déploiement, les armées se font face.
 | **De face** (±67°) | — | — |
 | **De flanc** | -1 au toucher | — |
 | **De dos** | -1 au toucher, sauvegarde -1, choc (ébranlement) | sauvegarde -1 (le bouclier est devant) |
+
+**Pivoter a un prix**: tourner jusqu'à 90° est gratuit; un demi-tour coûte une
+case de mouvement (une unité qui a déjà tout marché ne pivote que de 90°).
+Reculer sans se retourner coûte le double par case: l'unité choisit le moins
+cher entre reculer face à l'ennemi et faire demi-tour.
 
 Une troupe qui se retourne vers un nouvel agresseur présente son dos à
 l'ancien: prendre un ennemi à deux, ou le déborder, devient payant. La mêlée
@@ -397,6 +422,8 @@ est recalculée à chaque lecture (`Unit.sauvegarde`).
 | **Peur / Effroi / Terreur** | aura de 4 cases: -1 / -2 / -3 bravoure aux ennemis tant qu'ils y restent |
 | **Intimidant** | un ennemi au contact doit réussir un test de moral pour frapper |
 | **Immunité mentale** | insensible à la peur |
+| **Débordement** | n'est pas arrêté en passant au contact (cavalerie); tout coup d'opportunité sur lui touche à -1 |
+| **Tirailleur (N)** | peut encore faire N cases (1 par défaut) après être entré au contact |
 | **Régénération (N)** | regagne N % de ses PV max par round (10 par défaut); peut se relever |
 | **Vengeance de sang (N)** | peut renvoyer à l'attaquant le coup reçu |
 | **Munitions (N)** | N volées de tir (10 par défaut) |
@@ -528,6 +555,7 @@ Chaque suite reste un script autonome:
 
 ```bash
 python src/test_facing.py                   # orientation: arcs, modificateurs, rotation, IA
+python src/test_deplacement.py              # déplacement: chemins, contact, relève, pivot, formations
 python src/test_endurance.py                # munitions et fatigue
 python src/test_weather.py                  # météo: règles, feu, menu, rendu
 python src/test_map_screen.py               # écran carte: graine, aperçu, avantage de terrain

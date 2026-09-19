@@ -176,6 +176,145 @@ def test_echange_de_places_bloque_sans_chevauchement():
 
 
 @test
+def test_traits_de_contact_lus_depuis_la_bibliotheque():
+    import unit_library as ul
+    cav = ul.make_unit("Armée Orlandar", "Cavalier covaliir")
+    ecl = ul.make_unit("Armée Skaldienne", "Eclaireur")
+    inf = ul.make_unit("Armée Skaldienne", "Infanterie régulière")
+    assert cav.contact_breakthrough and cav.contact_slip == 0
+    assert ecl.contact_slip == 1 and not ecl.contact_breakthrough
+    assert not inf.contact_breakthrough and inf.contact_slip == 0
+
+
+@test
+def test_debordement_n_est_pas_arrete_au_contact():
+    bf = flat_bf()
+    u = soldier((2, 5), vitesse=8)
+    u.contact_breakthrough = True
+    foe = soldier((6, 4))
+    b = Sides(bf, [u], [foe])
+    path = bf.a_star_path((2, 5), (9, 5), u, b)
+    assert bf._advance_along(u, path, u.vitesse, set(), b) == (9, 5)
+
+
+@test
+def test_tirailleur_fait_une_case_de_plus_au_contact():
+    bf = flat_bf()
+    u = soldier((2, 5), vitesse=8)
+    foe = soldier((6, 4))
+    b = Sides(bf, [u], [foe])
+    path = bf.a_star_path((2, 5), (9, 5), u, b)
+    stop = bf._advance_along(u, path, u.vitesse, set(), b)
+    u.contact_slip = 1
+    slip = bf._advance_along(u, path, u.vitesse, set(), b)
+    assert path.index(slip) == path.index(stop) + 1, (stop, slip, path)
+
+
+@test
+def test_debordement_paie_un_coup_d_opportunite_plus_dur():
+    import combat
+    cav = soldier((5, 5))
+    inf = soldier((6, 5))
+    arme = inf.armes[0]
+    normal = combat.attack_profile(inf, cav, arme, kind="opportunity")
+    cav.contact_breakthrough = True
+    dur = combat.attack_profile(inf, cav, arme, kind="opportunity")
+    assert dur.toucher == normal.toucher - 1
+
+
+@test
+def test_reculer_coute_double_ou_demi_tour():
+    bf = flat_bf()
+    u = soldier((10, 5), vitesse=6)
+    u.facing = (1.0, 0.0)                       # regarde vers l'est
+    b = Sides(bf, [u], [soldier((19, 11))])
+    # 1 case vers l'arrière: reculer (2) = demi-tour (1+1) → on recule, face à l'est
+    assert bf._walk_costs(u, [(9, 5)]) == ([2.0], False)
+    # 2 cases: demi-tour (1+1+1 = 3) < reculer (2+2 = 4)
+    costs, turned = bf._walk_costs(u, [(9, 5), (8, 5)])
+    assert turned and sum(costs) == 3.0
+    # 5 cases vers l'arrière: demi-tour (1) puis 5 pas = 6 < reculer (10)
+    far = [(9 - i, 5) for i in range(5)]
+    costs, turned = bf._walk_costs(u, far)
+    assert turned and costs[0] == 2.0 and sum(costs) == 6.0
+    assert bf._walk_costs(u, [(11, 5), (12, 5)]) == ([1.0, 1.0], False)
+    assert bf._advance_along(u, far, u.vitesse, set(), b) == (5, 5)
+
+
+@test
+def test_demi_tour_sur_place_coute_une_case():
+    import facing
+    u = soldier((5, 5), vitesse=4)
+    u.facing = (1.0, 0.0)
+    facing.turn_toward(u, (1, 5))               # derrière lui
+    assert u.facing[0] < -0.9 and u._cells_moved == 1
+    v = soldier((5, 5), vitesse=4)
+    v.facing = (1.0, 0.0)
+    v._cells_moved = 4                          # a déjà tout marché
+    facing.turn_toward(v, (1, 5))
+    assert abs(v.facing[0]) < 1e-9 and abs(v.facing[1]) == 1.0   # quart de tour seulement
+    w = soldier((5, 5), vitesse=4)
+    w.facing = (1.0, 0.0)
+    w._cells_moved = 4
+    facing.turn_toward(w, (5, 9))               # 90°: gratuit
+    assert w.facing == (0.0, 1.0) and w._cells_moved == 4
+
+
+@test
+def test_releve_la_fraiche_prend_la_place_de_la_lasse():
+    bf = flat_bf()
+    tired, fresh = soldier((6, 5)), soldier((5, 5))
+    foe = soldier((7, 5))
+    tired.fatigue = 4
+    b = Sides(bf, [tired, fresh], [foe])
+    reserved, moves = set(), {}
+    taken = Battle._plan_reliefs(b, [tired, fresh, foe], reserved, moves)
+    assert taken == {id(tired), id(fresh)}
+    assert moves == {tired: (5, 5), fresh: (6, 5)}
+    order = Battle._dependency_order(b, list(moves.items()))
+    assert {u for u, _ in order} == {tired, fresh}
+    for u, dest in order:
+        bf.move_unit(u, dest)
+    assert bf.units[(6, 5)] is fresh and bf.units[(5, 5)] is tired
+
+
+@test
+def test_pas_de_releve_si_la_fraiche_est_deja_au_contact():
+    bf = flat_bf()
+    tired, busy = soldier((6, 5)), soldier((6, 6))
+    tired.fatigue = 4
+    b = Sides(bf, [tired, busy], [soldier((7, 5)), soldier((7, 6))])
+    assert Battle._plan_reliefs(b, [tired, busy], set(), {}) == set()
+
+
+@test
+def test_zone_atteignable_respecte_ennemis_et_contact():
+    bf = flat_bf()
+    u = soldier((3, 5), vitesse=6)
+    b = Sides(bf, [u], enemy_wall(8, bf.height))
+    zone = bf.reachable_cells(u, b)
+    assert zone and all(x < 8 for x, _ in zone)            # la ligne ne se traverse pas
+    assert (7, 5) in zone and (6, 5) in zone
+    assert not any(bf.units.get(c) for c in zone)
+
+
+@test
+def test_chef_de_bloc_contourne_l_obstacle():
+    import formation
+    from ai_commander import CommanderAI
+    bf = flat_bf(30, 16)
+    for y in range(3, 12):
+        bf.grid[12][y] = 1                              # mur de rochers devant le bloc
+    ai = CommanderAI.__new__(CommanderAI)
+    ai.battlefield = bf
+    straight = (12.0, 7.0)                              # tombe dans le mur
+    anchor = ai._leader_anchor((8.0, 7.0), straight, (20.0, 7.0), 4)
+    assert anchor != straight and formation.walkable(bf, int(anchor[0]), int(anchor[1]))
+    # Terrain dégagé: la marche droite d'avant est conservée
+    assert ai._leader_anchor((8.0, 13.5), (12.0, 13.5), (20.0, 13.5), 4) == (12.0, 13.5)
+
+
+@test
 def test_bataille_sans_chevauchement_ni_saut():
     import unit_library as ul
     random.seed(11)

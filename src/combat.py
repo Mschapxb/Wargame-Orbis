@@ -124,6 +124,10 @@ def attack_profile(attacker, target, arme, bf=None, kind="normal", charging=Fals
         add("Depuis le rempart", TOUCHER, -1)
     if kind == "reaction":
         add("Tir de réaction", TOUCHER, 1)
+    if kind == "opportunity" and getattr(target, 'contact_breakthrough', False):
+        # Le prix du débordement: qui passe au galop le long d'une ligne
+        # lui offre son flanc
+        add("Pris en débordement", TOUCHER, -1)
     if bf is not None:
         terrain.combat_mods(bf, attacker, target, ranged, details=details)
         is_rampart = getattr(bf, 'is_rampart', None)

@@ -620,21 +620,27 @@ class Battle:
     #   RÉACTIONS — ce qui rend un tour-par-tour vivant
     # ═══════════════════════════════════════════════════════════════
 
-    def _opportunity_attacks(self, mover, new_pos, t01):
+    def _opportunity_attacks(self, mover, new_pos, t01, path=None):
         """Rupture de contact: qui se dérobe au corps à corps s'expose à un
         coup gratuit. Reculer, kiter ou fuir a désormais un prix, et la
         mêlée « mord » au lieu de laisser les unités se décoller sans
-        réaction. Retourne False si le fuyard a été abattu sur place."""
+        réaction. Retourne False si le fuyard a été abattu sur place.
+
+        Le contact se mesure sur tout le TRAJET (`path`): une cavalerie qui
+        déborde (trait Débordement) et longe une ligne sans s'y arrêter
+        s'expose au même coup que celle qui s'en dégage."""
         ox, oy = mover.position
         nx, ny = new_pos
+        trail = [(ox, oy)] + list(path[:-1] if path else [])
+        bf = self.battlefield
         for e in self.get_enemies(mover):
             if not e.is_alive or e.fleeing or e._opportunity_used:
                 continue
             if e._max_range >= 4:
                 continue  # un tireur ne retient personne au contact
             reach = min(2, e._max_range)
-            d_old = self.battlefield.unit_distance(e, mover, b_pos=(ox, oy))
-            d_new = self.battlefield.unit_distance(e, mover, b_pos=(nx, ny))
+            d_old = min(bf.unit_distance(e, mover, b_pos=c) for c in trail)
+            d_new = bf.unit_distance(e, mover, b_pos=(nx, ny))
             if d_old > reach or d_new <= d_old:
                 continue
             melee = [a for a in e.armes if a.porte <= 2]
@@ -820,12 +826,13 @@ class Battle:
             path = self.battlefield.a_star_path(unit.position, charge_pos, unit, self)
             if not path:
                 continue
-            cost = tr.path_cost(self.battlefield, unit.position, path)
+            cost = self.battlefield.footprint_path_cost(unit, unit.position, path)
             if cost > budget:
                 continue
 
             start_pos = unit.position
-            unit._move_path = (unit._move_path or [start_pos]) + list(path)
+            trail = unit._move_path or [start_pos]
+            unit._move_path = trail + [c for c in path if c != trail[-1]]
             self.battlefield.move_unit(unit, charge_pos)
             unit._cells_moved += cost
             unit.has_charged = True
@@ -1319,6 +1326,13 @@ class Battle:
         moves = {}
         bf.leaving = set()
 
+        # === Relève: les rangs tournent avant tout le reste ===
+        relieved = self._plan_reliefs(_move_pool, reserved, moves)
+        if relieved:
+            static_units = [u for u in static_units if id(u) not in relieved]
+            engaged = [u for u in engaged if id(u) not in relieved]
+            approaching = [u for u in approaching if id(u) not in relieved]
+
         for unit in static_units:
             new_pos, target = bf.compute_move(unit, self, reserved)
             unit.current_target = target
@@ -1412,6 +1426,54 @@ class Battle:
             unit.vitesse = orig_speed
         return moves
 
+    def _plan_reliefs(self, pool, reserved, moves):
+        """RELÈVE: une unité de mêlée fatiguée, au contact, échange sa place
+        avec une alliée fraîche de même gabarit, collée à elle (diagonale
+        comprise) et hors de tout contact. L'échange est ordonné (pas de coup d'opportunité): la
+        fraîche s'avance au moment où la lasse recule. Les rangs tournent
+        au lieu de laisser le premier se faire tailler en pièces épuisé.
+        Renvoie les id des unités engagées dans une relève."""
+        bf = self.battlefield
+        taken = set()
+        for tired in pool:
+            if (id(tired) in taken or not tired.is_alive or tired.fleeing
+                    or tired._max_range >= 4 or not tired.tired):
+                continue
+            foes = [e for e in self.get_enemies(tired) if e.is_alive]
+            front = [e for e in foes if bf.unit_distance(tired, e) <= 1]
+            if not front:
+                continue
+            dims = bf.get_unit_dims(tired)
+            best = None
+            for fresh in self.get_allies(tired):
+                if (fresh is tired or id(fresh) in taken or not fresh.is_alive
+                        or fresh.fleeing or fresh.vitesse <= 0 or fresh._max_range >= 4
+                        or getattr(fresh, 'is_artillery', False)
+                        or fresh.tired or fresh.fatigue + 2 > tired.fatigue
+                        or bf.get_unit_dims(fresh) != dims
+                        or not bf.footprints_touch(tired, fresh)):
+                    continue
+                if any(bf.unit_distance(fresh, e) <= 1 for e in foes):
+                    continue
+                key = (fresh.fatigue, -fresh.hp, fresh.uid)
+                if best is None or key < best[0]:
+                    best = (key, fresh)
+            if best is None:
+                continue
+            fresh = best[1]
+            a, b = tired.position, fresh.position
+            for u, dest in ((tired, b), (fresh, a)):
+                moves[u] = dest
+                reserved.update(bf._get_reserved_cells(u, dest))
+                u._relief = True
+                u._planned_path = None
+            fresh.current_target = (tired.current_target if tired.current_target in front
+                                    else front[0])
+            tired.current_target = None
+            fresh.floating_texts.append(FloatingText("Relève!", (170, 220, 255), 55))
+            taken.update((id(tired), id(fresh)))
+        return taken
+
     def _legal_move(self, unit, new_pos, reserved):
         """Destination validée par un vrai chemin case par case (cf.
         Battlefield.route_to), ou None."""
@@ -1455,7 +1517,14 @@ class Battle:
                 continue
             t01 = T_MOVE_START + (T_MOVE_END - T_MOVE_START) * (i / n_mv)
             old_pos = unit.position
-            if not self._opportunity_attacks(unit, new_pos, t01 + 0.03):
+            if new_pos == old_pos:
+                continue  # « rester » réservait la case, rien à jouer
+            planned_path = getattr(unit, '_planned_path', None)
+            if not (planned_path and planned_path[-1] == new_pos):
+                planned_path = None
+            unit._backpedal = bool(planned_path) and getattr(unit, '_planned_backpedal', False)
+            if not unit._relief and not self._opportunity_attacks(
+                    unit, new_pos, t01 + 0.03, planned_path):
                 continue  # abattu en se dérobant: il ne part pas
             # Le déplacement se compte en PAS (8 directions, comme l'A*):
             # une diagonale coûte un pas, pas deux. La distance de Manhattan
@@ -1473,10 +1542,10 @@ class Battle:
                     and planned_dest == new_pos):
                 cost = planned_cost
             else:
-                cost = tr.move_cost(self.battlefield, old_pos, new_pos)
+                cost = (max(abs(new_pos[0] - old_pos[0]), abs(new_pos[1] - old_pos[1]))
+                        * bf.footprint_step_cost(unit, old_pos, new_pos))
             unit._cells_moved += cost
-            planned_path = getattr(unit, '_planned_path', None)
-            if planned_path and planned_path[-1] == new_pos:
+            if planned_path:
                 unit._move_path = [old_pos] + list(planned_path)
             else:
                 unit._move_path = [old_pos, new_pos]
@@ -1505,6 +1574,9 @@ class Battle:
         while pending:
             now = [kv for kv in pending if clear(*kv)]
             if not now:
+                # Relève: les deux partenaires échangent d'un même geste
+                now = Battle._relief_swaps(pending)
+            if not now:
                 break
             for unit, pos in now:
                 for c in bf.get_unit_cells(unit):
@@ -1518,6 +1590,21 @@ class Battle:
             pending = [kv for kv in pending if kv not in now]
         bf.leaving = set()
         return order
+
+    @staticmethod
+    def _relief_swaps(pending):
+        """Paires de relève (échange exact de places) parmi les déplacements
+        encore bloqués. Seules les relèves planifiées échangent: toute autre
+        boucle reste sur place."""
+        at = {kv[0].position: kv for kv in pending if kv[0]._relief}
+        out = []
+        for unit, dest in pending:
+            if not unit._relief or (unit, dest) in out:
+                continue
+            other = at.get(dest)
+            if other is not None and other[1] == unit.position and other[0] is not unit:
+                out += [(unit, dest), other]
+        return out
 
     def _update_facings(self, movers):
         """Orientation après le mouvement. Au contact, on fait face à un
@@ -1534,10 +1621,13 @@ class Battle:
             else:
                 look = self._facing_target(u)
             if look is not None:
-                facing.face_unit(u, look)
-            elif id(u) in movers:
-                old_pos, new_pos = movers[id(u)]
-                d = facing.direction(old_pos, new_pos)
+                # Pivot payé: un demi-tour coûte une case (facing.turn_toward)
+                facing.turn_to_unit(u, look)
+            elif id(u) in movers and not u._backpedal:
+                # Le demi-tour éventuel est déjà compté dans le coût de la
+                # marche (Battlefield._walk_costs): on regarde où l'on va
+                path = u._move_path or list(movers[id(u)])
+                d = facing.direction(path[-2], path[-1]) if len(path) > 1 else None
                 if d is not None:
                     u.facing = d
 

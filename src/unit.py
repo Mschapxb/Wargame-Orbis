@@ -172,6 +172,13 @@ class Unit:
         self._under_fire = 0             # Traits reçus (touchés ou non)
         self._damage_prev_round = 0      # Dégâts encaissés au round précédent
         self._cells_moved = 0            # Cases parcourues dans le round
+        # Règles de contact (traits, cf. unit_library): Débordement = n'est
+        # pas arrêté au contact (mais s'expose à un coup d'opportunité plus
+        # dur); Tirailleur = N cases encore permises après l'entrée au contact
+        self.contact_breakthrough = False
+        self.contact_slip = 0
+        self._relief = False             # Relève ordonnée ce round (échange)
+        self._backpedal = False          # A reculé face à l'ennemi ce round
         self._calm_rounds = 0            # Rounds consécutifs au calme
         # Rechargement: rounds passés à réarmer après chaque tir (machines
         # de guerre). Trait "reload:N" pour le régler par unité.
@@ -276,6 +283,8 @@ class Unit:
             self._prev_position = self.position
         # Cases traversées ce round, départ compris (animation case par case)
         self._move_path = None
+        self._relief = False
+        self._backpedal = False
         self._opportunity_used = False
         self._momentum_used = False
         self._acted_this_round = False
@@ -408,7 +417,7 @@ class Unit:
                 FloatingText(facing.LABELS[arc], (255, 200, 120), 45))
         if arc == facing.REAR and self._max_range < 4 and dist <= 2:
             target._shock += 1
-        facing.face_unit(self, target)
+        facing.turn_to_unit(self, target)
 
         # Bonus de charge: appliqué une fois, à l'attaque qui suit la charge.
         # Tous les modificateurs (anti-type, rempart, tir de réaction,

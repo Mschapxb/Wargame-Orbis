@@ -24,11 +24,17 @@ def effective_role(u):
     return u.role
 
 
-def find_free_near(bf, x, y, unit, min_x=0):
+def find_free_near(bf, x, y, unit, min_x=0, back=-1):
     """Position libre la plus proche de (x, y) pour l'unité (multi-cases
-    supporté), en anneaux carrés croissants; None si la carte est pleine."""
+    supporté), en anneaux carrés croissants; None si la carte est pleine.
+
+    `back`: sens de l'arrière du camp (-1 armée 1, +1 armée 2). À distance
+    égale, on recule plutôt qu'on n'avance. Un parcours toujours ouest →
+    est reculait les tireurs de l'armée 1 et poussait ceux de l'armée 2
+    DEVANT leur infanterie."""
     for radius in range(0, max(bf.width, bf.height)):
-        for dx in range(-radius, radius + 1):
+        dxs = range(-radius, radius + 1) if back < 0 else range(radius, -radius - 1, -1)
+        for dx in dxs:
             for dy in range(-radius, radius + 1):
                 if abs(dx) != radius and abs(dy) != radius:
                     continue
@@ -45,10 +51,11 @@ def _put(bf, u, pos):
     bf.place_unit(u)
 
 
-def _place_or_nearby(bf, u, pos, min_x):
-    """Place u en pos, sinon sur la case libre la plus proche."""
+def _place_or_nearby(bf, u, pos, min_x, back=-1):
+    """Place u en pos, sinon sur la case libre la plus proche (vers
+    l'arrière du camp à distance égale)."""
     if not bf.can_place_unit(*pos, u):
-        pos = find_free_near(bf, pos[0], pos[1], u, min_x=min_x)
+        pos = find_free_near(bf, pos[0], pos[1], u, min_x=min_x, back=back)
     if pos is not None:
         _put(bf, u, pos)
 
@@ -63,7 +70,14 @@ def place_rank(bf, units, x_start, step_x, band_top, band_h, min_x=0):
     formait une file unique plus haute que la carte, et tout le monde
     finissait tassé contre le bord inférieur.
 
-    Retourne le nombre de colonnes occupées (pour décaler la suite).
+    Une unité large (cavalerie 2×2) déborde de sa colonne vers l'ARRIÈRE
+    de son camp: à l'ouest pour l'armée 1 (step_x = -1), à l'est pour
+    l'armée 2. Ancrée partout au coin haut-gauche, elle débordait vers
+    l'avant chez l'une et vers l'arrière chez l'autre: chez l'armée 2, la
+    cavalerie mordait sur la colonne des tireurs, repoussés DEVANT
+    l'infanterie (Forêt · cavalerie: 64 % pour la gauche).
+
+    Retourne la largeur occupée, en cases (pour décaler la suite).
     """
     if not units:
         return 0
@@ -82,14 +96,25 @@ def place_rank(bf, units, x_start, step_x, band_top, band_h, min_x=0):
     if cur:
         columns.append((cur, cur_h))
 
-    for ci, (col_units, col_h) in enumerate(columns):
-        x_col = max(min_x, min(bf.width - 1, x_start + ci * step_x))
+    offset = 0
+    for col_units, col_h in columns:
+        x_col = x_start + offset * step_x
         y = band_top + max(0, (band_h - col_h) // 2)
         for u in col_units:
-            h = bf.get_unit_dims(u)[1]
-            _place_or_nearby(bf, u, (x_col, max(1, min(bf.height - 1 - h, y))), min_x)
+            w, h = bf.get_unit_dims(u)
+            ax = _anchor_x(bf, x_col, w, step_x, min_x)
+            _place_or_nearby(bf, u, (ax, max(1, min(bf.height - 1 - h, y))), min_x,
+                             back=step_x)
             y += h
-    return len(columns)
+        offset += max(bf.get_unit_dims(u)[0] for u in col_units)
+    return offset
+
+
+def _anchor_x(bf, x_col, w, step_x, min_x):
+    """Ancre (coin gauche) d'une unité de largeur w dont la colonne de
+    déploiement est x_col: elle s'étend vers l'arrière de son camp."""
+    ax = x_col - (w - 1) if step_x < 0 else x_col
+    return max(min_x, min(bf.width - w, ax))
 
 
 def place_support(bf, units, x_start, step_x, band_top, band_h, min_x=0):
@@ -107,10 +132,11 @@ def place_support(bf, units, x_start, step_x, band_top, band_h, min_x=0):
     if large:
         spacing = max(2, band_h // (len(large) + 1))
         for i, u in enumerate(large):
-            h = bf.get_unit_dims(u)[1]
+            w, h = bf.get_unit_dims(u)
             ty = max(1, min(bf.height - 1 - h, band_top + spacing * (i + 1) - h // 2))
-            _place_or_nearby(bf, u, (max(min_x, x_start), ty), min_x)
-        used = 1
+            _place_or_nearby(bf, u, (_anchor_x(bf, x_start, w, step_x, min_x), ty), min_x,
+                             back=step_x)
+        used = max(bf.get_unit_dims(u)[0] for u in large)
     if normal:
         used = max(used, place_rank(bf, normal, x_start, step_x, band_top, band_h, min_x))
     return max(1, used)

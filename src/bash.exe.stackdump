@@ -15,8 +15,8 @@ Loaded modules:
 7FFF93040000 USER32.dll
 7FFF927F0000 win32u.dll
 7FFF945C0000 GDI32.dll
-7FFF92E80000 gdi32full.dll
 000210040000 msys-2.0.dll
+7FFF92E80000 gdi32full.dll
 7FFF92680000 msvcp_win.dll
 7FFF92520000 ucrtbase.dll
 7FFF94220000 advapi32.dll
