@@ -268,6 +268,26 @@ def test_avertissement_machines_sans_servants():
 
 
 @test
+def test_machines_deployees_devant_les_troupes():
+    random.seed(5)
+    a1 = ul.build_army("Armée Skaldienne", [("Infanterie régulière", 6), ("Baliste", 1)])
+    a1 += ul.build_army("Engins de siège", [("Artilleur", 2), ("Bélier", 1), ("Tour de siège", 1)])
+    b = Battle(a1, ul.build_army("Armée Skaldienne", [("Infanterie régulière", 3)]),
+               40, 30, 8, map_name="Siège")
+    bf = b.battlefield
+    machines = [u for u in b.army1 if se.is_machine(u)]
+    troops = [u for u in b.army1 if not se.is_machine(u) and getattr(u, '_attends', None) is None]
+    assert len(machines) == 3 and troops
+    front = max(u.position[0] for u in troops)
+    assert all(m.position[0] > front for m in machines),         [(m.name, m.position) for m in machines]
+    # leurs servants au contact, derrière elles
+    for u in b.army1:
+        m = getattr(u, '_attends', None)
+        if m is not None:
+            assert se._touch(bf, u, u.position, m, m.position)
+
+
+@test
 def test_batailles_completes_avec_engins():
     for name in ("Siège", "Citadelle"):
         for level in (1, 3):

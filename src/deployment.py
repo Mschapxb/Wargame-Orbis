@@ -248,6 +248,36 @@ def deploy_contingents(bf, units, base_x, step_x, min_x=0):
         cur_y += band_h + gap
 
 
+def push_machines_forward(bf, army, gap=1):
+    """Siège: les machines de l'assaillant (bélier, tour, balistes...)
+    passent DEVANT la ligne de ses troupes. Déployées dans les rangs, elles
+    butaient sur l'infanterie qui marchait devant elles (une tour 2×4 ne se
+    faufile pas entre deux files). Leurs servants les rejoignent ensuite
+    (siege_engines.gather_attendants)."""
+    import siege_engines as se
+    machines = sorted((u for u in army if se.is_machine(u) and u.position is not None),
+                      key=lambda u: u.uid)
+    troops = [u for u in army if not se.is_machine(u) and u.position is not None]
+    if not machines or not troops:
+        return
+    front = max(u.position[0] + bf.get_unit_dims(u)[0] - 1 for u in troops) + 1 + gap
+    for m in machines:
+        w, h = bf.get_unit_dims(m)
+        mx, my = m.position
+        bf.remove_unit(m)
+        spot = None
+        for dx in range(0, 4):
+            for dy in sorted(range(-bf.height, bf.height), key=lambda d: (abs(d), d)):
+                pos = (front + dx, my + dy)
+                if 0 < pos[1] and pos[1] + h < bf.height and bf.can_place_unit(*pos, m):
+                    spot = pos
+                    break
+            if spot:
+                break
+        m.position = spot or (mx, my)
+        bf.place_unit(m)
+
+
 # ─── Siège: garnison de l'enceinte extérieure ───
 
 def _rampart_rows(bf, wall_x, gate_zone, gate_center):

@@ -101,6 +101,9 @@ class Unit:
     # ou poussée ce round (cf. siege_engines.assign_attendants)
     artilleur = False
     _attends = None
+    # Garnison d'une place (défenseur de siège): en Citadelle, elle se fait
+    # ouvrir ses propres portes (cf. Battlefield.gate_cells_open_for)
+    garrison = False
 
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
                  armes=None, spells=None, special=None, role="front",

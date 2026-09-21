@@ -503,7 +503,9 @@ class CommanderAI:
                 self._try_close_gates(battle)
             elif self.posture == "fall_back":
                 self._fall_back_rounds += 1
-                bf.open_ring_gates(bf.active_ring + 1)
+                # Plus besoin d'ouvrir le donjon à tout le monde: la garnison
+                # se fait ouvrir ses portes pour elle seule (Battlefield.
+                # gate_cells_open_for) — l'assaillant ne s'y engouffre plus
                 if not self._rearguard:
                     wx = bf.wall_x
                     melee = sorted((u for u in alive

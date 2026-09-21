@@ -130,7 +130,7 @@ def test_bascule_quand_l_assaillant_est_passe():
 
 
 @test
-def test_repli_ouvre_le_donjon_et_designe_l_arriere_garde():
+def test_repli_vers_le_donjon_et_designe_l_arriere_garde():
     b = citadel(dfd={"Infanterie régulière": 6, "Arbaletrier régulier": 3})
     bf = b.battlefield
     cmd = b.commander2
@@ -143,7 +143,14 @@ def test_repli_ouvre_le_donjon_et_designe_l_arriere_garde():
             bf.move_unit(u, pos)
     cmd.issue_orders(b)
     assert cmd.posture == "fall_back", cmd.posture
-    assert all(g in bf.open_gate_cells for g in bf.rings[1]['gates'])
+    # Le donjon reste FERMÉ à l'assaillant: la garnison se fait ouvrir ses
+    # portes pour elle seule (Battlefield.gate_cells_open_for)
+    keep = bf.rings[1]['gates']
+    assert not any(g in bf.open_gate_cells for g in keep)
+    defender = next(u for u in b.army2 if u.is_alive)
+    attacker = next(u for u in b.army1 if u.is_alive)
+    assert all(g in bf.gate_cells_open_for(defender) for g in keep)
+    assert not any(g in bf.gate_cells_open_for(attacker) for g in keep)
     assert cmd._rearguard
     kinds = {u._tactical_order.order_type for u in b.army2 if u.is_alive}
     assert "withdraw" in kinds, kinds

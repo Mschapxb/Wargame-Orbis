@@ -75,8 +75,9 @@ def test_tour_sur_le_chemin_de_ronde_de_l_enceinte_exterieure():
         for w, h in ((40, 30), (60, 40)):
             random.seed(2)
             _g, d = maps.generate_map(name, w, h, {'fortification': 2})
-            assert len(d['towers']) == 1, (name, w, h)
-            t = d['towers'][0]
+            outer = [t for t in d['towers'] if t['ring'] == 0]
+            assert len(outer) == 1, (name, w, h)
+            t = outer[0]
             ramparts = set(map(tuple, d['ramparts']))
             assert all(c in ramparts for c in t['cells']), (name, w, h)
             wx = (d.get('rings') or [{'wall_x': d['wall_x']}])[0]['wall_x']
@@ -101,7 +102,7 @@ def test_niveau_1_sans_baliste_de_tour():
 
 @test
 def test_baliste_de_tour_posee_et_immobile():
-    for name in maps.SIEGE_MAPS:
+    for name in ("Siège",):
         b = siege(2, name)
         bf = b.battlefield
         (crew,) = crews(b)
@@ -166,6 +167,32 @@ def test_citadelle_tombe_malgre_la_baliste_fixe():
                                for y in range(1, bf.height - 1) if bf.can_place_unit(x, y, u)))
             bf.place_unit(u)
     assert b._check_ring_fall() and bf.active_ring == 1
+
+
+@test
+def test_citadelle_balistes_sur_le_donjon_selon_le_niveau():
+    for level, keep_towers in ((1, 0), (2, 1), (3, 2)):
+        b = siege(level, "Citadelle")
+        bf = b.battlefield
+        keep = [t for t in bf.towers if t['ring'] == 1]
+        assert len(keep) == keep_towers, (level, len(keep))
+        kx = bf.rings[1]['wall_x']
+        for t in keep:
+            assert all(kx < c[0] <= kx + 2 for c in t['cells'])
+            gun = next(u for u in crews(b) if u.position == t['anchor'])
+            assert sum(1 for s in servants(b) if s._attends is gun) == 2
+        assert len(crews(b)) == (0 if level == 1 else 1 + keep_towers)
+
+
+@test
+def test_portee_des_armes_de_siege_allongee():
+    bal = ul.make_unit("Armée Skaldienne", "Baliste")
+    assert bal.armes[0].porte == 18 + ul.SIEGE_RANGE_BONUS
+    assert bal.armes[0].base_porte == bal.armes[0].porte
+    tower = next(u for u in siege(2).army2 if u.is_artillery)
+    assert tower.armes[0].porte == 18 + ul.SIEGE_RANGE_BONUS
+    xbow = ul.make_unit("Armée Skaldienne", "Arbaletrier régulier")
+    assert xbow._max_range < 18, "les armes ordinaires ne changent pas"
 
 
 # ── Porte piégée ──

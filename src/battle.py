@@ -298,6 +298,10 @@ class Battle:
         self.army2_roster.extend(crews)
         self.army2_initial_size += len(crews)
         self._refresh_army_sets()
+        if bf.is_siege:
+            deployment.push_machines_forward(bf, self.army1)   # machines devant les troupes
+            for u in self.army2:
+                u.garrison = True
         siege_engines.gather_attendants(self)     # servants au contact de leur machine
         factor = bf.siege_data.get('garrison_ammo', 1)
         if factor > 1:

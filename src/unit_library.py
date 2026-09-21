@@ -519,6 +519,11 @@ UNIT_DATABASE = {
 #                     FONCTIONS DE CRÉATION
 # ═══════════════════════════════════════════════════════════════
 
+# Portée ajoutée aux armes de tir des unités « Artillerie » (baliste 18 → 23,
+# scorpion 13 → 18, catapulte 24 → 29, baliste de tour comprise)
+SIEGE_RANGE_BONUS = 5
+
+
 def _build_arme(arme_tuple):
     """Crée un objet Arme depuis un tuple (nom, portée, attaques, toucher, blesser, perf, dégâts)."""
     nom, portee, nb_att, toucher, blesser, perf, degats = arme_tuple
@@ -576,6 +581,13 @@ def _traits_to_special(traits):
 def create_unit(unit_def, army_color):
     """Crée un objet Unit depuis un dict de définition."""
     armes = [_build_arme(a) for a in unit_def["armes"]]
+    if unit_def.get("unit_type") == "Artillerie":
+        # Armes de siège à distance (baliste, scorpion, catapulte): portée
+        # allongée, cf. SIEGE_RANGE_BONUS
+        for a in armes:
+            if a.porte >= 4:
+                a.porte += SIEGE_RANGE_BONUS
+                a.range = a.base_porte = a.porte
 
     unit = Unit(
         special=_traits_to_special(unit_def.get("traits", [])),

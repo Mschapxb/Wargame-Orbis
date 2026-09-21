@@ -166,6 +166,26 @@ class Battlefield:
         elif self.rings:
             self.open_gate_cells.difference_update(self.rings[self.active_ring]['gates'])
 
+    def gate_cells_open_for(self, unit):
+        """Cases de porte franchissables pour `unit` ce round: les portes
+        ouvertes, plus — en Citadelle — les portes intactes que la garnison
+        se fait ouvrir un instant pour ELLE SEULE:
+          • portes des enceintes intérieures encore tenues (le donjon):
+            dans les deux sens, pour circuler entre basse-cour et donjon;
+          • porte de l'enceinte assaillie: seulement pour RENTRER (une
+            unité de la garnison restée dehors).
+        L'assaillant ne passe jamais une porte intacte et fermée."""
+        base = self.open_gate_cells
+        if (unit is None or not getattr(unit, 'garrison', False) or len(self.rings) < 2
+                or unit.position is None):
+            return base
+        cells = set(base)
+        for i in range(self.active_ring, len(self.rings)):
+            ring = self.rings[i]
+            if i > self.active_ring or unit.position[0] <= ring['wall_x']:
+                cells.update(ring['gates'])
+        return cells
+
     def open_gates(self):
         """Les défenseurs ouvrent les portes de l'enceinte active (sortie).
         Tout le monde passe."""
@@ -215,6 +235,14 @@ class Battlefield:
         """
         sx, sy = shooter.position
         tx, ty = target.position
+        # Tour du donjon (enceinte intérieure): le mur extérieur, encore
+        # tenu, lui masque la campagne; elle ne bat que la basse-cour
+        # (sinon ses balistes pilonnaient l'approche: Citadelle N2 avec tour
+        # de siège, assaillant 39 % → 8 %)
+        if self.tower_cells and (sx, sy) in self.tower_cells and self.rings:
+            ring = next((t['ring'] for t in self.towers if (sx, sy) in t['cells']), 0)
+            if ring > self.active_ring and tx <= self.wall_x:
+                return False
         # Une tour de siège tire de son étage supérieur, à hauteur du rempart
         tower_shot = getattr(shooter, 'siege_engine', None) == "tower"
         if (self.walls or self.gate_hp) and (tower_shot or self.is_rampart(sx, sy)
@@ -391,7 +419,8 @@ class Battlefield:
             return set()
         enemy_cells, ally_cells = self._occupancy_split(unit, battle)
         w, h = self.get_unit_dims(unit)
-        check = self._footprint_checker(w, h, enemy_cells, ally_cells, set())
+        check = self._footprint_checker(w, h, enemy_cells, ally_cells, set(),
+                                        self.gate_cells_open_for(unit))
         foes = [e for e in battle.get_enemies(unit) if e.is_alive and e.position is not None]
         start = unit.position
         stop_at_contact = not unit.fleeing and not getattr(unit, 'contact_breakthrough', False)
@@ -557,13 +586,15 @@ class Battlefield:
             (enemy_cells if id(occ) in foes else ally_cells).add(cell)
         return enemy_cells, ally_cells
 
-    def _footprint_checker(self, w, h, enemy_cells, ally_cells, reserved):
+    def _footprint_checker(self, w, h, enemy_cells, ally_cells, reserved, open_cells=None):
         """Fonction mémoïsée (x, y) → None si l'empreinte w×h ancrée en
         (x, y) est infranchissable, sinon (coût de terrain, en hauteur,
         chevauche un allié). Le terrain le plus lent de l'empreinte fixe le
         coût: un bloc de cavalerie avance au pas de sa case la plus boueuse."""
         grid, width, height = self.grid, self.width, self.height
-        gate_hp, open_cells = self.gate_hp, self.open_gate_cells
+        gate_hp = self.gate_hp
+        if open_cells is None:
+            open_cells = self.open_gate_cells
         terr = self.terrain
         fires = getattr(self, 'fires', None)
         memo = {}
@@ -639,7 +670,7 @@ class Battlefield:
         width = self.width
         height = self.height
         gate_hp = self.gate_hp
-        open_cells = self.open_gate_cells
+        open_cells = self.gate_cells_open_for(unit)   # garnison: portes à elle
         reserved = reserved_positions
         # Lu une seule fois ici, valable pour tout cet appel (le terrain ne
         # change jamais en cours de bataille). Pas de cache d'instance: si
@@ -670,7 +701,7 @@ class Battlefield:
         uw, uh = self.get_unit_dims(unit)
         big = uw > 1 or uh > 1
         footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
-                                              reserved) if big else None
+                                              reserved, open_cells) if big else None
         # Objectif lui-même infranchissable (ennemi, case réservée, obstacle):
         # l'A* fouillait jusqu'au plafond de nœuds avant d'abandonner — la
         # moitié du temps de calcul des grandes cartes (178×64). On le sait
@@ -834,6 +865,7 @@ class Battlefield:
         height = self.height
         units_dict = self.units
         gate_hp_dict = self.gate_hp
+        open_for_unit = self.gate_cells_open_for(unit)
         terr = self.terrain
 
         best_priority = None
@@ -864,7 +896,7 @@ class Battlefield:
                 cell = grid[px][py]
                 if cell == 1 or cell == 2:
                     continue
-                if cell == 3 and (px, py) not in self.open_gate_cells and gate_hp_dict.get((px, py), 0) > 0:
+                if cell == 3 and (px, py) not in open_for_unit and gate_hp_dict.get((px, py), 0) > 0:
                     continue
                 if terr is not None and tr.MOVE[terr[px][py]] is None:
                     continue
@@ -1413,7 +1445,9 @@ class Battlefield:
         """Case praticable, et vide — ou tenue par `unit` elle-même, ou par
         une unité qui a déjà prévu d'en partir ce round (cf. `leaving`)."""
         if not self.is_valid(x, y):
-            return False
+            if not (0 <= x < self.width and 0 <= y < self.height and self.grid[x][y] == 3
+                    and (x, y) in self.gate_cells_open_for(unit)):
+                return False
         occ = self.units.get((x, y))
         return occ is None or occ is unit or id(occ) in self.leaving
 
