@@ -1,11 +1,11 @@
 {
   "nom": "Eryshalae",
-  "deplacement": 4,
-  "blessure": 20,
+  "deplacement": 6,
+  "blessure": 100,
   "bravoure": 5,
   "sauvegarde": 2,
   "role": "mid",
-  "size": 1,
+  "size": 10,
   "unit_type": "Héros",
   "armes": [
     [
@@ -14,8 +14,17 @@
       10,
       2,
       2,
-      -2,
+      0,
       "4"
+    ],
+    [
+      "Toucher Chaotique",
+      1,
+      5,
+      3,
+      1,
+      0,
+      "10"
     ]
   ],
   "traits": [
