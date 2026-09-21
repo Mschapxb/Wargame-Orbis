@@ -23,6 +23,8 @@ MISS, NO_WOUND, SAVED, HIT = "miss", "no_wound", "saved", "hit"
 NO_SAVE = 7
 
 TOUCHER, BLESSER, SAVE, DEGATS = "toucher", "blesser", "save", "degats"
+# Pousseur au contact de son engin de siège: abrité des tirs (sauvegarde)
+ENGINE_COVER = 2
 
 
 # ── Seuils et dés ──
@@ -131,11 +133,20 @@ def attack_profile(attacker, target, arme, bf=None, kind="normal", charging=Fals
     if bf is not None:
         terrain.combat_mods(bf, attacker, target, ranged, details=details)
         is_rampart = getattr(bf, 'is_rampart', None)
-        if (is_rampart is not None and target.position is not None
+        if (ranged and is_rampart is not None and target.position is not None
                 and is_rampart(*target.position)
                 and getattr(attacker, 'siege_engine', None) != "tower"):
-            # (la tour de siège tire à hauteur du chemin de ronde)
+            # Le parapet arrête les projectiles, pas une lame au contact (en
+            # mêlée sur le chemin de ronde — passerelle d'une tour de siège —
+            # deux unités devenaient intouchables: nuls à la limite de rounds).
+            # La tour de siège tire à hauteur du chemin de ronde.
             add("Cible sur le rempart", SAVE, -2)
+        engine = getattr(target, '_attends', None)
+        if (ranged and engine is not None and engine.is_alive
+                and getattr(engine, 'siege_engine', None) and target.position is not None
+                and engine.position is not None and bf.footprints_touch(target, engine)):
+            # Pousseur sous le toit du bélier ou derrière le beffroi
+            add("Abrité par l'engin", SAVE, -ENGINE_COVER)
 
     sums = {TOUCHER: 0, BLESSER: 0, SAVE: 0, DEGATS: 0}
     for _, stat, delta in details:

@@ -32,6 +32,9 @@ PUSHERS_NEEDED = {RAM: 2, TOWER: 2}
 # Une tour ne s'accole pas à moins de ces rangées d'une porte: elle
 # boucherait l'approche du bélier et de l'infanterie
 TOWER_GATE_CLEARANCE = 3
+# Un engin servi qui n'avance plus depuis N rounds (chemin bouché) libère
+# ses pousseurs: ils valent mieux au combat que figés à côté d'une épave
+ENGINE_STALL_ROUNDS = 4
 
 GRID_RAMPART, GRID_STAIRS, GRID_WALL = 4, 5, 2
 
@@ -109,6 +112,8 @@ def engine_active(bf, unit):
     """Un engin de contact a-t-il encore besoin de ses pousseurs ?"""
     if not unit.is_alive or unit.docked or not bf.is_siege:
         return False
+    if getattr(unit, '_stalled', 0) >= ENGINE_STALL_ROUNDS:
+        return False                     # bloqué: on l'abandonne
     goal = engine_goal(bf, unit)
     if unit.siege_engine == RAM and not passage_open(bf):
         return True                      # il marche vers la porte ou la bat
@@ -284,10 +289,12 @@ def gate_distance(bf, unit, gate):
 #                     TOUR DE SIÈGE
 # ═══════════════════════════════════════════════════════════════
 
-def tower_site_ok(bf, anchor, clearance=TOWER_GATE_CLEARANCE):
+def tower_site_ok(bf, anchor, clearance=TOWER_GATE_CLEARANCE, unit=None):
     """Un emplacement d'accostage (coin haut-gauche 2×4) est-il valable ?
     Mur intact sur les 4 rangées, chemin de ronde derrière la passerelle,
-    cases de la tour praticables, à `clearance` rangées des portes."""
+    cases de la tour praticables et libres de tout AUTRE engin (un bélier
+    rangé contre le mur bloquait la tour à jamais), à `clearance` rangées
+    des portes."""
     wall_x = bf.wall_x
     x0, y0 = anchor
     if wall_x is None or x0 != wall_x - 2 or y0 < 1 or y0 + 3 > bf.height - 2:
@@ -297,6 +304,10 @@ def tower_site_ok(bf, anchor, clearance=TOWER_GATE_CLEARANCE):
             return False
         if not (bf.is_valid(x0, y) and bf.is_valid(x0 + 1, y)):
             return False
+        for x in (x0, x0 + 1):
+            occ = bf.units.get((x, y))
+            if occ is not None and occ is not unit and is_engine(occ):
+                return False
     if not all((wall_x + 1, y) in bf.ramparts for y in (y0 + 1, y0 + 2)):
         return False
     return not any(y0 - clearance <= gy <= y0 + 3 + clearance
@@ -310,7 +321,7 @@ def tower_dock_site(bf, unit):
     if wall_x is None:
         return None
     kept = getattr(unit, '_dock_site', None)
-    if kept is not None and tower_site_ok(bf, kept, 0):
+    if kept is not None and tower_site_ok(bf, kept, 0, unit):
         return kept
     uy = unit.position[1] + 1.5
     best = None
@@ -318,7 +329,7 @@ def tower_dock_site(bf, unit):
     # 40×30: deux portes, aucun tronçon à 3 rangées de l'une et de l'autre)
     for clearance in range(TOWER_GATE_CLEARANCE, -1, -1):
         sites = [(wall_x - 2, y0) for y0 in range(1, bf.height - 4)
-                 if tower_site_ok(bf, (wall_x - 2, y0), clearance)]
+                 if tower_site_ok(bf, (wall_x - 2, y0), clearance, unit)]
         if sites:
             best = min(sites, key=lambda a: (abs(a[1] + 1.5 - uy), a[1]))
             break
@@ -329,7 +340,7 @@ def tower_dock_site(bf, unit):
 def tower_docked(bf, unit):
     """La tour est-elle à son poste d'accostage ?"""
     site = getattr(unit, '_dock_site', None)
-    return site is not None and unit.position == site and tower_site_ok(bf, site, 0)
+    return site is not None and unit.position == site and tower_site_ok(bf, site, 0, unit)
 
 
 def dock_tower(bf, unit):
@@ -402,6 +413,6 @@ def engine_move(bf, unit, battle, reserved_positions):
     if goal is None or goal == unit.position:
         return None, target
     path = bf.a_star_path(unit.position, goal, unit, battle, reserved_positions, partial=True)
-    if not path:
-        return None, target
-    return bf._advance_along(unit, path, unit.vitesse, reserved_positions, battle), target
+    step = bf._advance_along(unit, path, unit.vitesse, reserved_positions, battle) if path else None
+    unit._stalled = 0 if step not in (None, unit.position) else getattr(unit, '_stalled', 0) + 1
+    return step, target

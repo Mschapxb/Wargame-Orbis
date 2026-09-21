@@ -161,9 +161,11 @@ def test_tour_tire_a_hauteur_du_rempart():
     assert bf.has_line_of_fire(tower, archer)
     prof = combat.attack_profile(tower, archer, tower.armes[0], bf)
     assert not any("rempart" in d[0].lower() for d in prof.details)
-    inf = b.army1[0]
-    prof_inf = combat.attack_profile(inf, archer, inf.armes[0], bf)
-    assert any("rempart" in d[0].lower() for d in prof_inf.details)
+    # Un tireur au sol, lui, subit le bonus de rempart de sa cible
+    xbow = ul.build_army("Armée Skaldienne", [("Arbaletrier régulier", 1)])[0]
+    xbow.position = tower.position
+    prof_x = combat.attack_profile(xbow, archer, xbow.armes[0], bf)
+    assert any("rempart" in d[0].lower() for d in prof_x.details)
 
 
 @test

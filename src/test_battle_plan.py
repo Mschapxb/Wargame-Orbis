@@ -102,10 +102,16 @@ def test_sans_plans_aucun_role():
 
 @test
 def test_pas_de_plan_au_siege():
+    """Pas de plan de BATAILLE au siège: c'est un plan de siège
+    (siege_plan.py, testé par test_siege_plan.py)."""
+    from battle_plan import NAMES as FIELD_PLANS
+    from siege_plan import SiegePlan
     b = battle(CAV, "Siège", 2, 40, 30)
     for _ in range(3):
         b.simulate_round()
-    assert b.commander1.plan.kind is None and b.commander2.plan.kind is None
+    for cmd in (b.commander1, b.commander2):
+        assert isinstance(cmd.plan, SiegePlan)
+        assert cmd.plan.kind not in set(FIELD_PLANS) - {"direct"}
 
 
 # ── Marteau ──

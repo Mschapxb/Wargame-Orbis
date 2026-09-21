@@ -152,10 +152,12 @@ def test_repli_ouvre_le_donjon_et_designe_l_arriere_garde():
 @test
 def test_scenario_citadelle_se_termine():
     """Assaut fort: la bataille se termine, et l'enceinte extérieure tombe
-    dans une partie des graines (repli ou percée). La chute survient dans
-    ~15-20 % des parties (mesuré sur 40 graines): 16 graines, pas 8."""
+    dans une partie des graines (repli ou percée). Depuis les stratégies de
+    siège (réserve mobile de la garnison, cf. siege_plan.py), la chute est
+    plus rare: 3 parties sur 40 (l'assaillant gagne 33 fois sur 40, en
+    usant la garnison au goulet): 40 graines, pas 16."""
     falls, ended = 0, 0
-    for seed in range(16):
+    for seed in range(40):
         b = citadel(1000 + seed, 40, 30,
                     att={"Infanterie régulière": 10, "Arbaletrier régulier": 5, "Officier": 1},
                     dfd={"Infanterie régulière": 5, "Arbaletrier régulier": 4, "Officier": 1})
@@ -163,7 +165,7 @@ def test_scenario_citadelle_se_termine():
             b.simulate_round()
         ended += bool(b.is_battle_over())
         falls += b.battlefield.active_ring == 1
-    assert ended >= 14, ended
+    assert ended >= 36, ended
     assert falls >= 1, falls
 
 

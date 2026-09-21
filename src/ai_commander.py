@@ -33,6 +33,7 @@ import formation
 import tactics
 import structures as st
 from battle_plan import BattlePlan
+from siege_plan import SiegePlan
 import terrain as tr
 
 
@@ -155,7 +156,9 @@ class CommanderAI:
         self._known_breaches = 0        # Brèches connues (une nouvelle rouvre le choix)
         self._breach_gid = None         # Tronçon de mur visé par nos machines
         self._breach_lock = 0
-        self.plan = BattlePlan()        # Intention stratégique sur plusieurs rounds
+        # Intention stratégique sur plusieurs rounds (plan de siège sur une
+        # carte de siège: cf. siege_plan.py)
+        self.plan = SiegePlan(is_army1) if battlefield.is_siege else BattlePlan()
         self._fall_back_rounds = 0      # Rounds passés à se replier sur le donjon
         self._rearguard = set()         # id des unités qui couvrent le repli
         self._line_hold_rounds = 0      # Rounds passés à dresser la ligne
@@ -414,6 +417,8 @@ class CommanderAI:
             d -= dmin * 0.08
             if tactics.is_isolated(e, enemies, 5, 1):
                 d += 2.5 * self.ruse
+            if self.use_plans and self.battlefield.is_siege:
+                d += self.plan.target_bonus(self, e)
             d *= self.rng.uniform(0.94, 1.06)
             scored.append((d, e))
         scored.sort(key=lambda x: (-x[0], x[1].uid))
@@ -519,7 +524,7 @@ class CommanderAI:
         self._compute_formation(alive, ec)
 
         # ── Plan de bataille: l'intention qui dure (hors siège) ──
-        if self.use_plans and not is_siege:
+        if self.use_plans:
             self.plan.update(self, alive, enemies, s)
 
         # ── CONCENTRATION: ennemi scindé en deux groupes → battre en
@@ -585,7 +590,15 @@ class CommanderAI:
         bf = self.battlefield
         gates = bf.active_gates
         max_hp = sum(bf.gate_max_hp.get(g, 10) for g in gates) or 1
-        weak = sum(gates.values()) / max_hp <= 0.3 or bool(bf.active_breaches)
+        # La passerelle d'une tour de siège (2 cases) se tient: on ne lâche
+        # l'enceinte que si l'ennemi a déjà pris pied derrière le mur (sinon
+        # la garnison abandonnait l'enceinte dès l'accostage, tireurs du
+        # rempart coupés dehors: Citadelle + tour, assaillant 76 %)
+        bridges = getattr(bf, 'bridge_cells', ())
+        breaches = [b for b in bf.active_breaches if b not in bridges]
+        over = sum(1 for e in s['theirs'] if e.position[0] > bf.wall_x)
+        weak = (sum(gates.values()) / max_hp <= 0.3 or bool(breaches)
+                or (len(breaches) < len(bf.active_breaches) and over >= 2))
         pressed = any(abs(e.position[0] - bf.wall_x) <= 2 for e in s['theirs'])
         return weak and pressed
 
@@ -2000,6 +2013,17 @@ class CommanderAI:
         if inside:
             t = min(inside, key=lambda e: bf.manhattan_distance(unit.position, e.position))
             return TacticalOrder("attack", target_unit=t, priority=6)
+
+        # === Stratégie de défense: réserve mobile au point menacé (porte
+        # battue, tour qui approche, brèche) — cf. siege_plan.py ===
+        if self.use_plans:
+            po = self.plan.order_for(self, unit, enemies)
+            if po is not None:
+                if at_gate and unit._max_range < 4 and not on_ramp and any(
+                        bf.manhattan_distance(unit.position, e.position) <= 3 for e in at_gate):
+                    t = min(at_gate, key=lambda e: bf.manhattan_distance(unit.position, e.position))
+                    return TacticalOrder("attack", target_unit=t, priority=5)
+                return TacticalOrder(po[0], target_unit=po[1], target_pos=po[2], priority=po[3])
 
         # === Portes intactes: défense positionnelle ===
         if gates_intact:
