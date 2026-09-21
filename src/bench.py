@@ -39,6 +39,8 @@ SIEGE_DEF = ("Armée Skaldienne", {"Infanterie régulière": 5, "Arbaletrier ré
                                    "Officier": 1})
 MIXTE = ("Armée Skaldienne", {"Infanterie régulière": 5, "Arbaletrier régulier": 3,
                                "Officier": 1, "Mage de guerre": 1})
+# Les deux artilleurs sans lesquels une machine de tir ne sert à rien
+SERVANTS = ("Engins de siège", {"Artilleur": 2})
 
 # (libellé, carte, options de carte, armée 1, armée 2)
 SUITES = {
@@ -55,16 +57,16 @@ SUITES = {
          ("Armée Orlandar", {"Archer covaliir": 6, "Fantassin covaliir": 4})),
         ("Siege", "Siège", None, SIEGE_ATT, SIEGE_DEF),
         ("Siege baliste", "Siège", None,
-         ("Armée Skaldienne", {"Infanterie régulière": 8, "Arbaletrier régulier": 4,
-                               "Officier": 1, "Baliste": 1}),
+         [("Armée Skaldienne", {"Infanterie régulière": 8, "Arbaletrier régulier": 4,
+                                "Officier": 1, "Baliste": 1}), SERVANTS],
          SIEGE_DEF),
         ("Siege Orlandar", "Siège", None,
          ("Armée Orlandar", {"Fantassin covaliir": 8, "Archer covaliir": 4,
                              "Officier covaliir": 1}),
          SIEGE_DEF),
         ("Siege catapulte", "Siège", None,
-         ("Armée Orlandar", {"Fantassin covaliir": 8, "Archer covaliir": 4,
-                             "Officier covaliir": 1, "Catapulte covaliir": 1}),
+         [("Armée Orlandar", {"Fantassin covaliir": 8, "Archer covaliir": 4,
+                              "Officier covaliir": 1, "Catapulte covaliir": 1}), SERVANTS],
          SIEGE_DEF),
         ("Citadelle", "Citadelle", None, SIEGE_ATT, SIEGE_DEF),
         ("Foret mixte", "Forêt", None, SKALD_MIXTE, ORLANDAR_MIXTE),
@@ -89,16 +91,38 @@ SUITES = {
                           ("foret", {'biome': "Forêt", 'relief': "Plat"}))
     ],
 }
+# Niveaux de fortification (le niveau 1 = les lignes de siège de "balance")
+SUITES["fortification"] = [
+    (f"{label} N{lvl}", mapname, {'fortification': lvl}, a1, a2)
+    for lvl in (1, 2, 3)
+    for (label, mapname, _o, a1, a2) in SUITES["balance"]
+    if mapname in ("Siège", "Citadelle")
+] + [
+    # Engins de siège de l'assaillant (siege_engines.py)
+    (f"{label} {tag} N{lvl}", mapname, {'fortification': lvl},
+     [SIEGE_ATT, ("Engins de siège", engines)], SIEGE_DEF)
+    for lvl in (1, 2, 3)
+    for label, mapname in (("Siege", "Siège"), ("Citadelle", "Citadelle"))
+    for tag, engines in (("belier", {"Bélier": 1}), ("tour", {"Tour de siège": 1}),
+                         ("engins", {"Bélier": 1, "Tour de siège": 1}))
+]
 SUITES["all"] = SUITES["balance"] + SUITES["maps"]
 
 MAX_ROUNDS = 90
 
 
+def _build(spec):
+    """Armée d'une spécification (faction, {unité: nombre}), ou d'une liste
+    de telles spécifications (armée de plusieurs factions)."""
+    if isinstance(spec, list):
+        return [u for part in spec for u in _build(part)]
+    return ul.build_army(spec[0], list(spec[1].items()))
+
+
 def play(mapname, options, army1, army2, seed, width, height, weather=None):
     """Joue une bataille jusqu'au bout. Renvoie la Battle terminée."""
     random.seed(seed)
-    a1 = ul.build_army(army1[0], list(army1[1].items()))
-    a2 = ul.build_army(army2[0], list(army2[1].items()))
+    a1, a2 = _build(army1), _build(army2)
     kwargs = {'map_name': mapname, 'map_options': options}
     if weather is not None:
         kwargs['weather'] = weather

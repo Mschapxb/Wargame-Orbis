@@ -92,6 +92,13 @@ from .advantage import (  # noqa: F401
     advantage_of,
     apply_advantage,
 )
+from .fortification import (  # noqa: F401
+    GATE_HP,
+    LEVELS as FORTIFICATION_LEVELS,
+    DESCRIPTIONS as FORTIFICATION_DESCRIPTIONS,
+    apply_fortification,
+    level_of as fortification_of,
+)
 from .decor import (  # noqa: F401
     _DECOR_TABLES,
     _DESERT_SWAP,
@@ -115,8 +122,9 @@ def generate_map(map_name, width, height, options=None):
 
     options: {'biome', 'relief'} ou {'biome', 'river', 'hills'} (cf.
     resolve_options), plus 'advantage' (0/1/2 ou "Armée 1"…) et
-    'advantage_level' (cf. apply_advantage). Sans options, la carte
-    historique.
+    'advantage_level' (cf. apply_advantage), et pour un siège
+    'fortification' (1-3, cf. maps/fortification.py). Sans options, la
+    carte historique.
 
     Retourne (grid, map_data) où:
         grid: [[int]] — grille 2D (0=vide, 1=obstacle, 2=mur, 3=porte)
@@ -142,6 +150,8 @@ def generate_map(map_name, width, height, options=None):
     if side and map_name not in SIEGE_MAPS:
         apply_advantage(map_name, grid, map_data, width, height, side, level)
         opts = dict(opts, advantage=side, advantage_level=level)
+    if map_name in SIEGE_MAPS:
+        apply_fortification(map_data, fortification_of(options))
     map_data['theme'] = opts
     map_data['decor'] = generate_decor(map_name, grid, width, height,
                                        map_data.get('terrain'), opts['biome'])

@@ -688,7 +688,8 @@ def draw_gate_cell(surf, bf, x, y, cs, gate_color, bg):
             plx = px + i * cs // n_pl
             pygame.draw.rect(surf, _prop_shade(wood, v), (plx + 1, py, cs // n_pl - 1, cs))
             pygame.draw.line(surf, _prop_shade(wood, -45), (plx, py), (plx, py + cs))
-        band_step = max(6, int(cs * 1.5))
+        # Portes renforcées (fortification 2-3): bandes de fer plus serrées
+        band_step = max(6, int(cs * {2: 1.0, 3: 0.6}.get(getattr(bf, 'fortification', 1), 1.5)))
         for wy in range(py - (py % band_step), py + cs, band_step):
             by = wy + band_step // 3
             if py <= by < py + cs:
@@ -701,7 +702,7 @@ def draw_gate_cell(surf, bf, x, y, cs, gate_color, bg):
             pygame.draw.rect(surf, (96, 92, 88), (px - 2, py + cs - max(3, cs // 6), cs + 4, max(3, cs // 6)))
         # Dégâts: fissures qui apparaissent quand la porte s'affaiblit
         # (plutôt qu'une jauge par case, qui dessinait des barreaux)
-        pct = max(0.0, min(1.0, hp / 10))
+        pct = max(0.0, min(1.0, hp / max(1, bf.gate_max_hp.get((x, y), 10))))
         if pct < 0.75:
             n_cracks = 1 if pct >= 0.5 else (2 if pct >= 0.25 else 3)
             for i in range(n_cracks):
@@ -740,6 +741,108 @@ def draw_rampart_cell(surf, bf, x, y, cs):
                 pygame.draw.rect(surf, _prop_shade(base, v), (x0, y0, x1 - x0, y1 - y0))
 
 
+def draw_tower_cell(surf, bf, x, y, cs):
+    """Plateforme de tour (fortification 2-3): dalles plus sombres et
+    merlons sur le pourtour du carré 2×2."""
+    px, py = x * cs, y * cs
+    base = (92, 88, 84)
+    pygame.draw.rect(surf, base, (px, py, cs, cs))
+    half = cs // 2
+    for i, (ox, oy) in enumerate(((0, 0), (half, 0), (0, half), (half, half))):
+        v = _hash3(x * 2 + i, y, 5) % 13 - 6
+        pygame.draw.rect(surf, _prop_shade(base, v), (px + ox + 1, py + oy + 1, half - 2, half - 2))
+    cells = bf.tower_cells
+    merlon = max(2, cs // 5)
+    edge = (70, 66, 62)
+    for (dx, dy, rect) in ((0, -1, (px, py, cs, merlon)),
+                           (0, 1, (px, py + cs - merlon, cs, merlon)),
+                           (-1, 0, (px, py, merlon, cs)),
+                           (1, 0, (px + cs - merlon, py, merlon, cs))):
+        if (x + dx, y + dy) in cells:
+            continue
+        pygame.draw.rect(surf, edge, rect)
+        # Créneaux: encoches claires le long du parapet
+        horizontal = dy != 0
+        step = max(4, cs // 3)
+        for k in range(step // 2, cs, step):
+            notch = ((rect[0] + k, rect[1], max(1, step // 3), merlon) if horizontal
+                     else (rect[0], rect[1] + k, merlon, max(1, step // 3)))
+            pygame.draw.rect(surf, (128, 122, 114), notch)
+
+
+_WOOD = (122, 86, 50)
+_WOOD_DARK = (74, 50, 28)
+_HIDE = (150, 118, 84)
+
+
+def draw_siege_engine(surf, kind, rect, team_color):
+    """Silhouette d'un engin de siège vu de dessus, dans `rect` (son
+    empreinte): bélier sous son toit de peaux, beffroi à étages."""
+    x, y, w, h = rect
+    m = max(2, w // 12)
+    if kind == "ram":
+        # Toit de peaux à deux pans, poutre ferrée qui dépasse vers l'avant
+        roof = pygame.Rect(x + m, y + m, w - 2 * m, h - 2 * m)
+        pygame.draw.rect(surf, _HIDE, roof, border_radius=max(2, w // 10))
+        pygame.draw.line(surf, _WOOD_DARK, (roof.left, roof.centery), (roof.right, roof.centery),
+                         max(1, w // 16))
+        for i in range(1, 4):
+            lx = roof.left + roof.w * i // 4
+            pygame.draw.line(surf, _prop_shade(_HIDE, -30), (lx, roof.top + 2), (lx, roof.bottom - 2), 1)
+        beam_h = max(3, h // 7)
+        pygame.draw.rect(surf, _WOOD_DARK, (roof.centerx, roof.centery - beam_h // 2,
+                                            roof.w // 2 + m + 1, beam_h))
+        pygame.draw.rect(surf, (150, 150, 158), (roof.right - 1, roof.centery - beam_h // 2 - 1,
+                                                 m + 2, beam_h + 2))
+        # Roues
+        r = max(2, w // 9)
+        for (wx_, wy_) in ((roof.left + r, roof.top), (roof.right - r, roof.top),
+                           (roof.left + r, roof.bottom), (roof.right - r, roof.bottom)):
+            pygame.draw.circle(surf, _WOOD_DARK, (wx_, wy_), r)
+        border = roof
+    else:
+        # Beffroi: plate-forme crénelée, étages en retrait, pont-levis à l'avant
+        body = pygame.Rect(x + m, y + m, w - 2 * m, h - 2 * m)
+        pygame.draw.rect(surf, _WOOD, body)
+        inner = body.inflate(-body.w // 3, -body.h // 5)
+        pygame.draw.rect(surf, _prop_shade(_WOOD, 18), inner)
+        for i in range(1, 6):
+            ly = body.top + body.h * i // 6
+            pygame.draw.line(surf, _WOOD_DARK, (body.left, ly), (body.right, ly), 1)
+        merlon = max(2, w // 8)
+        for k in range(body.left, body.right, merlon * 2):
+            pygame.draw.rect(surf, _WOOD_DARK, (k, body.top, merlon, merlon))
+            pygame.draw.rect(surf, _WOOD_DARK, (k, body.bottom - merlon, merlon, merlon))
+        pygame.draw.rect(surf, _HIDE, (body.right - merlon, body.top + body.h // 4,
+                                       merlon, body.h // 2))
+        border = body
+    pygame.draw.rect(surf, (20, 16, 12), border, 1)
+    pygame.draw.rect(surf, team_color, border.inflate(4, 4), max(2, w // 16),
+                     border_radius=max(2, w // 10))
+
+
+def draw_siege_ramp_cell(surf, x, y, cs):
+    """Tour de siège accolée: charpente et planchers, praticable."""
+    px, py = x * cs, y * cs
+    pygame.draw.rect(surf, _WOOD, (px, py, cs, cs))
+    step = max(3, cs // 4)
+    for k in range(py, py + cs, step):
+        pygame.draw.line(surf, _WOOD_DARK, (px, k), (px + cs, k), 1)
+    pygame.draw.line(surf, _WOOD_DARK, (px, py), (px + cs, py + cs), max(1, cs // 12))
+    pygame.draw.rect(surf, _WOOD_DARK, (px, py, cs, cs), 1)
+
+
+def draw_bridge_cell(surf, x, y, cs):
+    """Passerelle d'une tour de siège posée sur le mur."""
+    px, py = x * cs, y * cs
+    pygame.draw.rect(surf, _prop_shade(_WOOD, 12), (px, py, cs, cs))
+    step = max(3, cs // 5)
+    for k in range(px, px + cs, step):
+        pygame.draw.line(surf, _WOOD_DARK, (k, py), (k, py + cs), 1)
+    pygame.draw.line(surf, (60, 58, 56), (px, py), (px + cs, py), max(1, cs // 10))
+    pygame.draw.line(surf, (60, 58, 56), (px, py + cs - 1), (px + cs, py + cs - 1), max(1, cs // 10))
+
+
 def draw_wall_shadows(surf, bf, cs, region=None):
     """Ombre portée des murs sur le sol côté assaillant: donne de la hauteur."""
     shade = pygame.Surface((max(2, int(cs * 0.6)), cs), pygame.SRCALPHA)
@@ -757,13 +860,13 @@ def draw_wall_shadows(surf, bf, cs, region=None):
 def gate_visual_state(bf):
     """État VISIBLE des portes: ouverte, ou niveau de fissures par case.
     Tant qu'il ne change pas, inutile de repeindre quoi que ce soit."""
-    def level(hp):
+    def level(pos, hp):
         if hp <= 0:
             return -1
-        pct = hp / 10
+        pct = hp / max(1, bf.gate_max_hp.get(pos, 10))
         return 0 if pct >= 0.75 else (1 if pct >= 0.5 else (2 if pct >= 0.25 else 3))
     return (tuple(sorted(getattr(bf, 'open_gate_cells', ()))),
-            tuple(sorted((pos, level(hp)) for pos, hp in bf.gate_hp.items())))
+            tuple(sorted((pos, level(pos, hp)) for pos, hp in bf.gate_hp.items())))
 
 
 def repaint_gates(surface, battle, cell_size, previous_state):
@@ -993,8 +1096,15 @@ def paint_region(surf, battle, cell_size, ground, x0, y0, x1, y1):
                     _draw_wall_damage(surf, x, y, cs, st.damage_level(bf, entry[1]))
             elif cell == 3:
                 draw_gate_cell(surf, bf, x, y, cs, gate_color, bg)
+            elif cell == 4 and (x, y) in getattr(bf, 'bridge_cells', ()):
+                draw_bridge_cell(surf, x, y, cs)
+            elif cell == 5 and (x, y) in getattr(bf, 'siege_ramp_cells', ()):
+                draw_siege_ramp_cell(surf, x, y, cs)
             elif cell == 4:
-                draw_rampart_cell(surf, bf, x, y, cs)
+                if (x, y) in getattr(bf, 'tower_cells', ()):
+                    draw_tower_cell(surf, bf, x, y, cs)
+                else:
+                    draw_rampart_cell(surf, bf, x, y, cs)
             elif cell == 5:
                 pygame.draw.rect(surf, (104, 98, 88), (x * cs, y * cs, cs, cs))
                 step_h = max(2, cs // 4)

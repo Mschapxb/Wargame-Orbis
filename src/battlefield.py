@@ -54,6 +54,20 @@ class Battlefield:
         self.rings = [{'wall_x': r['wall_x'], 'gates': [tuple(g) for g in r['gates']]}
                       for r in (rings or [])]
         self.active_ring = 0
+        # Fortification (cf. maps/fortification.py): tours à baliste sur le
+        # chemin de ronde, portes piégées. `trapped_gates`: cases de porte
+        # dont le piège n'a pas encore joué.
+        self.fortification = self.siege_data.get('fortification', 1)
+        self.towers = [{'anchor': tuple(t['anchor']), 'ring': t.get('ring', 0),
+                        'cells': [tuple(c) for c in t['cells']]}
+                       for t in self.siege_data.get('towers', [])]
+        self.tower_cells = {c for t in self.towers for c in t['cells']}
+        self.trapped_gates = (set(self.gate_hp) if self.siege_data.get('gate_trap')
+                              else set())
+        # Tours de siège accolées (cf. siege_engines.dock_tower): rampe et
+        # passerelle, praticables
+        self.siege_ramp_cells = set()
+        self.bridge_cells = set()
         # Portes ouvertes volontairement par les défenseurs (sortie, repli).
         # Ouvertes PAR CASE: ouvrir le donjon n'ouvre pas l'enceinte
         # extérieure. Une porte ouverte est traversable par TOUT le monde.
@@ -201,7 +215,9 @@ class Battlefield:
         """
         sx, sy = shooter.position
         tx, ty = target.position
-        if (self.walls or self.gate_hp) and (self.is_rampart(sx, sy)
+        # Une tour de siège tire de son étage supérieur, à hauteur du rempart
+        tower_shot = getattr(shooter, 'siege_engine', None) == "tower"
+        if (self.walls or self.gate_hp) and (tower_shot or self.is_rampart(sx, sy)
                                              or self.is_rampart(tx, ty)):
             return self._los_clear(sx, sy, tx, ty, elevated=True)
         if not self._los_clear(sx, sy, tx, ty):
@@ -292,6 +308,23 @@ class Battlefield:
             if attackers is not None and id(unit) in attackers:
                 return False
         return True
+
+    def is_tower(self, x, y):
+        """Case de plateforme de tour (sur le chemin de ronde)."""
+        return (x, y) in self.tower_cells
+
+    def gate_group(self, x, y):
+        """Toutes les cases du battant de porte contenant (x, y): portes
+        contiguës de la même colonne."""
+        if (x, y) not in self.gate_hp:
+            return []
+        cells = [(x, y)]
+        for step in (-1, 1):
+            ny = y + step
+            while (x, ny) in self.gate_hp:
+                cells.append((x, ny))
+                ny += step
+        return sorted(cells)
 
     def is_gate(self, x, y):
         """Retourne True si la case est une porte (intacte)."""
@@ -907,6 +940,14 @@ class Battlefield:
         unit._planned_move_dest = None
         unit._planned_path = None
         unit._planned_backpedal = False
+        import siege_engines
+        master = getattr(unit, '_attends', None)
+        if master is not None and master.is_alive and not unit.fleeing:
+            return siege_engines.attendant_move(self, unit, battle, reserved_positions)
+        if getattr(unit, 'siege_engine', None):
+            return siege_engines.engine_move(self, unit, battle, reserved_positions)
+        if siege_engines.needs_crew(unit) and not siege_engines.manned(self, battle, unit):
+            return None, None        # machine sans ses artilleurs: ni tir ni marche
         if unit.fleeing:
             return self._flee_move(unit, battle, reserved_positions)
         decision = self._artillery_decision(unit, battle)

@@ -356,8 +356,12 @@ def siege_battle(seed=1, attackers=None, defenders=None):
     random.seed(seed)
     att = attackers or ("Armée Skaldienne", {"Infanterie régulière": 3})
     dfd = defenders or ("Armée Skaldienne", {"Infanterie régulière": 3})
-    return Battle(ul.build_army(att[0], list(att[1].items())),
-                  ul.build_army(dfd[0], list(dfd[1].items())), 40, 30, 8, map_name="Siège")
+    a1 = ul.build_army(att[0], list(att[1].items()))
+    # Chaque machine de tir vient avec ses deux artilleurs (siege_engines)
+    n_machines = sum(1 for u in a1 if u.is_artillery)
+    if n_machines:
+        a1 += ul.build_army("Engins de siège", [("Artilleur", 2 * n_machines)])
+    return Battle(a1, ul.build_army(dfd[0], list(dfd[1].items())), 40, 30, 8, map_name="Siège")
 
 
 @test

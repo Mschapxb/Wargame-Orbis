@@ -17,6 +17,7 @@ import sys
 import pygame
 
 import maps as maps_mod
+import siege_engines
 import weather as weather_mod
 import theme as T
 from menu import (BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, TEXT, TEXT_BRIGHT, TEXT_DIM, draw_button, draw_text)
@@ -40,6 +41,7 @@ class MapSetup:
         self.weather = weather_mod.CLEAR
         self.advantage = maps_mod.ADVANTAGE_NONE
         self.level = maps_mod.ADVANTAGE_LEVELS[0]
+        self.fortification = maps_mod.FORTIFICATION_LEVELS[0]
         self.seed = _SEEDS.randrange(1, 1_000_000)
 
     def set_map(self, name):
@@ -65,6 +67,8 @@ class MapSetup:
         if self.advantage_allowed and self.advantage != maps_mod.ADVANTAGE_NONE:
             opts['advantage'] = self.advantage
             opts['advantage_level'] = self.level
+        if not self.advantage_allowed and self.fortification != maps_mod.FORTIFICATION_LEVELS[0]:
+            opts['fortification'] = maps_mod.fortification_of({'fortification': self.fortification})
         return opts
 
     def key(self):
@@ -112,6 +116,9 @@ def describe_setup(setup, battle):
     parts = [f"Carte n° {setup.seed}", maps_mod.describe_options(setup.map_name, theme)]
     sky = battle.battlefield.weather
     parts.append(f"météo: {sky.label.lower()}")
+    level = getattr(battle.battlefield, 'fortification', 1)
+    if battle.battlefield.is_siege and level > 1:
+        parts.append(f"défenses: niveau {level}")
     side, level = maps_mod.advantage_of(setup.options())
     if side:
         parts.append(f"avantage: armée {side} ({maps_mod.ADVANTAGE_LEVELS[level - 1].lower()})")
@@ -214,10 +221,10 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             sky_desc += " Très dur pour l'assaillant d'un siège."
         clipped_note(sky_desc, x + 10, y)
 
-        # ─── Avantage du terrain ───
+        # ─── Avantage du terrain (bataille rangée) / Défenses (siège) ───
         y += row_h
-        T.text(screen, "Avantage", label_font, (margin, y + 4), T.GOLD)
         if setup.advantage_allowed:
+            T.text(screen, "Avantage", label_font, (margin, y + 4), T.GOLD)
             setup.advantage, x = choice_row(list(maps_mod.ADVANTAGE_SIDES), setup.advantage,
                                             margin + label_w, y)
             if setup.advantage != maps_mod.ADVANTAGE_NONE:
@@ -232,8 +239,13 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
                 note = "Carte en miroir: aucun camp n'a meilleur terrain."
             clipped_note(note, x + 10, y)
         else:
-            clipped_note("Siège: la forteresse est déjà l'avantage du défenseur.",
-                         margin + label_w, y)
+            # Siège: la forteresse est déjà l'avantage du défenseur; la rangée
+            # sert à choisir son niveau de fortification.
+            T.text(screen, "Défenses", label_font, (margin, y + 4), T.GOLD)
+            setup.fortification, x = choice_row(list(maps_mod.FORTIFICATION_LEVELS),
+                                                setup.fortification, margin + label_w, y)
+            lvl = maps_mod.fortification_of({'fortification': setup.fortification})
+            clipped_note(maps_mod.FORTIFICATION_DESCRIPTIONS[lvl], x + 10, y)
 
         # ─── Aperçu (régénéré seulement quand la carte change) ───
         if setup.key() != preview_key:
@@ -254,6 +266,15 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             pygame.draw.circle(screen, col, (lx + 6, preview_rect.bottom + 16), 5)
             draw_text(screen, f"Armée {side + 1} ({n})", small_font,
                       (lx + 16, preview_rect.bottom + 9), TEXT_DIM)
+        # Machines sans servants: elles ne tireront ni n'avanceront
+        warnings = [(i + 1, siege_engines.staffing_warning(a))
+                    for i, a in enumerate((army1, army2))]
+        wy = preview_rect.bottom + 22   # sous le résumé, à droite des légendes
+        for side, text in warnings:
+            if text:
+                draw_text(screen, f"Attention, armée {side}: {text}", small_font,
+                          (margin + 310, wy), (235, 170, 90))
+                wy += 15
 
         # ─── Boutons ───
         by = screen_h - 58

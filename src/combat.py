@@ -131,7 +131,10 @@ def attack_profile(attacker, target, arme, bf=None, kind="normal", charging=Fals
     if bf is not None:
         terrain.combat_mods(bf, attacker, target, ranged, details=details)
         is_rampart = getattr(bf, 'is_rampart', None)
-        if is_rampart is not None and target.position is not None and is_rampart(*target.position):
+        if (is_rampart is not None and target.position is not None
+                and is_rampart(*target.position)
+                and getattr(attacker, 'siege_engine', None) != "tower"):
+            # (la tour de siège tire à hauteur du chemin de ronde)
             add("Cible sur le rempart", SAVE, -2)
 
     sums = {TOUCHER: 0, BLESSER: 0, SAVE: 0, DEGATS: 0}

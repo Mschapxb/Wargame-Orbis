@@ -452,6 +452,66 @@ UNIT_DATABASE = {
             },
         ],
     },
+
+    # ──────────────── ENGINS DE SIÈGE (toute armée peut en aligner) ────────────────
+    # Pilotés par siege_engines.py: ils marchent seuls vers leur objectif,
+    # POUSSÉS par deux guerriers de mêlée au contact. Toute machine de tir
+    # (Artillerie) ne tire et ne bouge qu'avec deux Artilleurs au contact.
+
+    "Engins de siège": {
+        "color": (150, 118, 78),
+        "units": [
+            {
+                # Servant de machine: reste collé à sa baliste, son scorpion
+                # ou sa catapulte (il en faut deux par machine)
+                "nom": "Artilleur",
+                "deplacement": 3,
+                "blessure": 1,
+                "bravoure": 3,
+                "sauvegarde": 6,
+                "role": "back",
+                "size": 1,
+                "unit_type": "Infanterie",
+                "armes": [
+                    ("Coutelas", 1, 1, 5, 5, 0, "1"),
+                ],
+                "traits": ["Artilleur"],
+            },
+            {
+                # Poutre ferrée sous un toit de peaux mouillées: ×3 contre une
+                # porte, ne frappe jamais les troupes. Le toit arrête les
+                # flèches, pas l'huile bouillante.
+                "nom": "Bélier",
+                "deplacement": 2,
+                "blessure": 6,
+                "bravoure": 6,
+                "sauvegarde": 3,
+                "role": "front",
+                "size": 2,
+                "unit_type": "Large",
+                "armes": [
+                    ("Tête de bélier", 1, 2, 2, 2, -3, "1d3"),
+                ],
+                "traits": ["Bélier", "Immunité mentale"],
+            },
+            {
+                # Beffroi roulant: ses archers tirent à hauteur du rempart;
+                # accolé au mur, il devient une rampe et une passerelle.
+                "nom": "Tour de siège",
+                "deplacement": 2,
+                "blessure": 10,
+                "bravoure": 6,
+                "sauvegarde": 4,
+                "role": "mid",
+                "size": 3,
+                "unit_type": "Large",
+                "armes": [
+                    ("Archers de la tour", 10, 2, 4, 4, 0, "1"),
+                ],
+                "traits": ["Tour de siège", "Immunité mentale", "Munitions (20)"],
+            },
+        ],
+    },
 }
 
 
@@ -557,6 +617,13 @@ def create_unit(unit_def, army_color):
         if n.startswith(("tirailleur", "escarmouche")):
             unit.contact_slip = _trait_number(t, 1)
         # « Sort de bataille (N) » et synonymes du livre → N sorts par round
+        # Engins de siège (cf. siege_engines.py)
+        if n.startswith("artilleur"):
+            unit.artilleur = True
+        if n.startswith("belier"):
+            unit.siege_engine = "ram"
+        elif n.startswith("tour de siege"):
+            unit.siege_engine = "tower"
         if n.startswith(_CASTER_TRAITS):
             unit.spells_per_round = _trait_number(t, unit.spells_per_round)
     

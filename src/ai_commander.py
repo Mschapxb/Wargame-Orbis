@@ -55,6 +55,12 @@ def _avg_arme_damage(arme):
     return arme.nb_attaque * avg * hit_p
 
 
+def _is_siege_staff(u):
+    """Engin de siège ou artilleur: ni une ligne de mêlée, ni une force à
+    compter dans le rapport des forces, ni un membre de bloc de formation."""
+    return bool(getattr(u, 'siege_engine', None) or getattr(u, 'artilleur', False))
+
+
 def unit_ranged_power(u):
     """Puissance de tir (armes portée >= 4 + sorts offensifs)."""
     p = 0.0
@@ -194,11 +200,16 @@ class CommanderAI:
         my_val = sum(tactics.remaining_value(u) for u in mine)
         en_val = sum(tactics.remaining_value(e) for e in theirs)
 
+        # Les engins de siège ne tiennent pas le terrain: un bélier n'est pas
+        # une mêlée (compté, il retenait la garnison de sortir achever des
+        # arbalétriers isolés — nuls à la limite de rounds)
+        my_troops = [u for u in mine if not _is_siege_staff(u)]
+        their_troops = [e for e in theirs if not _is_siege_staff(e)]
         s = {
-            'my_ranged': sum(unit_ranged_power(u) for u in mine),
-            'my_melee': sum(unit_melee_power(u) for u in mine),
-            'en_ranged': sum(unit_ranged_power(e) for e in theirs),
-            'en_melee': sum(unit_melee_power(e) for e in theirs),
+            'my_ranged': sum(unit_ranged_power(u) for u in my_troops),
+            'my_melee': sum(unit_melee_power(u) for u in my_troops),
+            'en_ranged': sum(unit_ranged_power(e) for e in their_troops),
+            'en_melee': sum(unit_melee_power(e) for e in their_troops),
             'my_ranged_units': [u for u in mine if u._max_range >= 4 or u.spells],
             'en_ranged_units': [e for e in theirs if e._max_range >= 4 or e.spells],
             'en_artillery': [e for e in theirs if getattr(e, 'is_artillery', False)],
@@ -387,6 +398,8 @@ class CommanderAI:
                     d += 4.0
             if getattr(e, 'is_artillery', False):
                 d += 4.0
+            if getattr(e, 'siege_engine', None):
+                d += 5.0        # bélier, tour: l'abattre sauve la porte ou le mur
             if e._max_range >= 8:
                 d += 3.0
             elif e._max_range >= 4:
@@ -706,8 +719,16 @@ class CommanderAI:
         robuste aux isolés partis devant)."""
         self._mc = self._center(alive)
         self._axis = self._front_axis(self._mc, ec)
+        # (un bélier ou des artilleurs ne sont pas une ligne de mêlée: collés
+        # à leur machine, ils figeaient les tireurs derrière eux jusqu'à la
+        # limite de rounds)
         melee = [u for u in alive
-                 if u._max_range < 4 and not u.spells and u.vitesse > 0]
+                 if u._max_range < 4 and not u.spells and u.vitesse > 0
+                 and not _is_siege_staff(u)]
+        if all(u.encouragement_range > 0 for u in melee):
+            # Plus que des officiers: ce n'est plus une ligne à couvrir (les
+            # tireurs restaient derrière un officier en retrait: nuls)
+            melee = []
         if not melee:
             self._melee_front = None
             self._melee_center = None
@@ -1005,7 +1026,8 @@ class CommanderAI:
 
         melee = [u for u in mobile
                  if u._max_range < 4 and not u.spells
-                 and not getattr(u, 'is_artillery', False)]
+                 and not getattr(u, 'is_artillery', False)
+                 and not _is_siege_staff(u)]
         others = [u for u in mobile if u not in melee]
 
         lanes = {}
@@ -1220,7 +1242,8 @@ class CommanderAI:
 
         groups = {}
         for u in alive:
-            if u.vitesse <= 0 or getattr(u, 'is_artillery', False):
+            if (u.vitesse <= 0 or getattr(u, 'is_artillery', False)
+                    or _is_siege_staff(u)):
                 continue
             if id(u) in self._assignments:
                 continue            # curée, brèche, escorte, débordement

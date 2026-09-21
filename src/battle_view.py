@@ -718,7 +718,12 @@ class BattleView:
         sh_w, sh_h = max(4, ur * 2), max(2, ur // 2 + 2)
         surf.blit(R.get_shadow(sh_w, sh_h), (cx - sh_w // 2, cy + ur - sh_h // 2))
 
-        if u.fleeing:
+        if u.siege_engine:
+            # Engin de siège: silhouette de bois à l'échelle de son empreinte
+            R.draw_siege_engine(surf, u.siege_engine,
+                                pygame.Rect(cx - uw * cs // 2, cy - uh * cs // 2, uw * cs, uh * cs),
+                                team_color)
+        elif u.fleeing:
             pygame.draw.circle(surf, (255, 140, 0), (cx, cy), ur)
         else:
             token_size = min(uw, uh) * cs - 4
@@ -734,7 +739,8 @@ class BattleView:
         # Contour d'équipe PAR-DESSUS (outline épaisse)
         ring_r = ur + 2
         ring_w = max(2, cs // 8)
-        pygame.draw.circle(surf, team_color, (cx, cy), ring_r, ring_w)
+        if not u.siege_engine:      # l'engin porte déjà son liseré d'équipe
+            pygame.draw.circle(surf, team_color, (cx, cy), ring_r, ring_w)
         # Chevron d'orientation: vers la cible, sinon vers la marche
         if cs >= 14 and not u.fleeing:
             ui.draw_facing(surf, cx, cy, ring_r, ui.facing_angle(u), team_color)

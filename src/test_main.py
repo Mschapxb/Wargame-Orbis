@@ -285,6 +285,7 @@ class TestEffetsDeCombat(unittest.TestCase):
 
     def test_types_de_projectiles(self):
         a1 = build_army("Armée Skaldienne", [("Arbaletrier régulier", 4), ("Baliste", 1)])
+        a1 += build_army("Engins de siège", [("Artilleur", 2)])   # ses servants
         a2 = build_army("Armée Skaldienne", [("Infanterie régulière", 6)])
         b = self._battle(a1, a2)
         kinds = set()

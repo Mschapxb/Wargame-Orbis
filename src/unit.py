@@ -92,6 +92,16 @@ def _fire_zone_bonus(bf, tx, ty, half, enemies_in_zone, allies):
 
 
 class Unit:
+    # Engin de siège (cf. siege_engines.py): None, "ram" (bélier) ou
+    # "tower" (tour de siège). Une tour accolée au mur devient une rampe
+    # (`docked`) et quitte le champ de bataille en tant qu'unité.
+    siege_engine = None
+    docked = False
+    # Servant d'une machine de tir (trait « Artilleur »), et machine servie
+    # ou poussée ce round (cf. siege_engines.assign_attendants)
+    artilleur = False
+    _attends = None
+
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
                  armes=None, spells=None, special=None, role="front",
                  size=1, unit_type="Infanterie"):
@@ -377,6 +387,11 @@ class Unit:
         """
         events = []
         self._last_attack_killed = False
+        if self.siege_engine == "ram":
+            return events       # le bélier ne frappe que les portes
+        import siege_engines
+        if not siege_engines.manned(battlefield, battle, self):
+            return events       # machine sans ses artilleurs (tir de réaction compris)
         # Estampille de l'action: tous les effets de cette attaque sont
         # positionnés dans le temps par rapport à elle (départ du tir,
         # temps de vol du projectile, impact...).

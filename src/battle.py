@@ -9,6 +9,7 @@ import random
 
 import rng_scope
 
+import siege_engines
 import structures as st
 import tactics
 import terrain as tr
@@ -52,6 +53,31 @@ _BLADE_COLORS = {
     'reaction': (170, 225, 255),
 }
 T_CHARGE = 0.26
+
+# ─── Fortification (niveaux 2-3, cf. maps/fortification.py) ───
+# Baliste de tour: l'arme de la bibliothèque, mais immobile (vitesse 0: elle
+# ne descend pas de sa plateforme), fragile (2 PV: on l'abat en quelques
+# volées) et lente à repointer depuis sa plateforme (2 rounds). Mesuré:
+# la baliste de bibliothèque (4 PV, recharge 1) faisait tomber l'assaillant
+# du Siège de 22 % à 0 %; ce réglage le laisse à ~8 %.
+TOWER_BALLISTA = {
+    "nom": "Baliste de tour",
+    "deplacement": 0,
+    "blessure": 2,
+    "bravoure": 3,
+    "sauvegarde": 7,
+    "role": "back",
+    "size": 2,
+    "unit_type": "Artillerie",
+    "armes": [("Carreaux de baliste", 18, 1, 4, 2, -2, "1d4")],
+    "traits": ["Rechargement (2)"],
+}
+# Porte piégée: huile bouillante et pierres sur qui se presse au pied du
+# battant qui cède (distance ≤ TRAP_REACH), puis flaque en feu quelques rounds
+TRAP_REACH = 2
+TRAP_PERFORATION = -1
+TRAP_DAMAGE = "1d2"
+TRAP_BURN = 2
 T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
 
@@ -257,7 +283,63 @@ class Battle:
         self.round_events.append((text, color, importance))
 
     def _place_armies(self, center_y):
-        deployment.deploy_armies(self.battlefield, self.army1, self.army2, center_y)
+        bf = self.battlefield
+        # Fortification: les balistes de tour sont posées AVANT la garnison
+        # (qui prendrait sinon leurs cases de rempart) et rejoignent l'armée
+        # défenseure; elles ne font pas partie des armées rejouées par R.
+        crews = []
+        for t in bf.towers:
+            ballista = self._man_tower(t)
+            if ballista is not None:
+                crews.append(ballista)
+                crews.extend(self._tower_servants(ballista))
+        deployment.deploy_armies(bf, self.army1, self.army2, center_y)
+        self.army2.extend(crews)
+        self.army2_roster.extend(crews)
+        self.army2_initial_size += len(crews)
+        self._refresh_army_sets()
+        siege_engines.gather_attendants(self)     # servants au contact de leur machine
+        factor = bf.siege_data.get('garrison_ammo', 1)
+        if factor > 1:
+            for u in self.army2:
+                u.refill_ammo(factor)
+        self._alive_cache['dirty'] = True
+
+    def _man_tower(self, tower):
+        """Baliste de garnison immobile sur la plateforme d'une tour."""
+        import unit_library
+        crew = unit_library.create_unit(TOWER_BALLISTA, self._garrison_color())
+        crew.token_name = "Baliste"
+        crew.contingent = "Garnison"
+        crew.position = tower['anchor']
+        if not self.battlefield.can_place_unit(*crew.position, crew):
+            return None
+        self.battlefield.place_unit(crew)
+        return crew
+
+    def _tower_servants(self, ballista):
+        """Les deux artilleurs de la baliste de tour, sur le chemin de ronde
+        au contact de la plateforme. Les tuer réduit la baliste au silence."""
+        import unit_library
+        bf = self.battlefield
+        ax, ay = ballista.position
+        # Au-dessus puis au-dessous de la plateforme, sur le chemin de ronde
+        spots = [(x, y) for y in (ay - 1, ay + 2) for x in (ax, ax + 1)
+                 if bf.is_rampart(x, y) and (x, y) not in bf.units]
+        out = []
+        for pos in spots[:siege_engines.CREW_NEEDED]:
+            crew = unit_library.make_unit("Engins de siège", "Artilleur")
+            crew.color = self._garrison_color()
+            crew.contingent = "Garnison"
+            crew.name = f"Servant{len(out) + 1}"
+            crew.position = pos
+            bf.place_unit(crew)
+            crew._attends = ballista
+            out.append(crew)
+        return out
+
+    def _garrison_color(self):
+        return self.army2[0].color if self.army2 else (160, 160, 170)
 
     def get_all_alive(self):
         if self._alive_cache['dirty']:
@@ -912,11 +994,14 @@ class Battle:
             return False
 
         ux, uy = unit.position
+        engine = getattr(unit, 'siege_engine', None)
         best_gate, best_gate_dist = None, 999
         for gpos, ghp in gates_now.items():
             if ghp <= 0:
                 continue
-            d = bf.manhattan_distance((ux, uy), gpos)
+            # Engin (2×2 et plus): distance de son empreinte, pas de son coin
+            d = (siege_engines.gate_distance(bf, unit, gpos) if engine
+                 else bf.manhattan_distance((ux, uy), gpos))
             if d < best_gate_dist:
                 best_gate, best_gate_dist = gpos, d
         if best_gate is None:
@@ -943,6 +1028,8 @@ class Battle:
                 if combat.saves(combat.save_threshold(gate_save, arme.perforation)):
                     continue
                 total_dmg += max(1, arme.lancer_degats())
+        if engine == siege_engines.RAM:
+            total_dmg *= siege_engines.RAM_GATE_FACTOR
 
         if total_dmg > 0:
             destroyed = bf.damage_gate(gx, gy, total_dmg)
@@ -959,6 +1046,7 @@ class Battle:
                 unit.floating_texts.append(
                     FloatingText("PORTE DÉTRUITE!", (255, 200, 50), 90))
                 self.log_event("La porte cède !", (255, 160, 60), 3)
+                self._spring_gate_trap(gx, gy)
             return True
         if best_gate_dist <= 1 and unit._max_range < 4:
             unit.floating_texts.append(
@@ -966,6 +1054,73 @@ class Battle:
             return True
         return False
 
+
+    def _dock_siege_towers(self):
+        """Une tour de siège arrivée à son poste s'accole au mur: rampe et
+        passerelle (une brèche pour l'assaut). La tour cesse d'être une
+        unité sur la carte; elle reste au rôle de l'armée."""
+        bf = self.battlefield
+        if not bf.is_siege:
+            return []
+        docked = []
+        for u in [u for u in self.army1 if u.is_alive and u.siege_engine == siege_engines.TOWER]:
+            if not siege_engines.tower_docked(bf, u):
+                continue
+            siege_engines.dock_tower(bf, u)
+            self.army1.remove(u)
+            docked.append(u)
+            u.floating_texts.append(FloatingText("À L'ASSAUT !", (255, 210, 120), 90))
+            self.log_event("La tour de siège s'accole au rempart !", (255, 180, 90), 3)
+        if docked:
+            self._alive_cache['dirty'] = True
+            self._refresh_army_sets()
+            self._flush_structure_changes()
+            for cmd in (self.commander1, self.commander2):
+                cmd._gate_lock = 0          # une brèche s'ouvre: on reconsidère l'axe
+        return docked
+
+    def _spring_gate_trap(self, gx, gy):
+        """Porte piégée (fortification niveau 3): quand un battant cède,
+        huile bouillante et pierres s'abattent sur les assaillants massés à
+        son pied, et la flaque d'huile brûle quelques rounds sur le passage.
+        Une fois par battant. Retourne les unités touchées."""
+        bf = self.battlefield
+        if (gx, gy) not in bf.trapped_gates:
+            return []
+        group = bf.gate_group(gx, gy)
+        bf.trapped_gates.difference_update(group)
+        from models import Dice
+        dice = Dice.parse(TRAP_DAMAGE)
+        hit = []
+        for u in sorted((u for u in self.army1 if u.is_alive), key=lambda u: u.uid):
+            cells = bf.get_unit_cells(u)
+            if not any(abs(cx - x) + abs(cy - y) <= TRAP_REACH
+                       for (cx, cy) in cells for (x, y) in group):
+                continue
+            hit.append(u)
+            u._suppression += 1
+            # Le toit de peaux d'un engin arrête les flèches, pas l'huile
+            if not u.siege_engine and combat.saves(combat.save_threshold(u.sauvegarde, TRAP_PERFORATION)):
+                u.floating_texts.append(FloatingText("Esquive!", (200, 200, 160)))
+                continue
+            u.take_damage(dice.roll())
+            u.floating_texts.append(FloatingText("Huile bouillante!", (255, 150, 60), 60))
+        # La flaque: le battant et les deux cases devant lui, côté assaillant
+        for (x, y) in group:
+            for dx in (0, -1, -2):
+                c = (x + dx, y)
+                if 0 <= c[0] < bf.width and bf.grid[c[0]][c[1]] in (0, 3):
+                    bf.fires[c] = max(bf.fires.get(c, 0), TRAP_BURN)
+                    bf.dirty_cells.add(c)
+        self.log_event("PIÈGE ! L'huile bouillante s'abat sur l'assaillant", (255, 110, 40), 3)
+        cs = self.cell_size
+        cy = (group[0][1] + group[-1][1] + 1) * cs / 2
+        cx = gx * cs + cs / 2
+        d = FX_CLOCK.current_delay + 4
+        self.visual_effects.setdefault('aoe_explosions', []).append(
+            AoeExplosion((cx, cy), cs * (TRAP_REACH + 1), (255, 140, 30), 35, delay=d))
+        self._flush_structure_changes()
+        return hit
 
     # ─── Destruction: structures, effondrements, incendie ───
 
@@ -1108,7 +1263,9 @@ class Battle:
         wx = bf.wall_x
         next_x = bf.rings[bf.active_ring + 1]['wall_x']
         attackers = [u for u in self.army1 if u.is_alive and not u.fleeing]
-        defenders = [u for u in self.army2 if u.is_alive and not u.fleeing]
+        # Les pièces fixes (baliste de tour) ne se replient pas: elles ne
+        # retiennent pas l'enceinte à elles seules
+        defenders = [u for u in self.army2 if u.is_alive and not u.fleeing and u.vitesse > 0]
         gates_down = (all(hp <= 0 for hp in bf.active_gates.values())
                       or bool(bf.active_breaches))
         inside = sum(1 for u in attackers if u.position[0] > wx)
@@ -1205,9 +1362,11 @@ class Battle:
         l'ordre des tirages aléatoires en dépend: ne pas le permuter)."""
         self._begin_round()
         self._command_phase()
+        siege_engines.assign_attendants(self)   # artilleurs et pousseurs
         alive = self.get_all_alive()
         movers = self._apply_moves(self._plan_moves(alive))
         self._update_facings(movers)
+        self._dock_siege_towers()      # tours de siège arrivées au mur
         self.morale_phase()            # pertes lourdes, auras, stress au combat
         self._check_ring_fall()        # Citadelle: l'enceinte active tombe-t-elle ?
         self._position_bonuses(alive)
@@ -1303,7 +1462,9 @@ class Battle:
         approaching = []    # En approche (pas encore au contact)
 
         for u in _move_pool:
-            if u.fleeing or u.vitesse <= 0:
+            # Machines (servies ou non): pas de « pas de côté » des unités
+            # bloquées — sans servants, une machine ne bouge pas d'un pouce
+            if u.fleeing or u.vitesse <= 0 or siege_engines.is_machine(u):
                 static_units.append(u)
                 continue
             # Siège: tireurs/mages sur rempart → toujours "engaged" (ne bougent pas)
@@ -1332,6 +1493,15 @@ class Battle:
             static_units = [u for u in static_units if id(u) not in relieved]
             engaged = [u for u in engaged if id(u) not in relieved]
             approaching = [u for u in approaching if id(u) not in relieved]
+
+        # === Pass 0: machines servies, puis leurs servants ===
+        # Les servants visent une case au contact de la DESTINATION de leur
+        # machine: elle doit donc être planifiée avant eux.
+        crewed = self._plan_machines(_move_pool, reserved, moves, relieved or ())
+        if crewed:
+            static_units = [u for u in static_units if id(u) not in crewed]
+            engaged = [u for u in engaged if id(u) not in crewed]
+            approaching = [u for u in approaching if id(u) not in crewed]
 
         for unit in static_units:
             new_pos, target = bf.compute_move(unit, self, reserved)
@@ -1425,6 +1595,31 @@ class Battle:
 
             unit.vitesse = orig_speed
         return moves
+
+    def _plan_machines(self, pool, reserved, moves, skip=()):
+        """Planifie les machines qui ont des servants, puis ces servants.
+        Retourne les id() des unités planifiées."""
+        bf = self.battlefield
+        self._planned_moves = moves
+        attendants = [u for u in pool if id(u) not in skip and not u.fleeing
+                      and getattr(u, '_attends', None) is not None and u._attends.is_alive]
+        if not attendants:
+            return set()
+        masters = {id(u._attends): u._attends for u in attendants}
+        machines = [u for u in pool if id(u) in masters and id(u) not in skip]
+        done = set()
+        for unit in machines + attendants:
+            new_pos, target = bf.compute_move(unit, self, reserved)
+            unit.current_target = target
+            if target:
+                self.visual_effects['target_indicators'].append((unit, target))
+            new_pos = self._legal_move(unit, new_pos, reserved)
+            if new_pos:
+                self._commit_move(unit, new_pos, reserved, moves)
+            elif unit.position:
+                reserved.update(bf._get_reserved_cells(unit, unit.position))
+            done.add(id(unit))
+        return done
 
     def _plan_reliefs(self, pool, reserved, moves):
         """RELÈVE: une unité de mêlée fatiguée, au contact, échange sa place
@@ -1703,6 +1898,12 @@ class Battle:
 
             if unit._acted_this_round:
                 continue  # a déjà tiré en réaction pendant le mouvement
+            if not siege_engines.manned(self.battlefield, self, unit):
+                # Machine sans ses deux artilleurs, engin sans pousseurs
+                unit._acted_this_round = True
+                unit.floating_texts.append(
+                    FloatingText("Sans servants", (190, 170, 150), 30))
+                continue
 
             # Machine de guerre: percer le mur ou dégager son champ de tir
             # (avant la porte: une machine chargée de percer ne la vise pas).
@@ -1715,6 +1916,8 @@ class Battle:
             if self._attack_gate(unit):
                 unit._acted_this_round = True
                 continue
+            if unit.siege_engine == siege_engines.RAM:
+                continue        # le bélier ne frappe que les portes
 
             if unit.reloading:
                 unit._acted_this_round = True
@@ -1840,9 +2043,11 @@ class Battle:
                     self._quiet_rounds = 0
 
     def is_battle_over(self):
-        """La bataille est finie quand une armée n'a plus personne sur la map."""
-        a1_on_map = sum(1 for u in self.army1 if u.is_alive)
-        a2_on_map = sum(1 for u in self.army2 if u.is_alive)
+        """La bataille est finie quand une armée n'a plus personne sur la map.
+        Des engins de siège seuls ne tiennent pas le terrain: leurs servants
+        les abandonnent quand il ne reste plus de troupes pour les couvrir."""
+        a1_on_map = sum(1 for u in self.army1 if u.is_alive and not u.siege_engine)
+        a2_on_map = sum(1 for u in self.army2 if u.is_alive and not u.siege_engine)
         
         if a1_on_map == 0 and a2_on_map == 0:
             return "Égalité"
