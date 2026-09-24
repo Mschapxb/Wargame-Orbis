@@ -10,6 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import maps
+import spatial
 import tactics
 import unit_library as ul
 from battle import Battle
@@ -226,6 +227,82 @@ def test_aucune_methode_definie_deux_fois():
                     key = node.name
                     assert key not in seen, f"{os.path.basename(path)}: {key} défini deux fois"
                     seen.add(key)
+
+
+# ── Index spatial (spatial.py) ──
+
+
+@test
+def test_uid_croissant_dans_l_ordre_des_armees():
+    """L'index spatial rend ses résultats triés par uid en prétendant rendre
+    l'ordre de l'armée (dont dépend l'ordre des tirages de dés). Cela n'est
+    vrai que si les uid croissent dans l'ordre des listes — aucune liste
+    d'armée n'est jamais réordonnée, seulement filtrée ou complétée."""
+    for mapname, opts in (("Prairie", None), ("Citadelle", {'fortification': 3})):
+        random.seed(11)
+        a1 = ul.build_army("Armée Skaldienne",
+                           [("Infanterie régulière", 6), ("Arbaletrier régulier", 3),
+                            ("Baliste", 1), ("Artilleur", 2)])
+        a2 = ul.build_army("Armée Orlandar",
+                           [("Fantassin covaliir", 5), ("Archer covaliir", 3),
+                            ("Cavalier covaliir", 2)])
+        b = Battle(a1, a2, 60, 40, 8, map_name=mapname, map_options=opts)
+        for _ in range(25):
+            if b.is_battle_over():
+                break
+            for army in (b.army1, b.army2):
+                uids = [u.uid for u in army]
+                assert uids == sorted(uids), (mapname, b.round, uids)
+            b.simulate_round()
+
+
+@test
+def test_index_spatial_suit_les_deplacements():
+    """L'index est tenu à jour à la case: tout ce qui est sur la grille y est,
+    à la bonne place, et rien d'autre."""
+    random.seed(3)
+    a1 = ul.build_army("Armée Skaldienne",
+                       [("Infanterie régulière", 5), ("Arbaletrier régulier", 3)])
+    a2 = ul.build_army("Armée Orlandar",
+                       [("Fantassin covaliir", 4), ("Cavalier covaliir", 2)])
+    b = Battle(a1, a2, 50, 30, 8, map_name="Prairie")
+    for _ in range(12):
+        if b.is_battle_over():
+            break
+        b.simulate_round()
+        bf = b.battlefield
+        on_grid = {id(u): u for u in bf.units.values()}
+        indexed = {id(u): u for lst in bf.index.buckets.values() for u in lst}
+        assert on_grid.keys() == indexed.keys(), (b.round, len(on_grid), len(indexed))
+        for key, lst in bf.index.buckets.items():
+            for u in lst:
+                assert (u.position[0] // spatial.BUCKET,
+                        u.position[1] // spatial.BUCKET) == key, (u.name, u.position, key)
+
+
+@test
+def test_voisinage_rend_bien_tous_les_proches():
+    """La requête de voisinage est un SURENSEMBLE du balayage complet: elle
+    n'écarte jamais une unité que le test exact aurait retenue."""
+    random.seed(5)
+    a1 = ul.build_army("Armée Skaldienne",
+                       [("Infanterie régulière", 6), ("Arbaletrier régulier", 4)])
+    a2 = ul.build_army("Armée Orlandar",
+                       [("Fantassin covaliir", 5), ("Cavalier covaliir", 3)])
+    b = Battle(a1, a2, 50, 30, 8, map_name="Prairie")
+    bf = b.battlefield
+    for _ in range(10):
+        if b.is_battle_over():
+            break
+        b.simulate_round()
+        for u in b.get_all_alive():
+            for radius in (1, 2, 5, 12):
+                attendu = [e for e in b.get_enemies(u)
+                           if e.is_alive and bf.unit_distance(u, e) <= radius]
+                rendu = b.enemies_near(u, radius)
+                assert set(map(id, attendu)) <= set(map(id, rendu)), (u.name, radius)
+                # et l'ordre de l'armée est conservé
+                assert rendu == sorted(rendu, key=lambda x: x.uid)
 
 
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──

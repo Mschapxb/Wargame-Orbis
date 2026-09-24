@@ -480,6 +480,7 @@ battle-simulator/
 ├── deployment.py        # Déploiement: rangs par groupe, garnison de siège
 ├── rng_scope.py         # Hasard de génération à portée limitée (graine de carte)
 ├── battlefield.py       # Grille, pathfinding A*, calcul de mouvement (par phases)
+├── spatial.py           # Index spatial: « qui est près d'ici » sans balayer l'armée
 ├── ai_commander.py      # IA tactique (postures, manœuvres, ciblage)
 ├── tactics.py           # Maths de combat, carte de menace, anticipation
 ├── renderer.py          # Primitives de rendu (terrain, structures, rapport)
@@ -589,6 +590,48 @@ python src/bench_plans.py 40                # IA avec plans contre la même IA s
 - A* optimisé avec opérations inlinées (chebyshev, is_valid)
 - Les alliés sont **traversables** avec pénalité (pas de blocage permanent)
 - Mouvement latéral de secours quand le chemin est bloqué
+- Les cases occupées par camp, que chaque A* recalculait, sont établies **une
+  fois par passe de mouvement** (`Battlefield.occupancy_cache`): rien ne bouge
+  pendant la planification, les destinations n'étant appliquées qu'ensuite.
+
+### Grandes armées (`spatial.py`)
+
+Le moteur pose sans cesse la même question — *qui est près d'ici ?* — pour les
+coups d'opportunité, les tirs de réaction, le choix de cible, l'isolement d'un
+ennemi, l'orientation. Chaque réponse coûtait un balayage de l'armée adverse
+entière: à 400 unités par camp, des centaines de milliers de comparaisons par
+round, et un coût qui grandit comme le CARRÉ des effectifs.
+
+`spatial.UnitIndex` découpe la carte en compartiments de 8 cases de côté et
+n'est lu que là où la question porte. Il est tenu à jour à la case par
+`Battlefield.place_unit` / `remove_unit`, les deux seuls points de passage des
+poses, retraits et déplacements: pas de reconstruction, pas de péremption
+possible. `spatial.Neighbourhood` en fait une petite interface
+(`enemies_near`, `allies_near`, `units_near`, `nearest_enemy`) héritée par
+`Battle` et `CommanderAI`.
+
+Deux propriétés dont le moteur dépend, et que `test_fondations.py` vérifie:
+
+- **Surensemble.** L'index raisonne sur l'ancre des unités; une empreinte 2×4
+  déborde, donc les requêtes élargissent le rectangle. Elles rendent parfois
+  une unité de trop — jamais une de moins. L'appelant garde son test exact
+  (`unit_distance`, ligne de vue), qui tranche.
+- **Ordre de l'armée.** L'ordre des unités fixe l'ordre des tirages de dés:
+  une liste rendue dans un autre ordre rejouerait une autre bataille à graine
+  égale. Les résultats sont donc retriés par `uid` — qui croît dans l'ordre
+  des listes d'armée, jamais réordonnées.
+
+À armées égales, la simulation rend exactement la même bataille qu'avant
+(même graine, même état round par round); c'est seulement le temps de calcul
+qui change: environ deux fois moins à 800 unités, et l'écart se creuse avec
+l'effectif.
+
+Côté affichage (`battle_view.py`), trois règles suivent la même logique: on ne
+dessine que les unités **dans le cadre**, le corps d'une unité (ombre, jeton,
+anneau d'équipe) est assemblé une fois pour toutes puis posé d'un seul blit
+(`renderer.unit_body`), et le **niveau de détail suit la taille apparente**
+d'une case — zoomé en arrière, nom, moral et symbole d'attaque ne sont de
+toute façon plus lisibles une fois la vue réduite.
 
 ### Plans de bataille (`battle_plan.py`)
 

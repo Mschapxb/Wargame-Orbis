@@ -11,6 +11,7 @@ sys.path.insert(0, HERE)
 import terrain as tr
 from battle import Battle
 from battlefield import Battlefield
+import spatial
 from models import Arme
 from unit import Unit
 
@@ -34,8 +35,9 @@ def flat_bf(w=20, h=12):
     return Battlefield(w, h, 0, "Prairie", grid, {'terrain': tr.make_grid(w, h)})
 
 
-class Sides:
-    """Battle minimal: deux camps, rien d'autre."""
+class Sides(spatial.Neighbourhood):
+    """Battle minimal: deux camps, rien d'autre. Le mixin lui donne les
+    requêtes de voisinage que le moteur attend d'une bataille."""
     def __init__(self, bf, army1, army2):
         self.battlefield = bf
         self.army1, self.army2 = army1, army2

@@ -10,6 +10,7 @@ import random
 import rng_scope
 
 import siege_engines
+import spatial
 import structures as st
 import tactics
 import terrain as tr
@@ -28,6 +29,7 @@ _FX_RNG = random.Random(20260610)
 
 # Plafond de la file d'effets visuels (sécurité hors rendu — voir fin de round)
 _FX_MAX_QUEUE = 600
+
 
 # Couleur du trait d'attaque selon la nature du coup: l'oeil distingue
 # instantanement un echange ordinaire d'une reaction ou d'un enchainement.
@@ -81,7 +83,7 @@ TRAP_BURN = 2
 T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
 
-class Battle:
+class Battle(spatial.Neighbourhood):
     def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, 
                  obstacle_count=8, map_name="Prairie", map_options=None, weather=None):
         self.army1 = copy.deepcopy(army1)
@@ -110,6 +112,10 @@ class Battle:
         self.army2_fled = []
         
         self._alive_cache = {'army1': [], 'army2': [], 'dirty': True}
+        self._army1_ids = self._army2_ids = None
+        # Distance au plus proche ennemi, calculée une fois par passe de
+        # planification (cf. _plan_moves) — None hors de cette fenêtre.
+        self._near_enemy_cache = None
 
         self._restart_army1 = copy.deepcopy(self.army1)
         self._restart_army2 = copy.deepcopy(self.army2)
@@ -354,8 +360,14 @@ class Battle:
         return self._alive_cache['all']
 
     def _refresh_army_sets(self):
-        """Met à jour les sets d'appartenance pour O(1) lookup."""
-        if not hasattr(self, '_army1_ids') or self._alive_cache['dirty']:
+        """Met à jour les sets d'appartenance pour O(1) lookup.
+
+        Les tailles servent de garde-fou: un mort retiré d'une liste en
+        cours de round (fuyard sorti de la carte) laisserait sinon des sets
+        périmés, et l'index spatial rangerait cette unité du mauvais côté."""
+        if (self._army1_ids is None or self._alive_cache['dirty']
+                or len(self._army1_ids) != len(self.army1)
+                or len(self._army2_ids) != len(self.army2)):
             self._army1_ids = {id(u) for u in self.army1}
             self._army2_ids = {id(u) for u in self.army2}
 
@@ -381,6 +393,21 @@ class Battle:
             if unit.is_alive and self.battlefield.manhattan_distance(center_pos, unit.position) <= radius:
                 result.append(unit)
         return result
+
+    # ═══════════════════════════════════════════════════════════════
+    #   VOISINAGE — répondre « qui est près d'ici » sans tout balayer
+    #   (l'essentiel est dans spatial.Neighbourhood)
+    # ═══════════════════════════════════════════════════════════════
+
+    def army_ids(self, units):
+        """Les sets des deux armées sont déjà tenus à jour: on les rend tels
+        quels plutôt que d'en reconstruire un à chaque requête."""
+        self._refresh_army_sets()
+        if units is self.army1:
+            return self._army1_ids
+        if units is self.army2:
+            return self._army2_ids
+        return {id(u) for u in units}
 
     def _get_initial_size(self, unit):
         """Retourne la taille initiale de l'armée de cette unité."""
@@ -719,7 +746,12 @@ class Battle:
         nx, ny = new_pos
         trail = [(ox, oy)] + list(path[:-1] if path else [])
         bf = self.battlefield
-        for e in self.get_enemies(mover):
+        # Seul un ennemi à 2 cases ou moins d'une case du TRAJET peut
+        # frapper: on n'interroge que le rectangle du trajet, pas l'armée.
+        txs = [c[0] for c in trail]
+        tys = [c[1] for c in trail]
+        for e in self.enemies_near_box(
+                mover, (min(txs), min(tys), max(txs), max(tys)), 2):
             if not e.is_alive or e.fleeing or e._opportunity_used:
                 continue
             if e._max_range >= 4:
@@ -758,9 +790,9 @@ class Battle:
                 continue  # il s'est déplacé: pas de tir d'arrêt
             sx, sy = shooter.position
             best, best_d = None, 999
-            for e in self.get_enemies(shooter):
+            for e in self.enemies_near(shooter, shooter._max_range + tr.MAX_RANGE_BONUS):
                 info = movers.get(id(e))
-                if info is None or not e.is_alive:
+                if info is None:
                     continue
                 old_pos, new_pos = info
                 mr = tr.effective_range(bf, shooter, e)
@@ -795,8 +827,8 @@ class Battle:
         bf = self.battlefield
         ux, uy = unit.position
         mr = unit._max_range
-        cands = [e for e in self.get_enemies(unit)
-                 if e.is_alive and bf.unit_distance(unit, e) <= mr]
+        cands = [e for e in self.enemies_near(unit, mr)
+                 if bf.unit_distance(unit, e) <= mr]
         if mr >= 4:
             cands = [e for e in cands if bf.has_line_of_fire(unit, e)]
         if not cands:
@@ -879,10 +911,7 @@ class Battle:
             # ── Choix de la proie: valeur de la cible / résistance attendue ──
             best_target = None
             best_score = -1e9
-            enemies_all = self.get_enemies(unit)
-            for enemy in enemies_all:
-                if not enemy.is_alive:
-                    continue
+            for enemy in self.enemies_near(unit, max_dist):
                 d = self.battlefield.unit_distance(unit, enemy)
                 if not (min_dist <= d <= max_dist):
                     continue
@@ -894,7 +923,8 @@ class Battle:
                     score += 10.0
                 if enemy.hp < enemy.max_hp * 0.45:
                     score += 6.0           # achever plutôt qu'entamer
-                if tactics.is_isolated(enemy, enemies_all, 4):
+                if tactics.is_isolated(
+                        enemy, self.enemies_near(unit, 4, pos=enemy.position), 4):
                     score += 5.0           # proie sans soutien
                 score -= d * 0.4           # à valeur égale, le plus proche
                 if score > best_score:
@@ -1327,14 +1357,14 @@ class Battle:
                 return False
             return True
 
-        reachable = [e for e in self.get_enemies(unit) if e.is_alive and can_hit(e)]
+        reachable = [e for e in self.enemies_near(unit, mr + tr.MAX_RANGE_BONUS)
+                     if can_hit(e)]
         if not reachable:
             return None
         if len(reachable) == 1:
             return reachable[0]
 
         ordered = select_tactical_target(unit, self, bf)
-        allies = self.get_allies(unit)
 
         best, best_score = None, -1e9
         for e in reachable:
@@ -1350,10 +1380,10 @@ class Battle:
             if e.encouragement_range > 0:
                 score += 2.5
             if is_ranged and any(
-                    a.is_alive and a._max_range < 4
+                    a._max_range < 4
                     and abs(a.position[0] - e.position[0])
                     + abs(a.position[1] - e.position[1]) <= 1
-                    for a in allies):
+                    for a in self.allies_near(unit, 1, pos=e.position)):
                 score -= 4.0                              # tir fratricide évité
             score -= d * 0.15
             if score > best_score:
@@ -1451,7 +1481,22 @@ class Battle:
                 self.log_event(f"Armée {side} : {text}", color, 2)
 
     def _plan_moves(self, alive):
-        """Mouvement cohésif en 3 passes (statiques, engagées, approchantes): destinations réservées sans collision."""
+        """Mouvement cohésif en 3 passes: destinations réservées sans collision.
+
+        Rien ne bouge pendant la planification — les destinations ne sont
+        appliquées qu'ensuite par _apply_moves. Le champ de bataille peut
+        donc mettre en cache tout ce qui ne dépend que de la disposition
+        (cases occupées par camp, distance au plus proche ennemi)."""
+        self.battlefield.occupancy_cache(True)
+        self._near_enemy_cache = {}
+        try:
+            return self._plan_moves_pass(alive)
+        finally:
+            self.battlefield.occupancy_cache(False)
+            self._near_enemy_cache = None
+
+    def _plan_moves_pass(self, alive):
+        """Les 3 passes proprement dites (statiques, engagées, approchantes)."""
         # Mélanger l'ordre de traitement du mouvement: les tris des passes
         # sont stables, donc à distance égale c'était toujours l'armée 1
         # qui réservait ses cases en premier (avantage cumulatif).
@@ -1475,16 +1520,15 @@ class Battle:
             if bf.gate_hp and bf.on_active_rampart(*u.position, u, self) and (u._max_range >= 4 or bool(u.spells)):
                 engaged.append(u)
                 continue
-            enemies = self.get_enemies(u)
-            alive_enemies = [e for e in enemies if e.is_alive]
-            if alive_enemies:
-                min_d = min(bf.manhattan_distance(u.position, e.position) for e in alive_enemies)
-                if min_d <= u._max_range + 1:
-                    engaged.append(u)
-                else:
-                    approaching.append(u)
-            else:
+            # 999 = plus aucun ennemi vivant (la carte ne fait jamais
+            # 999 cases de diagonale)
+            min_d = self.nearest_enemy_dist(u)
+            if min_d >= 999:
                 static_units.append(u)
+            elif min_d <= u._max_range + 1:
+                engaged.append(u)
+            else:
+                approaching.append(u)
 
         # === Pass 1: statiques — réservent leur position ===
         reserved = set()
@@ -1519,9 +1563,7 @@ class Battle:
                 reserved.update(bf._get_reserved_cells(unit, unit.position))
 
         # === Pass 2: engagées — se déplacent, triées par proximité ===
-        engaged.sort(key=lambda u: min(
-            (bf.manhattan_distance(u.position, e.position)
-             for e in self.get_enemies(u) if e.is_alive), default=999))
+        engaged.sort(key=self.nearest_enemy_dist)
 
         for unit in engaged:
             new_pos, target = bf.compute_move(unit, self, reserved)
@@ -1540,8 +1582,7 @@ class Battle:
         # en tête: un rang arrière qui bouge d'abord bute sur le rang de
         # devant encore en place, et le bloc se déforme en U.
         def _approach_key(u):
-            d = min((bf.manhattan_distance(u.position, e.position)
-                     for e in self.get_enemies(u) if e.is_alive), default=999)
+            d = self.nearest_enemy_dist(u)
             o = getattr(u, '_tactical_order', None)
             if o is not None and o.order_type == "form":
                 return (0, d)
@@ -1552,21 +1593,16 @@ class Battle:
         if approaching:
             approach_dists = []
             for u in approaching:
-                ae = [e for e in self.get_enemies(u) if e.is_alive]
-                if ae:
-                    approach_dists.append(
-                        min(bf.manhattan_distance(u.position, e.position) for e in ae))
+                d = self.nearest_enemy_dist(u)
+                if d < 999:
+                    approach_dists.append(d)
             if approach_dists:
                 median_dist = sorted(approach_dists)[len(approach_dists) // 2]
 
         for unit in approaching:
             # Cohésion: les unités très en avance ralentissent pour ne pas
             # se retrouver isolées — sauf ordre de foncer.
-            ae = [e for e in self.get_enemies(unit) if e.is_alive]
-            if ae:
-                my_dist = min(bf.manhattan_distance(unit.position, e.position) for e in ae)
-            else:
-                my_dist = 999
+            my_dist = self.nearest_enemy_dist(unit)
 
             orig_speed = unit.vitesse
             advance_gap = median_dist - my_dist
@@ -1585,7 +1621,7 @@ class Battle:
                 ux, uy = unit.position
                 enemy_in_range = any(
                     bf.unit_distance(unit, e) <= tr.effective_range(bf, unit, e)
-                    for e in self.get_enemies(unit) if e.is_alive
+                    for e in self.enemies_near(unit, unit._max_range + tr.MAX_RANGE_BONUS)
                 )
                 if not enemy_in_range:
                     alt_pos = self._legal_move(
@@ -1837,9 +1873,7 @@ class Battle:
         bf = self.battlefield
         my_cells = bf.get_unit_cells(u) if u.size > 1 else ((ux, uy),)
         adjacent = []
-        for e in self.get_enemies(u):
-            if not e.is_alive or e.position is None:
-                continue
+        for e in self.enemies_near(u, 5):
             if abs(e.position[0] - ux) > 5 or abs(e.position[1] - uy) > 5:
                 continue
             e_cells = bf.get_unit_cells(e) if e.size > 1 else (e.position,)

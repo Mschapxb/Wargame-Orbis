@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import maps
+import spatial
 import structures as st
 import tactics
 import terrain as tr
@@ -96,7 +97,9 @@ def test_feu_astar_contourne():
     u = soldier((2, 2))
     bf.place_unit(u)
 
-    class FB:
+    class FB(spatial.Neighbourhood):
+        battlefield = bf
+
         def get_allies(self, unit):
             return []
 

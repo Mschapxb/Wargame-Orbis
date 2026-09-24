@@ -135,10 +135,13 @@ def test_line_of_sight():
 
 # ── Battlefield ──
 
+import spatial
 from battlefield import Battlefield
 
 
-class FakeBattle:
+class FakeBattle(spatial.Neighbourhood):
+    army1 = army2 = ()
+
     def get_allies(self, unit):
         return []
 

@@ -30,6 +30,7 @@ import math
 import random
 
 import formation
+import spatial
 import tactics
 import structures as st
 from battle_plan import BattlePlan
@@ -111,7 +112,7 @@ MELEE_DIST_COST = 3.2
 MELEE_DIST_COST_DEFENSIVE = 1.65
 
 
-class CommanderAI:
+class CommanderAI(spatial.Neighbourhood):
     # Plans de bataille multi-rounds (cf. battle_plan.py). Désactivables pour
     # mesurer ce qu'ils apportent (bench_plans.py).
     use_plans = True
@@ -129,6 +130,7 @@ class CommanderAI:
         self.style = "balanced"
         self.maneuver = None            # "envelop", "concentrate", "collapse", None
         self._assignments = {}          # id(unit) -> (rôle, target_pos|unit)
+        self._ids_cache = [None, None]  # (taille, ids) de self.army / self.enemy_army
         self._axis = (1.0, 0.0)         # Axe du front (vers l'ennemi)
         self._melee_front = None        # Projection de la ligne de mêlée
         self._melee_center = None
@@ -192,6 +194,18 @@ class CommanderAI:
         else:
             self.style = "balanced"
 
+    def army_ids(self, units):
+        """Sets d'appartenance de NOS deux listes, mémorisés tant qu'elles ne
+        changent pas de taille (cf. spatial.Neighbourhood). La comparaison se
+        fait par identité: une liste de passage repasse par le calcul."""
+        for i, army in enumerate((self.army, self.enemy_army)):
+            if units is army:
+                cache = self._ids_cache[i]
+                if cache is None or cache[0] != len(army):
+                    cache = self._ids_cache[i] = (len(army), {id(u) for u in army})
+                return cache[1]
+        return {id(u) for u in units}
+
     def assess(self):
         """Bilan de forces des deux camps, recalculé chaque round.
 
@@ -234,10 +248,14 @@ class CommanderAI:
 
         # Nos fragiles sont-ils sur le point d'être joints ?
         threatened = []
+        # Rayon de la plus longue foulée adverse: au-delà, personne ne peut
+        # tomber sur nos tireurs ce round.
+        reach_max = max((max(3, e.vitesse + 1) for e in theirs if e._max_range < 4),
+                        default=0)
         for u in s['my_ranged_units']:
             if self.battlefield.is_rampart(*u.position):
                 continue
-            for e in theirs:
+            for e in self.units_near(self.enemy_army, u.position, reach_max):
                 if e._max_range >= 4:
                     continue
                 d = abs(u.position[0] - e.position[0]) + abs(u.position[1] - e.position[1])
@@ -249,11 +267,11 @@ class CommanderAI:
         # Occasions: ennemis isolés ou découverts, à portée raisonnable
         opportunities = []
         for e in theirs:
-            if tactics.is_isolated(e, theirs, 5, 1):
-                d_mine = min((abs(u.position[0] - e.position[0])
-                              + abs(u.position[1] - e.position[1]) for u in mine),
-                             default=999)
-                if d_mine <= 14:
+            if tactics.is_isolated(e, self.units_near(self.enemy_army, e.position, 5), 5, 1):
+                if any(abs(u.position[0] - e.position[0])
+                       + abs(u.position[1] - e.position[1]) <= 14
+                       and not u.fleeing
+                       for u in self.units_near(self.army, e.position, 14)):
                     opportunities.append(e)
         s['opportunities'] = opportunities
 
@@ -262,20 +280,21 @@ class CommanderAI:
         # au contact revient à lui couper son champ de tir et à perdre des
         # hommes que la machine aurait fauchés gratuitement.
         bf = self.battlefield
-        firing = 0
-        for a in s['my_artillery']:
-            for e in theirs:
-                d = abs(a.position[0] - e.position[0]) + abs(a.position[1] - e.position[1])
-                if d <= tr.effective_range(bf, a, e) and bf.has_line_of_fire(a, e):
-                    firing += 1
-                    break
+        def shoots_at_something(u):
+            """Cette pièce a-t-elle une cible à portée ET en vue ?"""
+            for e in self.units_near(self.enemy_army, u.position,
+                                     u._max_range + tr.MAX_RANGE_BONUS):
+                d = abs(u.position[0] - e.position[0]) + abs(u.position[1] - e.position[1])
+                if d <= tr.effective_range(bf, u, e) and bf.has_line_of_fire(u, e):
+                    return True
+            return False
+
+        firing = sum(1 for a in s['my_artillery'] if shoots_at_something(a))
         s['artillery_firing'] = firing
         # Idem pour l'ensemble de notre tir: une ligne qui attend sous
         # couverture de ses archers gagne l'échange.
         s['support_fire'] = firing + sum(
-            1 for u in s['my_ranged_units']
-            if any(abs(u.position[0] - e.position[0]) + abs(u.position[1] - e.position[1])
-                   <= tr.effective_range(bf, u, e) and bf.has_line_of_fire(u, e) for e in theirs))
+            1 for u in s['my_ranged_units'] if shoots_at_something(u))
         return s
 
     # ─── Posture: décision + inertie ───
@@ -389,6 +408,11 @@ class CommanderAI:
         abattre — et légèrement bruité pour que deux batailles identiques ne
         produisent pas le même plan de feu."""
         mine = [u for u in self.army if u.is_alive and not u.fleeing]
+        # Positions sorties une fois pour toutes: la distance au plus proche
+        # des nôtres se calcule pour CHAQUE ennemi, et relire `u.position`
+        # des centaines de milliers de fois coûtait plus cher que le calcul.
+        mine_pos = [u.position for u in mine]
+        enemy_ids = {id(e) for e in enemies}
         scored = []
         for e in enemies:
             ex, ey = e.position
@@ -412,10 +436,11 @@ class CommanderAI:
             # Une cible entamée vaut de l'or: la tuer supprime tout son feu
             d += (1.0 - e.hp / max(1, e.max_hp)) * 4.0
             # Accessibilité: désigner un objectif hors d'atteinte ne sert à rien
-            dmin = min((abs(u.position[0] - ex) + abs(u.position[1] - ey)
-                        for u in mine), default=99)
+            dmin = min((abs(px - ex) + abs(py - ey) for px, py in mine_pos),
+                       default=99)
             d -= dmin * 0.08
-            if tactics.is_isolated(e, enemies, 5, 1):
+            if tactics.is_isolated(
+                    e, self.units_near(enemies, e.position, 5, enemy_ids), 5, 1):
                 d += 2.5 * self.ruse
             if self.use_plans and self.battlefield.is_siege:
                 d += self.plan.target_bonus(self, e)
@@ -833,7 +858,8 @@ class CommanderAI:
             return None  # décrocher là, c'est offrir son dos
         if self._threat.at((ux, uy)) < unit.hp * 1.1:
             return None  # la menace n'est pas encore mortelle
-        if tactics.support_count((ux, uy), self.army, 4, exclude=unit) < 2:
+        if tactics.support_count((ux, uy), self.units_near(self.army, (ux, uy), 4),
+                                 4, exclude=unit) < 2:
             return None  # personne pour combler le trou: on tient
         ax, ay = self._axis
         step = max(2, unit.vitesse)
@@ -899,7 +925,8 @@ class CommanderAI:
         # Assez de camarades autour pour encaisser le choc ? Alors on peut
         # y aller — sauf si l'artillerie a encore besoin de son champ libre.
         if (not support
-                and tactics.support_count((ux, uy), self.army, 3, exclude=unit) >= 2):
+                and tactics.support_count((ux, uy), self.units_near(self.army, (ux, uy), 3),
+                                          3, exclude=unit) >= 2):
             return None
 
         unit.status_text = "EN LIGNE"
@@ -1156,11 +1183,13 @@ class CommanderAI:
         # les machines: bien plus rentable que de pousser sur le bouclier.
         # Seules les unités NON engagées peuvent être détournées vers la
         # brèche: décrocher d'un corps à corps offrirait un coup gratuit.
+        enemy_ids = {id(e) for e in enemies}
         free_now = [u for u in melee
                     if id(u) not in used
                     and not any(abs(u.position[0] - e.position[0])
                                 + abs(u.position[1] - e.position[1]) <= 2
-                                for e in enemies)]
+                                for e in self.units_near(enemies, u.position,
+                                                         2, enemy_ids))]
         self.breach = None
         if (len(free_now) >= 2 and self.posture not in ("screen", "regroup")
                 and self.maneuver != "concentrate"):
@@ -1792,8 +1821,13 @@ class CommanderAI:
         ux, uy = unit.position
         bf = self.battlefield
 
+        # Majorant de la portée effective: il écarte d'emblée les cibles
+        # lointaines sans payer le calcul de portée (météo, hauteur).
+        max_reach = unit._max_range + tr.MAX_RANGE_BONUS
+
         def visible(e):
-            return (abs(ux - e.position[0]) + abs(uy - e.position[1]) <= tr.effective_range(bf, unit, e)
+            d = abs(ux - e.position[0]) + abs(uy - e.position[1])
+            return (d <= max_reach and d <= tr.effective_range(bf, unit, e)
                     and bf.has_line_of_fire(unit, e))
 
         ft = self.focus_target

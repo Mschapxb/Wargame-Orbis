@@ -2,11 +2,16 @@ from rng_scope import RNG
 import heapq
 
 import facing
+import spatial
 import terrain as tr
 import structures as st
 
 # Obstacles qui masquent même un tireur posté sur un rempart
 TALL_OBSTACLES = frozenset((st.HOUSE, st.GROVE))
+
+# Empreintes par taille d'unité (cf. get_unit_dims): tuples partagés, pour
+# ne pas en reconstruire un à chaque appel dans les boucles chaudes.
+_DIM1, _DIM2, _DIM3 = (1, 1), (2, 2), (2, 4)
 
 
 class Battlefield:
@@ -76,6 +81,13 @@ class Battlefield:
         # planification peut réserver ces cases pour qui les suit. Vidé en
         # dehors de la phase de mouvement.
         self.leaving = set()
+
+        # Index spatial des unités posées (cf. spatial.py): tenu à jour par
+        # place_unit / remove_unit, les deux seuls points de passage.
+        self.index = spatial.UnitIndex()
+        # Cache des cases occupées par camp, actif seulement pendant la
+        # planification du mouvement (cf. occupancy_cache). None = inactif.
+        self._occ_cache = None
 
         if grid is not None:
             self.grid = grid
@@ -381,12 +393,12 @@ class Battlefield:
     def get_unit_dims(self, unit):
         """Retourne (largeur, hauteur) en cases selon la taille.
         size 1 = 1×1 (1 case), size 2 = 2×2 (4 cases), size 3 = 2×4 (8 cases)."""
-        if unit.size <= 1:
-            return (1, 1)
-        elif unit.size == 2:
-            return (2, 2)
-        else:  # size 3+
-            return (2, 4)
+        s = unit.size
+        if s <= 1:
+            return _DIM1
+        if s == 2:
+            return _DIM2
+        return _DIM3
 
     def unit_distance(self, a, b, a_pos=None, b_pos=None):
         """Distance de combat entre deux unités: Manhattan entre leurs cases
@@ -397,13 +409,39 @@ class Battlefield:
         cavalier 2×2 collé à l'OUEST d'un fantassin avait son ancre à 2 cases
         (« hors de portée »), collé à l'EST à 1 case. Les grosses unités de
         l'armée de gauche devaient contourner leur cible pour frapper, par
-        derrière — camp gauche 57-63 % à armées égales avec cavalerie."""
+        derrière — camp gauche 57-63 % à armées égales avec cavalerie.
+
+        Appelée des millions de fois par bataille: les dimensions et les
+        maxima sont déroulés à la main plutôt qu'appelés (get_unit_dims,
+        max()), pour le seul gain de vitesse — le résultat est identique."""
         ax, ay = a.position if a_pos is None else a_pos
         bx, by = b.position if b_pos is None else b_pos
-        aw, ah = self.get_unit_dims(a)
-        bw, bh = self.get_unit_dims(b)
-        dx = max(0, bx - (ax + aw - 1), ax - (bx + bw - 1))
-        dy = max(0, by - (ay + ah - 1), ay - (by + bh - 1))
+        sa = a.size
+        if sa <= 1:
+            aw = ah = 1
+        elif sa == 2:
+            aw = ah = 2
+        else:
+            aw, ah = 2, 4
+        sb = b.size
+        if sb <= 1:
+            bw = bh = 1
+        elif sb == 2:
+            bw = bh = 2
+        else:
+            bw, bh = 2, 4
+        dx = bx - (ax + aw - 1)
+        d2 = ax - (bx + bw - 1)
+        if d2 > dx:
+            dx = d2
+        if dx < 0:
+            dx = 0
+        dy = by - (ay + ah - 1)
+        d2 = ay - (by + bh - 1)
+        if d2 > dy:
+            dy = d2
+        if dy < 0:
+            dy = 0
         return dx + dy
 
     def reachable_cells(self, unit, battle, budget=None):
@@ -548,11 +586,13 @@ class Battlefield:
 
     def place_unit(self, unit):
         """Place une unité sur la grille (toutes ses cases)."""
+        self.index.add(unit)
         for cell in self.get_unit_cells(unit):
             self.units[cell] = unit
 
     def remove_unit(self, unit):
         """Retire une unité de la grille (utilise get_unit_cells au lieu de scanner tout le dict)."""
+        self.index.discard(unit)
         if unit.position is None:
             return
         x, y = unit.position
@@ -575,10 +615,37 @@ class Battlefield:
     def chebyshev_distance(self, a, b):
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
+    def occupancy_cache(self, on):
+        """Active (ou vide) le cache des cases occupées par camp.
+
+        Le découpage des cases occupées ne dépend que de la DISPOSITION des
+        unités. Pendant la planification du mouvement, rien ne bouge (les
+        destinations ne sont appliquées qu'après), et chaque appel d'A*
+        refaisait le même balayage du plateau: un tiers du coût du
+        pathfinding sur une grande bataille. On le calcule donc une fois par
+        camp pour toute la passe. Hors de cette fenêtre le cache reste
+        éteint: aucun risque qu'un mort ou un déplacement le périme."""
+        self._occ_cache = {} if on else None
+
     def _occupancy_split(self, unit, battle):
         """(cases ennemies, cases alliées) occupées par des unités vivantes,
         toutes cases de l'empreinte comprises, `unit` exclue."""
-        foes = {id(e) for e in battle.get_enemies(unit)}
+        enemies = battle.get_enemies(unit)
+        cache = self._occ_cache
+        if cache is None:
+            return self._occupancy_scan({id(e) for e in enemies}, unit)
+        split = cache.get(id(enemies))
+        if split is None:
+            split = cache[id(enemies)] = self._occupancy_scan(
+                {id(e) for e in enemies}, None)
+        enemy_cells, ally_cells = split
+        # Le balayage mis en cache compte `unit` parmi les siens: on la
+        # retire ici — une différence d'ensembles, pas un balayage.
+        return enemy_cells, ally_cells.difference(self.get_unit_cells(unit))
+
+    def _occupancy_scan(self, foes, unit):
+        """Balayage effectif du plateau: (cases de `foes`, cases des autres),
+        `unit` exclue si fournie."""
         enemy_cells, ally_cells = set(), set()
         for cell, occ in self.units.items():
             if occ is unit or not occ.is_alive:
@@ -1073,9 +1140,8 @@ class Battlefield:
         nouvel ennemi (la case de contact comprise)."""
         start = unit.position
         reach = len(path) + 3
-        near = [e for e in battle.get_enemies(unit)
-                if e.is_alive and e.position is not None
-                and self.chebyshev_distance(start, e.position) <= reach]
+        near = [e for e in battle.enemies_near(unit, reach)
+                if self.chebyshev_distance(start, e.position) <= reach]
         if not near:
             return len(path)
         if getattr(unit, 'contact_breakthrough', False):
@@ -1218,12 +1284,18 @@ class Battlefield:
                 and abs(unit.position[0] - order.target_pos[0])
                 + abs(unit.position[1] - order.target_pos[1]) > 3):
             return None
-        closest = min(enemies, key=lambda e: self.unit_distance(unit, e))
+        # Seul un ennemi à portée peut retenir l'unité: on n'interroge que
+        # ce rayon-là. S'il n'y a personne dedans, le plus proche de toute
+        # l'armée est forcément hors de portée lui aussi.
+        near = battle.enemies_near(unit, unit._max_range + tr.MAX_RANGE_BONUS)
+        if not near:
+            return None
+        closest = min(near, key=lambda e: self.unit_distance(unit, e))
         if self.unit_distance(unit, closest) > tr.effective_range(self, unit, closest):
             return None
         # Tireurs: seules les cibles VISIBLES comptent (un ennemi caché
         # derrière la porte ne doit pas figer un arbalétrier sur place)
-        in_range = self._in_range(unit, enemies, need_sight=unit._max_range >= 4)
+        in_range = self._in_range(unit, near, need_sight=unit._max_range >= 4)
         if not in_range:
             return None
         best = self._weakest_then_closest(unit, in_range)
@@ -1244,10 +1316,13 @@ class Battlefield:
         if abs(unit.position[0] - px) + abs(unit.position[1] - py) > 1:
             return None
         if order.order_type == "guard" and any(
-                abs(e.position[0] - px) + abs(e.position[1] - py) <= 6 for e in enemies):
+                abs(e.position[0] - px) + abs(e.position[1] - py) <= 6
+                for e in battle.enemies_near(unit, 6, pos=(px, py))):
             return None
         # Au poste: tirer si quelque chose est atteignable ET visible
-        in_range = self._in_range(unit, enemies, need_sight=unit._max_range >= 4)
+        in_range = self._in_range(
+            unit, battle.enemies_near(unit, unit._max_range + tr.MAX_RANGE_BONUS),
+            need_sight=unit._max_range >= 4)
         if in_range:
             return None, self._weakest_then_closest(unit, in_range)
         return None, None
@@ -1259,7 +1334,7 @@ class Battlefield:
 
         # Flanquement/protection: se déplacer vers une position, pas une unité
         if move_pos and target_unit is None:
-            target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+            target = battle.nearest_enemy(unit)[0]
             path = self.a_star_path(unit.position, move_pos, unit, battle, reserved_positions,
                                     partial=True)
             if path:
@@ -1274,7 +1349,7 @@ class Battlefield:
         else:
             target = select_tactical_target(unit, battle, self)
             if target is None:
-                target = min(enemies, key=lambda e: self.manhattan_distance(unit.position, e.position))
+                target = battle.nearest_enemy(unit)[0]
 
         current_dist = self.unit_distance(unit, target)
         if current_dist <= tr.effective_range(self, unit, target):

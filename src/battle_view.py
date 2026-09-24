@@ -349,10 +349,12 @@ class BattleView:
             # termine avant que l'échange général ne batte son plein.
             self.move_anim_progress = min(1.0, self.round_frame / max(1.0, frames * R.MOVE_WINDOW))
 
-        # Décompter les timers de lunge (seulement une fois l'instant venu)
+        # Décompter les minuteries d'animation (une fois l'instant venu)
         for u in battle.army1 + battle.army2:
             if u._lunge_timer > 0 and self.round_frame >= getattr(u, '_lunge_delay', 0):
                 u._lunge_timer -= 1
+            if u._hit_flash > 0 and self.round_frame >= getattr(u, '_hit_flash_delay', 0):
+                u._hit_flash -= 1
 
         # Vieillir effets visuels — figés en pause (sinon les effets
         # horodatés se jouaient pendant que le round, lui, était arrêté)
@@ -473,14 +475,6 @@ class BattleView:
     def _draw_world(self, now, hovered):
         """Terrain, unités et effets, dans la surface de vue si zoomé."""
         real_screen = self.screen
-        real_screen.fill(WORLD_BG)
-        surf = real_screen
-        if self.zoom != 1.0:
-            size = (int(self.screen_w / self.zoom) + 1, int(self.view_h / self.zoom) + 1)
-            if self.world_view is None or self.world_view.get_size() != size:
-                self.world_view = pygame.Surface(size)
-            self.world_view.fill(WORLD_BG)
-            surf = self.world_view
         view_w = int(self.screen_w / self.zoom) + 1
         view_h = int(self.view_h / self.zoom) + 1
 
@@ -489,6 +483,22 @@ class BattleView:
         if self.screen_shake > 0.25:
             ox += int(round(math.sin(now * 0.07) * self.screen_shake))
             oy += int(round(math.cos(now * 0.11) * self.screen_shake * 0.6))
+
+        # Le fond n'est utile que là où le décor ne couvre pas la vue: sur
+        # une grande carte il la couvre entièrement, et remplir 8 millions de
+        # pixels par image pour les réécrire aussitôt coûtait 2 ms.
+        covered = (ox <= 0 and oy <= 0
+                   and self.world_w + ox >= view_w and self.world_h + oy >= view_h)
+        surf = real_screen
+        if self.zoom != 1.0:
+            size = (view_w, view_h)
+            if self.world_view is None or self.world_view.get_size() != size:
+                self.world_view = pygame.Surface(size)
+            surf = self.world_view
+        elif not covered:
+            real_screen.fill(WORLD_BG)
+        if surf is not real_screen and not covered:
+            surf.fill(WORLD_BG)
 
         # Clipper le rendu monde pour ne pas déborder sur le HUD
         surf.set_clip(pygame.Rect(0, 0, view_w, view_h))
@@ -503,7 +513,7 @@ class BattleView:
         self.fxr.draw_ground(surf, self.battle, ox, oy, view_w, view_h, self.move_anim_progress)
         # Incendies: sous les unités, au-dessus du sol
         self.fxr.draw_fires(surf, self.battle, ox, oy, view_w, view_h, now)
-        self._draw_units(surf, ox, oy, hovered)
+        self._draw_units(surf, ox, oy, hovered, view_w, view_h)
         # Effets en surplomb: lames, projectiles, sorts, particules
         self.fxr.draw_overlay(surf, self.battle, ox, oy, view_w, view_h, now)
         surf.set_clip(None)
@@ -553,8 +563,15 @@ class BattleView:
         """Lignes de ciblage, couleur selon le type d'attaque."""
         cs = self.cell_size
         bf = self.battle.battlefield
+        vx0, vy0, vx1, vy1 = self._world_view_rect(ox, oy, 0)
         for att, tgt in self.battle.visual_effects['target_indicators']:
             if not (att.is_alive and tgt.is_alive):
+                continue
+            # Trait entièrement hors champ: rien à tracer
+            ax, ay = att.position
+            tx, ty = tgt.position
+            if (max(ax, tx) * cs < vx0 or min(ax, tx) * cs > vx1
+                    or max(ay, ty) * cs < vy0 or min(ay, ty) * cs > vy1):
                 continue
             if bf.manhattan_distance(att.position, tgt.position) > att._max_range:
                 continue
@@ -566,10 +583,31 @@ class BattleView:
             color = _TARGET_LINE_COLORS.get(att.attack_type, _TARGET_LINE_MELEE)
             pygame.draw.line(surf, color, sp, ep, 1)
 
+    @property
+    def apparent_cs(self):
+        """Taille d'une case en pixels D'ÉCRAN (le monde est dessiné à la
+        taille de case puis mis à l'échelle du zoom)."""
+        return int(self.cell_size * self.zoom)
+
+    def _world_view_rect(self, ox, oy, margin):
+        """Rectangle du monde (en pixels) réellement visible, élargi de
+        `margin`. Tout ce qui tombe dehors n'a pas à être dessiné: sur une
+        grande carte, les neuf dixièmes de l'armée sont hors champ."""
+        vx0, vy0 = -ox - margin, -oy - margin
+        return (vx0, vy0,
+                vx0 + int(self.screen_w / self.zoom) + 1 + 2 * margin,
+                vy0 + int(self.view_h / self.zoom) + 1 + 2 * margin)
+
     def _group_colors(self):
         """Une armée articulée en plusieurs groupes: chacun reçoit une
         pastille de couleur. On ne se sert pas de la couleur de faction:
-        deux groupes de la même faction doivent rester distinguables."""
+        deux groupes de la même faction doivent rester distinguables.
+
+        Recalculé seulement quand la composition change: c'est un balayage
+        des deux armées, et il tombait à chaque image."""
+        key = (len(self.battle.army1), len(self.battle.army2), self.battle.round)
+        if getattr(self, '_group_colors_key', None) == key:
+            return self._group_colors_cache
         colors = [{}, {}]
         for side_i, army in enumerate((self.battle.army1, self.battle.army2)):
             seen = []
@@ -578,19 +616,36 @@ class BattleView:
                     seen.append(u.contingent)
             for gi, name in enumerate(seen):
                 colors[side_i][name] = R.GROUP_PIPS[gi % len(R.GROUP_PIPS)]
+        self._group_colors_key, self._group_colors_cache = key, colors
         return colors
 
-    def _draw_units(self, surf, ox, oy, hovered):
+    # Marge de culling: une unité juste hors cadre peut encore faire dépasser
+    # son nom, sa barre de PV ou un texte flottant dans le champ.
+    CULL_MARGIN = 96
+
+    def _draw_units(self, surf, ox, oy, hovered, view_w, view_h):
         battle = self.battle
         tick_time = pygame.time.get_ticks()
-        army1_ids = set(id(u) for u in battle.army1)
+        army1_ids = battle.army_ids(battle.army1)
         group_colors = self._group_colors()
         multi_contingent = (len(group_colors[0]) > 1, len(group_colors[1]) > 1)
+        cs = self.cell_size
+        m = self.CULL_MARGIN
+        vx0, vy0 = -ox - m, -oy - m
+        vx1, vy1 = vx0 + view_w + 2 * m, vy0 + view_h + 2 * m
         drawn = set()   # éviter de dessiner deux fois les grosses unités
         for u in battle.army1 + battle.army2:
             if u.position is None or id(u) in drawn:
                 continue
             drawn.add(id(u))
+            # Hors champ: on ne dessine pas. Le test porte sur la position de
+            # DÉPART comme sur celle d'arrivée — une unité qui entre dans le
+            # cadre doit apparaître dès le début de son animation.
+            px, py = u.position
+            qx, qy = getattr(u, '_prev_position', None) or (px, py)
+            if (max(px, qx) * cs < vx0 or min(px, qx) * cs > vx1
+                    or max(py, qy) * cs < vy0 or min(py, qy) * cs > vy1):
+                continue
             side = 0 if id(u) in army1_ids else 1
             pips = group_colors[side] if multi_contingent[side] else None
             self._draw_unit(surf, u, side, pips, ox, oy, tick_time, u is hovered)
@@ -654,6 +709,11 @@ class BattleView:
 
     def _draw_unit(self, surf, u, side, pip_colors, ox, oy, tick_time, is_hovered):
         cs = self.cell_size
+        # Taille APPARENTE de la case à l'écran: c'est elle qui décide du
+        # niveau de détail. Zoomé en arrière, un nom de cinq lettres et une
+        # rangée de pastilles de moral ne sont plus lisibles une fois la vue
+        # réduite — et il y a alors quatre fois plus d'unités à l'image.
+        acs = self.apparent_cs
         uw, uh = _unit_dims(u)
         cx, cy = self._unit_center(u, uw, uh, ox, oy, tick_time)
         ur = max(3, min(uw, uh) * cs // 2 - 4)
@@ -661,19 +721,21 @@ class BattleView:
 
         if u.fear_aura > 0 and u.is_alive:
             self._draw_fear_aura(surf, u, cx, cy, ur, (tick_time // 200) % 4)
-        if u.is_alive and u.current_target and u.current_target.is_alive and not u.fleeing:
+        if (acs >= 16 and u.is_alive and u.current_target
+                and u.current_target.is_alive and not u.fleeing):
             self._draw_attack_symbol(surf, u.attack_type, cx, cy - ur - 10, max(3, cs // 8))
         if u.is_alive:
-            self._draw_live_body(surf, u, cx, cy, ur, uw, uh, team_color, pip_colors, is_hovered)
+            self._draw_live_body(surf, u, cx, cy, ur, uw, uh, team_color, pip_colors,
+                                 is_hovered, acs)
             self._draw_hp_bar(surf, u, cx, cy - ur - 5, max(4, uw * cs - 8))
-            if cs >= 20:
+            if acs >= 20:
                 self._draw_name_and_morale(surf, u, cx, cy, ur)
         else:
             self._draw_corpse(surf, cx, cy, ur, team_color)
-        if u.status_text and cs >= 16:
-            st = self.small_font.render(u.status_text, True, (255, 80, 80))
+        if u.status_text and acs >= 16:
+            st = R.label(self.small_font, u.status_text, (255, 80, 80))
             surf.blit(st, (cx - st.get_width() // 2, cy - ur - 18))
-        if cs >= 16:
+        if acs >= 16:
             self._draw_floating_texts(surf, u, cx, cy, ur)
 
     def _draw_fear_aura(self, surf, u, cx, cy, ur, pulse):
@@ -711,59 +773,42 @@ class BattleView:
             line(surf, c, (cx - s, sy - s), (cx + s, sy + s), 2)
             line(surf, c, (cx + s, sy - s), (cx - s, sy + s), 2)
 
-    def _draw_live_body(self, surf, u, cx, cy, ur, uw, uh, team_color, pip_colors, is_hovered):
+    def _draw_live_body(self, surf, u, cx, cy, ur, uw, uh, team_color, pip_colors,
+                        is_hovered, acs):
         """Ombre, token (ou cercle), anneau d'équipe, orientation, survol,
-        pastille de contingent et flash de dégâts."""
+        pastille de contingent et flash de dégâts.
+
+        Les trois premiers ne dépendent que du type d'unité et du camp: ils
+        sont assemblés une fois pour toutes (renderer.unit_body) et posés
+        d'un seul blit."""
         cs = self.cell_size
-        sh_w, sh_h = max(4, ur * 2), max(2, ur // 2 + 2)
-        surf.blit(R.get_shadow(sh_w, sh_h), (cx - sh_w // 2, cy + ur - sh_h // 2))
+        body, half = R.unit_body((u.siege_engine, u.fleeing, u.token_name, u.color,
+                                  u.role, ur, uw, uh, cs, team_color))
+        surf.blit(body, (cx - half, cy - half))
 
-        if u.siege_engine:
-            # Engin de siège: silhouette de bois à l'échelle de son empreinte
-            R.draw_siege_engine(surf, u.siege_engine,
-                                pygame.Rect(cx - uw * cs // 2, cy - uh * cs // 2, uw * cs, uh * cs),
-                                team_color)
-        elif u.fleeing:
-            pygame.draw.circle(surf, (255, 140, 0), (cx, cy), ur)
-        else:
-            token_size = min(uw, uh) * cs - 4
-            token_img = R.load_token(u.token_name, token_size) if u.token_name else None
-            if token_img:
-                surf.blit(token_img, (cx - token_size // 2, cy - token_size // 2))
-            else:
-                pygame.draw.circle(surf, u.color, (cx, cy), ur)
-                rc = ((255, 255, 255) if u.role == "front" else (128, 128, 128) if u.role == "mid"
-                      else (0, 0, 0))
-                pygame.draw.circle(surf, rc, (cx, cy), max(1, 3 * cs // 32))
-
-        # Contour d'équipe PAR-DESSUS (outline épaisse)
         ring_r = ur + 2
         ring_w = max(2, cs // 8)
-        if not u.siege_engine:      # l'engin porte déjà son liseré d'équipe
-            pygame.draw.circle(surf, team_color, (cx, cy), ring_r, ring_w)
         # Chevron d'orientation: vers la cible, sinon vers la marche
-        if cs >= 14 and not u.fleeing:
+        if acs >= 14 and not u.fleeing:
             ui.draw_facing(surf, cx, cy, ring_r, ui.facing_angle(u), team_color)
         if is_hovered:
             pygame.draw.circle(surf, (255, 240, 170), (cx, cy), ring_r + max(4, ring_w + 2), 2)
 
         # Pastille de contingent, seulement si l'équipe aligne plusieurs groupes
-        if pip_colors is not None and cs >= 16:
+        if pip_colors is not None and acs >= 16:
             pip_c = pip_colors.get(u.contingent, (220, 220, 220))
             pip_r = max(2, cs // 9)
             ppx, ppy = cx + int(ring_r * 0.72), cy - int(ring_r * 0.72)
             pygame.draw.circle(surf, (15, 18, 22), (ppx, ppy), pip_r + 1)
             pygame.draw.circle(surf, pip_c, (ppx, ppy), pip_r)
 
-        # Flash de dégâts (au moment PRÉCIS où le coup porte)
+        # Flash de dégâts (au moment PRÉCIS où le coup porte). Le décompte
+        # se fait dans update(), avec les autres minuteries: sinon une unité
+        # hors champ gardait son flash et le rejouait en entrant dans le cadre.
         hit_flash = getattr(u, '_hit_flash', 0)
         if hit_flash > 0 and self.round_frame >= getattr(u, '_hit_flash_delay', 0):
-            u._hit_flash = hit_flash - 1
             fr = ur + 3
-            fsurf = pygame.Surface((fr * 2 + 2, fr * 2 + 2), pygame.SRCALPHA)
-            pygame.draw.circle(fsurf, (255, 40, 40, int(150 * (hit_flash / 12))),
-                               (fr + 1, fr + 1), fr)
-            surf.blit(fsurf, (cx - fr - 1, cy - fr - 1))
+            surf.blit(R.hit_flash(fr, int(150 * (hit_flash / 12))), (cx - fr - 1, cy - fr - 1))
 
     @staticmethod
     def _draw_corpse(surf, cx, cy, ur, team_color):
@@ -786,23 +831,23 @@ class BattleView:
 
     def _draw_name_and_morale(self, surf, u, cx, cy, ur):
         cs = self.cell_size
-        name_txt = self.tiny_font.render(u.name[:5], True, (220, 220, 220))
+        name = u.name[:5]
+        name_txt = R.label(self.tiny_font, name, (220, 220, 220))
         # Ombre du texte pour la lisibilité sur tout terrain
-        name_sh = self.tiny_font.render(u.name[:5], True, (10, 10, 10))
+        name_sh = R.label(self.tiny_font, name, (10, 10, 10))
         surf.blit(name_sh, (cx - name_txt.get_width() // 2 + 1, cy + ur + 3))
         surf.blit(name_txt, (cx - name_txt.get_width() // 2, cy + ur + 2))
 
         # Moral en pastilles (plus lisible que "M:3")
         morale = u.get_effective_morale()
         n_pips = max(0, min(6, morale))
+        if not n_pips:
+            return
         pip_r = max(1, cs // 14)
-        pip_gap = pip_r * 2 + 2
-        total_w = n_pips * pip_gap - 2 if n_pips > 0 else 0
         color = ((100, 255, 100) if morale >= 3 else (255, 230, 90) if morale >= 2
                  else (255, 100, 100))
-        for pi in range(n_pips):
-            pygame.draw.circle(surf, color, (cx - total_w // 2 + pi * pip_gap + pip_r,
-                                             cy + ur + 13), pip_r)
+        pips = R.morale_pips(n_pips, pip_r, color)
+        surf.blit(pips, (cx - pips.get_width() // 2, cy + ur + 13 - pip_r))
 
     def _draw_floating_texts(self, surf, u, cx, cy, ur):
         ft_oy = -ur - 6
@@ -814,7 +859,7 @@ class BattleView:
             if not ft.is_visible():
                 continue  # l'action n'a pas encore eu lieu
             prog = ft.get_progress()
-            ts = self.tiny_font.render(ft.text, True, ft.color)
+            ts = R.label(self.tiny_font, ft.text, ft.color)
             ts.set_alpha(255 - int(255 * prog))
             surf.blit(ts, (cx - ts.get_width() // 2, cy + ft_oy - int(prog * ft.duration / 4)))
             ft_oy -= 10

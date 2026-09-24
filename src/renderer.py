@@ -64,6 +64,24 @@ _token_cache = {}
 _shadow_cache = {}
 
 
+# Cache des pastilles de moral: une rangée de 0 à 6 points, identique pour
+# toutes les unités de même moral — une surface au lieu de six cercles.
+_pips_cache = {}
+
+
+def morale_pips(n, radius, color):
+    key = (n, radius, color)
+    s = _pips_cache.get(key)
+    if s is None:
+        gap = radius * 2 + 2
+        w = max(1, n * gap - 2)
+        s = pygame.Surface((w, radius * 2), pygame.SRCALPHA)
+        for i in range(n):
+            pygame.draw.circle(s, color, (i * gap + radius, radius), radius)
+        _pips_cache[key] = s
+    return s
+
+
 def get_shadow(sh_w, sh_h):
     key = (sh_w, sh_h)
     s = _shadow_cache.get(key)
@@ -71,6 +89,95 @@ def get_shadow(sh_w, sh_h):
         s = pygame.Surface((sh_w, sh_h), pygame.SRCALPHA)
         pygame.draw.ellipse(s, (0, 0, 0, 70), (0, 0, sh_w, sh_h))
         _shadow_cache[key] = s
+    return s
+
+
+# Corps d'unité pré-assemblé: ombre + jeton (ou pastille) + anneau d'équipe.
+# Ces trois-là ne dépendent que du TYPE d'unité et de son camp, jamais de
+# l'instant: à 300 unités à l'écran, c'était un millier d'appels de dessin
+# par image, remplacés par un blit. Ce qui bouge (chevron d'orientation,
+# survol, flash de dégâts, barre de PV) reste dessiné par-dessus.
+_body_cache = {}
+
+
+def unit_body(spec):
+    """Surface du corps et demi-côté, pour un blit centré en (cx, cy).
+
+    `spec` = (engin, en fuite, jeton, couleur, rôle, ur, uw, uh, cs, couleur
+    d'équipe) — tout ce dont le dessin dépend, et rien d'autre."""
+    got = _body_cache.get(spec)
+    if got is not None:
+        return got
+    engine, fleeing, token_name, color, role, ur, uw, uh, cs, team_color = spec
+    sh_w, sh_h = max(4, ur * 2), max(2, ur // 2 + 2)
+    ring_r, ring_w = ur + 2, max(2, cs // 8)
+    token_size = min(uw, uh) * cs - 4
+    half = max(sh_w // 2, ring_r, ur + sh_h, token_size // 2,
+               (uw * cs) // 2, (uh * cs) // 2) + 2
+    surf = pygame.Surface((half * 2, half * 2), pygame.SRCALPHA)
+    cx = cy = half
+    surf.blit(get_shadow(sh_w, sh_h), (cx - sh_w // 2, cy + ur - sh_h // 2))
+    if engine:
+        draw_siege_engine(surf, engine,
+                          pygame.Rect(cx - uw * cs // 2, cy - uh * cs // 2,
+                                      uw * cs, uh * cs), team_color)
+    elif fleeing:
+        pygame.draw.circle(surf, (255, 140, 0), (cx, cy), ur)
+    else:
+        token_img = load_token(token_name, token_size) if token_name else None
+        if token_img:
+            surf.blit(token_img, (cx - token_size // 2, cy - token_size // 2))
+        else:
+            pygame.draw.circle(surf, color, (cx, cy), ur)
+            rc = ((255, 255, 255) if role == "front" else (128, 128, 128)
+                  if role == "mid" else (0, 0, 0))
+            pygame.draw.circle(surf, rc, (cx, cy), max(1, 3 * cs // 32))
+    if not engine:      # l'engin porte déjà son liseré d'équipe
+        pygame.draw.circle(surf, team_color, (cx, cy), ring_r, ring_w)
+    if len(_body_cache) > 512:
+        _body_cache.clear()
+    _body_cache[spec] = got = (surf, half)
+    return got
+
+
+# Cache des petits textes du champ de bataille (noms, statuts, textes
+# flottants). La même chaîne revient à chaque image pour des centaines
+# d'unités, et rendre une police coûte bien plus cher que reblitter une
+# surface déjà prête: c'était près d'un millier d'appels par image.
+_label_cache = {}
+_LABEL_CACHE_MAX = 4000
+
+
+def label(fnt, text, color):
+    """Texte rendu, mémorisé par (police, chaîne, couleur).
+
+    La surface est PARTAGÉE: qui joue sur son alpha (textes flottants) doit
+    le refixer avant chaque blit, jamais après."""
+    key = (id(fnt), text, color)
+    s = _label_cache.get(key)
+    if s is None:
+        if len(_label_cache) > _LABEL_CACHE_MAX:
+            _label_cache.clear()
+        s = fnt.render(text, True, color)
+        _label_cache[key] = s
+    return s
+
+
+# Halo rouge du flash de dégâts: un disque par (rayon, opacité), et les
+# opacités sont en nombre fini — inutile d'allouer une Surface par unité et
+# par image.
+_flash_cache = {}
+
+
+def hit_flash(radius, alpha):
+    key = (radius, alpha)
+    s = _flash_cache.get(key)
+    if s is None:
+        s = pygame.Surface((radius * 2 + 2, radius * 2 + 2), pygame.SRCALPHA)
+        pygame.draw.circle(s, (255, 40, 40, alpha), (radius + 1, radius + 1), radius)
+        if len(_flash_cache) > 512:
+            _flash_cache.clear()
+        _flash_cache[key] = s
     return s
 
 
@@ -99,6 +206,10 @@ def clear_token_cache():
     """Vide le cache (utile après resize)."""
     _token_cache.clear()
     _shadow_cache.clear()
+    _label_cache.clear()
+    _pips_cache.clear()
+    _body_cache.clear()
+    _flash_cache.clear()
 
 
 

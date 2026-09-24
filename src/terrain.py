@@ -153,6 +153,12 @@ def range_bonus(bf, shooter, target):
     return bonus + (0 if terr[tx][ty] in ELEVATED else 1)
 
 
+# Majorant de range_bonus: +1 de vent (weather.WIND_RANGE) et +1 de hauteur.
+# Sert aux pré-filtres spatiaux — qui élargissent leur rayon d'autant pour ne
+# jamais écarter une cible que effective_range aurait acceptée.
+MAX_RANGE_BONUS = 2
+
+
 def effective_range(bf, shooter, target):
     return shooter._max_range + range_bonus(bf, shooter, target)
 
