@@ -17,10 +17,28 @@ _DIM1, _DIM2, _DIM3 = (1, 1), (2, 2), (2, 4)
 # d'un pas en diagonale.
 _DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 _DIAG_COST = 1.414
+# Heuristique OCTILE: max(dx, dy) + (√2 - 1)·min(dx, dy), l'écart exact sur
+# terrain nu. Un pas droit coûte au moins 1, une diagonale au moins
+# _DIAG_COST (aucun terrain ne coûte moins que la plaine): elle reste
+# admissible et cohérente — les chemins restent les plus courts — mais
+# serre la fouille bien mieux que la distance de Tchebychev, qui ignorait le
+# surcoût des diagonales.
+_OCTILE = _DIAG_COST - 1.0
+# Objectif d'une recherche partielle infranchissable ou emmuré (cf.
+# a_star_path): on vise la case libre la plus proche, jusqu'à ce rayon.
+RETARGET_RADIUS = 3
+# Les huit voisins d'une case, en décalages (dx, dy)
+_NEIGHBOURS = tuple(_DIRS)
 # Mémo statique de l'A* à indices plats (cf. Battlefield._static_cells): case
 # pas encore calculée, et case d'une carte sans grille de terrain.
 _UNSET = object()
 _FLAT = (1.0, False)
+
+
+def _octile(dx, dy):
+    """Heuristique octile (cf. _OCTILE) pour un écart (dx, dy)."""
+    dx, dy = abs(dx), abs(dy)
+    return dy + dx * _OCTILE if dy > dx else dx + dy * _OCTILE
 
 
 class Battlefield:
@@ -809,7 +827,13 @@ class Battlefield:
         case atteinte la plus PROCHE de l'objectif plutôt qu'une liste vide.
         Sans cela, l'unité retombait sur un déplacement glouton et venait
         buter contre les bosquets. Réservé au mouvement: une charge, elle,
-        doit réellement atteindre sa case.
+        doit réellement atteindre sa case. Un objectif occupé (ennemi,
+        réservation) ou emmuré est d'abord remplacé par la case libre la
+        plus proche (cf. _free_cell_near): on y va directement au lieu de
+        fouiller tout le voisinage pour s'en approcher.
+
+        Heuristique octile (cf. _OCTILE): admissible, donc toujours un
+        chemin de coût minimal.
 
         Le chemin est parcouru CASE PAR CASE et doit être praticable pour
         toute l'empreinte de l'unité (1×1, 2×2, 2×4): on ne traverse jamais
@@ -828,14 +852,30 @@ class Battlefield:
 
         # ── Grosses unités (2×2, 2×4): toute l'empreinte à chaque pas ──
         enemy_cells, ally_positions = self._occupancy_split(unit, battle)
+        reserved = reserved_positions
+        uw, uh = self.get_unit_dims(unit)
+        footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
+                                              reserved, self.gate_cells_open_for(unit))
 
-        # Pénalité réduite quand loin de la cible
         sx, sy = start
         gx, gy = goal
+        # Objectif lui-même infranchissable (ennemi, case réservée, obstacle):
+        # une recherche partielle vise la case libre la plus proche (cf.
+        # _a_star_small); sans repli partiel, c'est non.
+        goal_blocked = footprint_ok(gx, gy) is None
+        if goal_blocked and partial and max(abs(gx - sx), abs(gy - sy)) > 1:
+            alt = self._free_anchor_near(footprint_ok, start, goal)
+            if alt is not None:
+                if alt == start:
+                    return []
+                goal = alt
+                gx, gy = goal
+                goal_blocked = False
+
+        # Pénalité réduite quand loin de la cible
         dist_to_goal = max(abs(gx - sx), abs(gy - sy))
         ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
 
-        reserved = reserved_positions
         # Lu une seule fois ici, valable pour tout cet appel (le terrain ne
         # change jamais en cours de bataille). Pas de cache d'instance: si
         # bf.terrain est réassigné entre deux appels d'a_star_path, le
@@ -844,7 +884,7 @@ class Battlefield:
         _uphill = tr.UPHILL_FACTOR
 
         open_set = []
-        h0 = max(abs(gx - sx), abs(gy - sy))
+        h0 = _octile(gx - sx, gy - sy)
         # Départage des égalités de coût: par x ORIENTÉ selon le sens de
         # marche, pour que deux armées en miroir suivent des chemins en
         # miroir. Un départage par x brut favorisait toujours l'ouest: les
@@ -854,17 +894,12 @@ class Battlefield:
         heapq.heappush(open_set, (h0, 0.0, xs * sx, sy, sx))
         g_score = {start: 0.0}
         came_from = {}
-        best_node, best_h = start, h0
+        best_node, best_h = start, dist_to_goal
 
-        uw, uh = self.get_unit_dims(unit)
-        footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
-                                              reserved, self.gate_cells_open_for(unit))
-        # Objectif lui-même infranchissable (ennemi, case réservée, obstacle):
-        # l'A* fouillait jusqu'au plafond de nœuds avant d'abandonner — la
-        # moitié du temps de calcul des grandes cartes (178×64). On le sait
-        # d'avance: sans repli partiel, c'est non; avec, on borne la fouille
-        # au voisinage que le détour peut raisonnablement couvrir.
-        if footprint_ok(gx, gy) is None:
+        # Toujours bloqué (aucune case libre alentour): on borne la fouille
+        # au voisinage que le détour peut raisonnablement couvrir — l'A*
+        # fouillait sinon jusqu'au plafond de nœuds avant d'abandonner.
+        if goal_blocked:
             if not partial:
                 return []
             max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
@@ -929,11 +964,13 @@ class Battlefield:
                 if new_g < g_score.get(neighbor, _INF):
                     came_from[neighbor] = current
                     g_score[neighbor] = new_g
-                    # chebyshev inliné
+                    # octile inliné
                     h = _abs(gx - nx)
                     hdy = _abs(gy - ny)
                     if hdy > h:
-                        h = hdy
+                        h = hdy + h * _OCTILE
+                    else:
+                        h += hdy * _OCTILE
                     _heappush(open_set, (new_g + h, new_g, xs * nx, ny, nx))
 
         if partial and best_node != start:
@@ -949,25 +986,21 @@ class Battlefield:
     def _a_star_small(self, start, goal, unit, battle, reserved, max_nodes, partial):
         """A* d'une unité d'une case (l'immense majorité des appels).
 
-        La MÊME recherche que celle des grosses unités, nœud pour nœud et
-        flottant pour flottant: mêmes coûts, calculés dans le même ordre,
-        même clé de file de priorité, même départage. Seule change la
-        représentation: une case est l'entier (x + 1) * S + (y + 1), avec
-        S = hauteur + 2, sur une grille bordée d'une rangée de cases
-        infranchissables. Plus de tuple à fabriquer et à hacher par voisin,
-        plus de test de bornes, et la couche statique (obstacles, murs,
-        terrain) est mémorisée pour toute la planification du round
-        (cf. occupancy_cache) au lieu d'être relue à chaque voisin — deux
-        tiers du temps de calcul d'une grande bataille passaient ici."""
+        Même recherche que celle des grosses unités — mêmes coûts, même
+        heuristique octile, même clé de file de priorité, même départage —
+        plus le test « objectif emmuré » que seule une case unique permet de
+        faire à bon compte. Seule change la représentation: une case est
+        l'entier (x + 1) * S + (y + 1), avec S = hauteur + 2, sur une grille
+        bordée d'une rangée de cases infranchissables. Plus de tuple à
+        fabriquer et à hacher par voisin, plus de test de bornes, et la
+        couche statique (obstacles, murs, terrain) est mémorisée pour toute
+        la planification du round (cf. occupancy_cache) au lieu d'être relue
+        à chaque voisin."""
         W, H = self.width, self.height
         S = H + 2
         enemy_cells, enemy_f, ally_f = self._occupancy_flat(unit, battle, S)
-
-        # Pénalité réduite quand loin de la cible
         sx, sy = start
         gx, gy = goal
-        dist_to_goal = max(abs(gx - sx), abs(gy - sy))
-        ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
 
         # Cases interdites pour CET appel: ennemis, réservations, et portes
         # intactes fermées à cette unité (la garnison a les siennes).
@@ -987,9 +1020,30 @@ class Battlefield:
         _uphill = tr.UPHILL_FACTOR
         memo = self._static_cells()
         fill = self._fill_static
+        xs = -1 if gx >= sx else 1
 
-        # Objectif infranchissable: cf. la version des grosses unités
-        if not self.is_valid(gx, gy) or goal in reserved or goal in enemy_cells:
+        # Objectif infranchissable (ennemi, case réservée, obstacle) ou
+        # emmuré (ses huit voisines le sont): l'A* partiel fouillait jusqu'au
+        # plafond de nœuds pour s'en approcher — la moitié du travail d'une
+        # grande bataille. On vise d'emblée la case libre la plus proche.
+        goal_blocked = not self.is_valid(gx, gy) or goal in reserved or goal in enemy_cells
+        if partial and max(abs(gx - sx), abs(gy - sy)) > 1 and (
+                goal_blocked
+                or self._walled_in(memo, blocked, (gx + 1) * S + gy + 1, S)):
+            alt = self._free_cell_near(memo, blocked, ally_f, S, start, goal, xs)
+            if alt is not None:
+                if alt == start:
+                    return []
+                goal = alt
+                gx, gy = goal
+                goal_blocked = False
+                xs = -1 if gx >= sx else 1
+
+        # Pénalité réduite quand loin de la cible
+        dist_to_goal = max(abs(gx - sx), abs(gy - sy))
+        ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
+        # Toujours bloqué: cf. la version des grosses unités
+        if goal_blocked:
             if not partial:
                 return []
             max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
@@ -1003,8 +1057,7 @@ class Battlefield:
                   dx * S if (dx and dy) else 0) for dx, dy in _DIRS]
         # Départage par x orienté (miroir), cf. grosses unités; l'indice plat
         # clôt la clé sans jamais départager (il découle de (x, y)).
-        xs = -1 if gx >= sx else 1
-        open_set = [(dist_to_goal, 0.0, xs * sx, sy, sx, sk)]
+        open_set = [(_octile(gx - sx, gy - sy), 0.0, xs * sx, sy, sx, sk)]
         _INF = 1e9
         g_score = [_INF] * ((W + 2) * S)
         g_score[sk] = 0.0
@@ -1063,7 +1116,9 @@ class Battlefield:
                     h = gx - nx if gx > nx else nx - gx
                     hdy = gy - ny if gy > ny else ny - gy
                     if hdy > h:
-                        h = hdy
+                        h = hdy + h * _OCTILE
+                    else:
+                        h += hdy * _OCTILE
                     _heappush(open_set, (new_g + h, new_g, xs * nx, ny, nx, nk))
 
         if partial and best_k != sk:
@@ -1080,6 +1135,80 @@ class Battlefield:
             k = came_from[k]
         path.reverse()
         return path
+
+    # ─── Objectif inatteignable: la case libre la plus proche ───
+    # Une cible au cœur de la mêlée n'a souvent plus une case libre à son
+    # contact: find_best_attack_position rend alors une case occupée — par
+    # un ennemi, ou déjà réservée par un camarade. L'A* partiel fouillait
+    # jusqu'à son plafond (1200 nœuds) pour finir au plus près; mesuré sur
+    # une bataille de 384 unités, la moitié de tout son travail.
+
+    def _walled_in(self, memo, blocked, k, stride):
+        """La case d'indice plat k n'a-t-elle aucune voisine franchissable
+        (obstacle, ennemi, réservation, porte fermée) ?"""
+        fill = self._fill_static
+        for dx, dy in _NEIGHBOURS:
+            n = k + dx * stride + dy
+            v = memo[n]
+            if v is _UNSET:
+                v = fill(memo, n)
+            if v is not None and n not in blocked:
+                return False
+        return True
+
+    def _free_cell_near(self, memo, blocked, ally_f, stride, start, goal, xs):
+        """Case où une unité d'une case peut s'arrêter (franchissable, ni
+        ennemi ni réservée ni alliée, pas emmurée), au plus près de `goal`
+        (anneaux de Tchebychev jusqu'à RETARGET_RADIUS), puis de `start`;
+        égalités départagées par x orienté (xs), comme l'A*: deux armées en
+        miroir visent des cases en miroir. None s'il n'y en a pas."""
+        W, H = self.width, self.height
+        gx, gy = goal
+        sx, sy = start
+        fill = self._fill_static
+        for r in range(1, RETARGET_RADIUS + 1):
+            best = best_key = None
+            for x in range(max(0, gx - r), min(W, gx + r + 1)):
+                ys = (range(gy - r, gy + r + 1) if abs(x - gx) == r else (gy - r, gy + r))
+                for y in ys:
+                    if not 0 <= y < H:
+                        continue
+                    k = (x + 1) * stride + y + 1
+                    v = memo[k]
+                    if v is _UNSET:
+                        v = fill(memo, k)
+                    if (v is None or k in blocked or k in ally_f
+                            or self._walled_in(memo, blocked, k, stride)):
+                        continue
+                    dx, dy = abs(x - sx), abs(y - sy)
+                    key = (max(dx, dy), dx + dy, xs * x, y)
+                    if best_key is None or key < best_key:
+                        best, best_key = (x, y), key
+            if best is not None:
+                return best
+        return None
+
+    def _free_anchor_near(self, footprint_ok, start, goal):
+        """Pendant de _free_cell_near pour une grosse unité: ancre dont
+        toute l'empreinte est franchissable et libre d'alliés."""
+        gx, gy = goal
+        sx, sy = start
+        xs = -1 if gx >= sx else 1
+        for r in range(1, RETARGET_RADIUS + 1):
+            best = best_key = None
+            for x in range(gx - r, gx + r + 1):
+                ys = (range(gy - r, gy + r + 1) if abs(x - gx) == r else (gy - r, gy + r))
+                for y in ys:
+                    info = footprint_ok(x, y)
+                    if info is None or info[2]:
+                        continue
+                    dx, dy = abs(x - sx), abs(y - sy)
+                    key = (max(dx, dy), dx + dy, xs * x, y)
+                    if best_key is None or key < best_key:
+                        best, best_key = (x, y), key
+            if best is not None:
+                return best
+        return None
 
     def find_best_attack_position(self, unit, target, battle, reserved_positions=None):
         """Trouve la meilleure case libre à portée de la cible.

@@ -67,6 +67,30 @@ def test_astar_ne_traverse_pas_une_ligne_ennemie():
 
 
 @test
+def test_astar_objectif_occupe_vise_la_case_libre_voisine():
+    """Objectif sur un ennemi (cas courant: plus une case libre au contact
+    de la cible): le chemin partiel va droit à la case libre la plus proche
+    de l'objectif, côté départ, au lieu de fouiller jusqu'au plafond."""
+    bf = flat_bf()
+    u = soldier((3, 5))
+    b = Sides(bf, [u], [soldier((12, 5))])
+    assert bf.a_star_path((3, 5), (12, 5), u, b, partial=True)[-1] == (11, 5)
+    # Sans repli partiel (charge, validation d'une case), c'est toujours non
+    assert bf.a_star_path((3, 5), (12, 5), u, b) == []
+
+
+@test
+def test_astar_objectif_emmure_vise_hors_de_la_poche():
+    """Case libre entourée d'ennemis: inatteignable, on vise la case libre
+    la plus proche hors de l'anneau."""
+    bf = flat_bf()
+    u = soldier((3, 5))
+    ring = [soldier((12 + dx, 5 + dy)) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy]
+    b = Sides(bf, [u], ring)
+    assert bf.a_star_path((3, 5), (12, 5), u, b, partial=True)[-1] == (10, 5)
+
+
+@test
 def test_astar_passe_par_la_breche():
     bf = flat_bf()
     u = soldier((3, 5))

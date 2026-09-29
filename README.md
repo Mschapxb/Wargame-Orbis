@@ -485,6 +485,7 @@ battle-simulator/
 ├── tactics.py           # Maths de combat, carte de menace, anticipation
 ├── renderer.py          # Primitives de rendu (terrain, structures, rapport)
 ├── battle_view.py       # Écran de bataille: boucle, caméra, touches (KEY_ACTIONS), HUD
+├── battle_pipeline.py   # Simulation en tâche de fond: un instantané par round pour l'écran
 ├── unit.py              # Classe Unit (stats, combat, animations)
 ├── unit_library.py      # Base de données d'unités et armées prédéfinies
 ├── models.py            # Armes et sorts (Arme, SpellFireball, etc.)
@@ -634,7 +635,7 @@ remplace:
   une case est un entier sur une grille bordée de cases infranchissables, et
   la couche statique (obstacles, murs, terrain) est mémorisée pour toute la
   planification du round. Même file de priorité, mêmes coûts calculés dans
-  le même ordre: le même chemin, deux fois plus vite.
+  le même ordre que la version à tuples des grosses unités.
 - **Plus proche voisin exact** (`spatial.NearestDistance`,
   `spatial.NearestUnit`): points rangés par colonne, recherche vers
   l'extérieur arrêtée dès que l'écart en x dépasse le meilleur trouvé.
@@ -644,6 +645,48 @@ remplace:
   bouge pendant `issue_orders`; ce qui ne dépend que des positions (plus
   proche ennemi, menace sur nos tireurs, rang des cibles) est calculé une
   fois par liste au lieu d'une fois par unité.
+
+Deux règles de l'A* changent, elles, le chemin suivi — sans toucher à
+l'équité (`bench_fairness.py`: gauche 49,0 % contre 48,9 % avant, mêmes
+graines, aucune situation signalée):
+
+- **Heuristique octile** au lieu de Tchebychev: toujours admissible (aucun
+  pas ne coûte moins que la plaine), donc toujours un chemin de coût
+  minimal, mais une fouille bien plus serrée. Seul le choix entre chemins de
+  même coût peut changer.
+- **Objectif de repli.** Une cible au cœur de la mêlée n'a souvent plus de
+  case libre à son contact: la case d'attaque visée est occupée par un
+  ennemi, déjà réservée par un camarade, ou emmurée. L'A* partiel fouillait
+  alors jusqu'à son plafond de 1200 nœuds pour s'en approcher — la moitié de
+  tout son travail. Il vise désormais d'emblée la case libre la plus proche
+  (`_free_cell_near`, rayon 3, départage en miroir). Une charge ou la
+  validation d'une case précise (sans repli partiel) refusent toujours.
+
+Au total, deux fois moins de nœuds explorés, et un round de 384 unités
+calculé en 0,25 s au lieu de 0,75 s au départ de ce chantier.
+
+### Simulation en tâche de fond (`battle_pipeline.py`)
+
+Calculer un round dans la boucle d'affichage figeait l'écran à chaque round
+(près d'une seconde à 800 unités). Le round suivant se calcule maintenant
+dans un autre fil, **pendant** l'animation du précédent:
+
+- la bataille **vivante** n'est touchée que par le fil de simulation;
+- l'écran n'anime que des **instantanés** (copie profonde par round,
+  `take_snapshot`): rien de mutable n'est partagé, aucun verrou dans le
+  moteur;
+- ce que la simulation produit pour l'écran (effets, textes flottants,
+  flash de dégâts) passe à l'instantané et quitte la bataille vivante;
+  `carry_over` raccorde deux instantanés successifs (un effet en cours
+  continue au round suivant);
+- l'écran ne tire jamais dans le `random` global: la bataille jouée est
+  exactement celle de `simulate_round()` appelé à la main
+  (`test_ui.py` le vérifie round par round).
+
+Le fil n'a qu'un round d'avance. S'il n'a pas fini quand l'animation se
+termine, l'écran garde sa dernière image mais continue de répondre (caméra,
+survol). `BattleView(..., threaded=False)` rend l'ancien comportement,
+déterministe image par image, pour les tests.
 
 Côté affichage (`battle_view.py`), trois règles suivent la même logique: on ne
 dessine que les unités **dans le cadre**, le corps d'une unité (ombre, jeton,

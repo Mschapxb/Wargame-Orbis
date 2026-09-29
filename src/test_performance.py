@@ -93,26 +93,67 @@ def test_unite_la_plus_proche_comme_min():
 # ── A* des unités d'une case: la version plate refait la recherche d'origine ──
 
 
+OCTILE = 1.414 - 1.0
+
+
+def octile(dx, dy):
+    dx, dy = abs(dx), abs(dy)
+    return dy + dx * OCTILE if dy > dx else dx + dy * OCTILE
+
+
 def reference_a_star(bf, start, goal, unit, battle, reserved, max_nodes, partial):
-    """L'A* à tuples d'avant les indices plats (branche 1×1), tel quel."""
+    """L'A* à tuples de la branche 1×1, écrit sans indices plats: même
+    heuristique octile, même objectif de repli (case libre la plus proche
+    d'un objectif occupé ou emmuré)."""
     if start == goal:
         return [goal]
     enemy_cells, ally_positions = bf._occupancy_split(unit, battle)
     sx, sy = start
     gx, gy = goal
-    dist_to_goal = max(abs(gx - sx), abs(gy - sy))
-    ally_penalty = 1.5 if dist_to_goal > 8 else 2.5
     grid, width, height = bf.grid, bf.width, bf.height
     gate_hp = bf.gate_hp
     open_cells = bf.gate_cells_open_for(unit)
     terr = bf.terrain
     fires = getattr(bf, 'fires', None)
+
+    def static_ok(x, y):
+        return (0 <= x < width and 0 <= y < height and grid[x][y] not in (1, 2)
+                and (terr is None or tr.MOVE[terr[x][y]] is not None))
+
+    def blocked(x, y):
+        return ((x, y) in reserved or (x, y) in enemy_cells
+                or (grid[x][y] == 3 and (x, y) not in open_cells and gate_hp.get((x, y), 0) > 0))
+
+    def walled_in(x, y):
+        return not any(static_ok(x + dx, y + dy) and not blocked(x + dx, y + dy)
+                       for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy)
+
     xs = -1 if gx >= sx else 1
-    open_set = [(dist_to_goal, 0.0, xs * sx, sy, sx)]
+    goal_blocked = not bf.is_valid(gx, gy) or goal in reserved or goal in enemy_cells
+    if partial and max(abs(gx - sx), abs(gy - sy)) > 1 and (goal_blocked or walled_in(gx, gy)):
+        alt = None
+        for r in range(1, 4):
+            cands = [(max(abs(x - sx), abs(y - sy)), abs(x - sx) + abs(y - sy), xs * x, y, (x, y))
+                     for x in range(gx - r, gx + r + 1) for y in range(gy - r, gy + r + 1)
+                     if max(abs(x - gx), abs(y - gy)) == r and static_ok(x, y)
+                     and not blocked(x, y) and (x, y) not in ally_positions
+                     and not walled_in(x, y)]
+            if cands:
+                alt = min(cands)[-1]
+                break
+        if alt is not None:
+            if alt == start:
+                return []
+            gx, gy = goal = alt
+            goal_blocked = False
+            xs = -1 if gx >= sx else 1
+    dist_to_goal = max(abs(gx - sx), abs(gy - sy))
+    ally_penalty = 1.5 if dist_to_goal > 8 else 2.5
+    open_set = [(octile(gx - sx, gy - sy), 0.0, xs * sx, sy, sx)]
     g_score = {start: 0.0}
     came_from = {}
     best_node, best_h = start, dist_to_goal
-    if not bf.is_valid(gx, gy) or goal in reserved or goal in enemy_cells:
+    if goal_blocked:
         if not partial:
             return []
         max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
@@ -170,8 +211,8 @@ def reference_a_star(bf, start, goal, unit, battle, reserved, max_nodes, partial
             if new_g < g_score.get(nb, 1e9):
                 came_from[nb] = current
                 g_score[nb] = new_g
-                h = max(abs(gx - nx), abs(gy - ny))
-                heapq.heappush(open_set, (new_g + h, new_g, xs * nx, ny, nx))
+                heapq.heappush(open_set, (new_g + octile(gx - nx, gy - ny), new_g,
+                                          xs * nx, ny, nx))
     if partial and best_node != start:
         path, cur = [], best_node
         while cur in came_from:

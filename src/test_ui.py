@@ -170,7 +170,8 @@ def test_boucle_relance_et_retour_menu():
     comp = [("Infanterie régulière", 6), ("Arbaletrier régulier", 3)]
     b = Battle(ul.build_army("Armée Skaldienne", comp), ul.build_army("Armée Skaldienne", comp),
                90, 40, 8, map_name="Village", map_options={'seed': 12})
-    view = battle_view.BattleView(b, 20)
+    # Synchrone: le round se joue à l'image où il s'affiche (déterministe)
+    view = battle_view.BattleView(b, 20, threaded=False)
     view.speed_fast()
     for _ in range(30):
         view.update()
@@ -187,6 +188,61 @@ def test_boucle_relance_et_retour_menu():
     assert not view.running and view.return_action == "menu"
     for action in set(battle_view.KEY_ACTIONS.values()):
         assert callable(getattr(view, action)), action
+
+
+def _units_state(battle):
+    return [(u.position, u.hp, u.is_alive, u.fleeing)
+            for u in battle.army1_roster + battle.army2_roster]
+
+
+@test
+def test_simulation_en_tache_de_fond_meme_bataille():
+    """Le round suivant se calcule dans un autre fil pendant l'animation:
+    la bataille jouée reste EXACTEMENT celle de simulate_round() à la main,
+    l'écran n'anime que des instantanés, et la bataille vivante ne garde rien
+    de ce qu'elle a transmis à l'écran (effets, textes, flashs)."""
+    import time
+    import battle_view
+    pygame.display.set_mode((1400, 800))
+    comp1 = [("Infanterie régulière", 8), ("Arbaletrier régulier", 4), ("Housecarl", 2)]
+    comp2 = [("Fantassin covaliir", 8), ("Archer covaliir", 4), ("Cavalier covaliir", 2)]
+    rounds = 6
+
+    def new_battle():
+        random.seed(21)
+        return Battle(ul.build_army("Armée Skaldienne", comp1),
+                      ul.build_army("Armée Orlandar", comp2), 60, 36, 8, map_name="Village")
+
+    ref = new_battle()
+    expected = []
+    for _ in range(rounds):
+        ref.simulate_round()
+        expected.append(_units_state(ref))
+
+    live = new_battle()
+    view = battle_view.BattleView(live, 20)          # fil de simulation
+    try:
+        assert view.pipeline.threaded and view.battle is not live
+        view.speed_fast()
+        seen = {}
+        deadline = time.time() + 60
+        while view.battle.round <= rounds and view.winner is None:
+            assert time.time() < deadline, "le fil de simulation ne rend pas la main"
+            view.update()
+            view.draw(0)
+            shown = view.battle.round - 1          # rounds joués dans l'instantané
+            if shown >= 1 and shown not in seen:
+                assert view.battle is not live
+                seen[shown] = _units_state(view.battle)
+            view.pipeline.wait(0.01)
+        for k, state in seen.items():
+            assert state == expected[k - 1], f"round {k}: la bataille affichée diverge"
+        assert len(seen) >= min(rounds, 3)
+    finally:
+        view.pipeline.close()
+    for u in live.army1_roster + live.army2_roster:
+        assert not u.floating_texts and u._hit_flash == 0 and u._lunge_timer == 0
+    assert not any(live.visual_effects.values())
 
 
 # ── Runner (ajouter les nouveaux tests AU-DESSUS de cette ligne) ──

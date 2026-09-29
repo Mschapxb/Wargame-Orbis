@@ -4,13 +4,19 @@
 "menu" (touche M) ou None (quitter). renderer.py garde les primitives de
 dessin (terrain, structures, rapport); ce module les orchestre.
 
-Chaque image: événements → caméra → simulation → dessin. Les commandes
+Chaque image: événements → caméra → animation → dessin. Les commandes
 clavier passent par la table KEY_ACTIONS (touche → méthode).
+
+La simulation tourne en tâche de fond (battle_pipeline): le round suivant se
+calcule pendant que l'écran anime le précédent, et `self.battle` n'est
+jamais la bataille jouée mais l'INSTANTANÉ du dernier round calculé.
 """
 import math
+import sys
 
 import pygame
 
+import battle_pipeline as BP
 import renderer as R
 import theme as T
 import ui
@@ -98,7 +104,9 @@ def _along_path(path, t):
 
 
 class BattleView:
-    def __init__(self, battle, cell_size):
+    def __init__(self, battle, cell_size, threaded=True):
+        """threaded=False: chaque round est simulé au moment de l'afficher,
+        dans ce fil (ancien comportement, déterministe image par image)."""
         info = pygame.display.Info()
         self.screen_w = info.current_w
         self.screen_h = info.current_h
@@ -108,6 +116,8 @@ class BattleView:
         self.clock = pygame.time.Clock()
         self.is_borderless = True   # False = plein écran exclusif (touche B)
         self.cell_size = cell_size
+        self.threaded = threaded
+        self.pipeline = None
 
         self.small_font = T.font('ui', max(9, cell_size // 3) + 1)
         self.tiny_font = T.font('ui', max(7, cell_size // 4) + 1)
@@ -153,9 +163,14 @@ class BattleView:
 
     def _load_battle(self, battle):
         cs = self.cell_size
-        self.battle = battle
-        bf = battle.battlefield
+        # Avant tout round: les effets se placent en pixels de cette taille
         battle.cell_size = cs
+        if self.pipeline is not None:
+            self.pipeline.close()
+        self.pipeline = BP.RoundPipeline(battle, threaded=self.threaded)
+        # L'écran ne touche plus la bataille jouée, seulement ses instantanés
+        battle = self.battle = self.pipeline.initial_snapshot()
+        bf = battle.battlefield
         self.grid_surface = R.build_grid_surface(battle, cs)
         self.fxr.reset(bf.width * cs, bf.height * cs)
         self.wfx = WeatherFx(getattr(bf, 'weather', None))
@@ -170,7 +185,7 @@ class BattleView:
         self.battle_report = None
         self.terrain_legend = None
         self.move_anim_progress = 1.0   # 0 = début du mouvement, 1 = arrivé
-        self.round_frame = 10 ** 6      # force la simulation du premier round
+        self.round_frame = 10 ** 6      # force l'affichage du premier round
         self.screen_shake = 0.0         # secousse de caméra (impacts lourds)
 
         # Bannières d'événements dramatiques: [texte, couleur, images restantes]
@@ -180,19 +195,30 @@ class BattleView:
         cmds = (battle.commander1, battle.commander2)
         self.prev_postures = [getattr(c, 'posture', 'balanced') for c in cmds]
         self.prev_maneuvers = [getattr(c, 'maneuver', None) for c in cmds]
+        # Le premier round se calcule déjà (même en pause)
+        self.pipeline.request(self._round_frames())
 
     # ─── Boucle ───
 
     def run(self):
-        while self.running:
-            now = pygame.time.get_ticks()
-            for event in pygame.event.get():
-                self.handle_event(event)
-            self.scroll_camera()
-            self.update()
-            self.draw(now)
-            pygame.display.flip()
-            self.clock.tick(60)
+        # Le fil de simulation calcule pendant que celui-ci dessine: un
+        # passage de main plus fréquent (5 ms par défaut) évite qu'une image
+        # attende trop longtemps le verrou global de Python.
+        switch = sys.getswitchinterval()
+        sys.setswitchinterval(0.001)
+        try:
+            while self.running:
+                now = pygame.time.get_ticks()
+                for event in pygame.event.get():
+                    self.handle_event(event)
+                self.scroll_camera()
+                self.update()
+                self.draw(now)
+                pygame.display.flip()
+                self.clock.tick(60)
+        finally:
+            sys.setswitchinterval(switch)
+            self.pipeline.close()
         return self.return_action
 
     # ─── Caméra ───
@@ -295,6 +321,9 @@ class BattleView:
 
     def restart(self):
         from battle import Battle
+        # Le fil finit son round AVANT la nouvelle bataille: la génération de
+        # la carte ne doit pas tirer dans le même hasard que lui
+        self.pipeline.close()
         self._load_battle(Battle(*self._restart_args, **self._restart_kwargs))
 
     def toggle_lines(self):
@@ -333,23 +362,31 @@ class BattleView:
 
     # ─── Simulation ───
 
+    def _round_frames(self):
+        return R.ROUND_FRAMES_FAST if self.speed == "fast" else R.ROUND_FRAMES_NORMAL
+
     def update(self):
-        battle = self.battle
         if not self.paused and self.winner is None:
             # ── Cadence CONTINUE ──
             # Le round n'est plus « simuler, animer, puis attendre »: sa
             # durée est fixée en frames, le moteur y répartit toutes les
             # actions (cf. battle.T_*), et le round suivant enchaîne sans
             # temps mort. C'est ce qui donne la sensation de temps réel.
-            frames = R.ROUND_FRAMES_FAST if self.speed == "fast" else R.ROUND_FRAMES_NORMAL
+            frames = self._round_frames()
             if self.round_frame >= frames:
-                self._simulate_round(frames)
+                # Round fini: le suivant s'est calculé pendant son animation.
+                # S'il n'est pas encore prêt, on garde l'image — l'écran, lui,
+                # continue de répondre.
+                snap = self.pipeline.take()
+                if snap is not None:
+                    self._show_round(snap, frames)
             else:
                 self.round_frame += 1
             # Le déplacement occupe la première moitié du round et se
             # termine avant que l'échange général ne batte son plein.
             self.move_anim_progress = min(1.0, self.round_frame / max(1.0, frames * R.MOVE_WINDOW))
 
+        battle = self.battle
         # Décompter les minuteries d'animation (une fois l'instant venu).
         # Les textes flottants vieillissent ICI, pour toutes les unités et
         # hors pause: vieillis au dessin, ceux d'une unité hors champ (ou
@@ -398,14 +435,16 @@ class BattleView:
         if self.screen_shake < 0.25:
             self.screen_shake = 0.0
 
-    def _simulate_round(self, frames):
-        battle = self.battle
+    def _show_round(self, snap, frames):
+        """Passe à l'instantané du round suivant et demande celui d'après,
+        qui se calculera pendant l'animation de celui-ci."""
+        old = self.battle
         # Ce que la destruction a changé au round précédent est appliqué en
-        # entier avant d'en simuler un nouveau.
-        R.apply_destruction(self.grid_surface, battle, self.cell_size, 10 ** 6)
+        # entier avant d'afficher le nouveau.
+        R.apply_destruction(self.grid_surface, old, self.cell_size, 10 ** 6)
+        BP.carry_over(old, snap)
+        self.battle = battle = snap
         self.round_frame = 0
-        battle.fx_frames_per_round = frames
-        battle.simulate_round()
         # Rafraîchir la grille si siège (portes détruites)
         if battle.battlefield.gate_hp:
             self.gate_state = R.repaint_gates(self.grid_surface, battle, self.cell_size,
@@ -415,6 +454,8 @@ class BattleView:
         if result:
             self.winner = result
             self.battle_report = battle.get_battle_report()
+        else:
+            self.pipeline.request(frames)
 
     def _banner(self, text, color, frames):
         self.event_banners.append([text, color, frames])
@@ -704,7 +745,8 @@ class BattleView:
         # Chaque unité a un léger décalage de départ et une vitesse propre
         # (déterministes par unité) → l'armée ne bouge plus en bloc robotique
         prev_x, prev_y = getattr(u, '_prev_position', u.position)
-        seed_u = id(u) % 9973
+        # uid, pas id(): l'unité est une nouvelle copie à chaque round
+        seed_u = u.uid % 9973
         is_moving = (prev_x != x or prev_y != y)
         if is_moving:
             delay_u = (seed_u % 11) / 11.0 * 0.22               # 0 → 0.22 de retard
