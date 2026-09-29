@@ -163,7 +163,7 @@ def carry_over(old, new):
         if u._lunge_timer <= 0 < prev._lunge_timer:
             u._lunge_timer, u._lunge_delay = prev._lunge_timer, 0
             u._lunge_target = prev._lunge_target
-    for attr in ('_ground_layer',):
+    for attr in ('_ground_layer', '_static_terrain'):
         if hasattr(old, attr):
             setattr(new, attr, getattr(old, attr))
     if hasattr(old.battlefield, '_has_buildings'):

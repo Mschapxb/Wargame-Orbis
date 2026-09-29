@@ -21,15 +21,29 @@ from .catalog import natural_biome
 # plein milieu du champ où se joue le combat, sinon ils masquent les
 # unités.
 
-# Sous-bois: c'est là, et plus au hasard, que poussent les arbres
+# Sous-bois: les ARBRES d'un bois sont dessinés par le rendu du terrain
+# (terrain_render.tall_sprites: ils disparaissent quand le bois brûle); le
+# décor n'y sème que ce qui pousse à leurs pieds.
 _WOOD_DECOR = {
-    'density': 0.45,
-    'big': [("arbre_pin", 3), ("arbre_rond", 4), ("buisson", 3)],
+    'density': 0.30,
+    'big': [("fougere", 5), ("champignon", 2), ("souche", 2), ("tronc", 1)],
 }
 # Au désert, le « bois » est une palmeraie clairsemée
 _WOOD_DECOR_DESERT = {
-    'density': 0.35,
-    'big': [("arbre_rond", 3), ("buisson", 2), ("buisson_sec", 3)],
+    'density': 0.20,
+    'big': [("buisson_sec", 3), ("caillou", 2)],
+}
+# Ce que la saison fait du petit décor (l'hiver couvre les fleurs, l'automne
+# les fane)
+_SEASON_SWAP = {
+    "Hiver": {"fleurs": "caillou", "herbe_haute": "herbe", "champignon": "caillou",
+              "fougere": "herbe", "botte_foin": "bois_pile"},
+    "Automne": {"fleurs": "herbe_haute"},
+}
+# Et ce qu'elle ajoute: (nature, poids) au petit décor
+_SEASON_EXTRA = {
+    "Printemps": [("fleurs", 5)],
+    "Automne": [("champignon", 1), ("souche", 1)],
 }
 # Ce que devient un objet de décor verdoyant sous le soleil du désert
 _DESERT_SWAP = {
@@ -38,7 +52,7 @@ _DESERT_SWAP = {
     "arbre_pin": "buisson_sec", "arbre_rond": "rocher", "botte_foin": "caisse",
     "souche": "rocher", "tronc": "buisson_sec",
 }
-_NO_DECOR_TERRAIN = {tr.RIVER, tr.FORD, tr.BRIDGE}
+_NO_DECOR_TERRAIN = {tr.RIVER, tr.FORD, tr.BRIDGE, tr.LAKE}
 
 # (nature, poids) par carte — "petit" = herbes, fleurs, cailloux…
 _DECOR_TABLES = {
@@ -116,15 +130,56 @@ def _weighted_pick(rng, table):
     return table[-1][0]
 
 
-def generate_decor(map_name, grid, width, height, terrain=None, biome=None):
+def _clumps(rng, width, height, cell=7.0):
+    """Densité locale du petit décor, en [0,3; 1,7] (moyenne ≈ 1): un bruit
+    lissé qui groupe fleurs et cailloux en touffes et en prés fleuris au
+    lieu de les semer uniformément."""
+    nx, ny = int(width / cell) + 3, int(height / cell) + 3
+    lat = [[rng.random() for _ in range(ny)] for _ in range(nx)]
+    out = [[1.0] * height for _ in range(width)]
+    for x in range(width):
+        fx = x / cell
+        ix, tx = int(fx), fx - int(fx)
+        tx = tx * tx * (3 - 2 * tx)
+        for y in range(height):
+            fy = y / cell
+            iy, ty = int(fy), fy - int(fy)
+            ty = ty * ty * (3 - 2 * ty)
+            a = lat[ix][iy] + (lat[ix + 1][iy] - lat[ix][iy]) * tx
+            b = lat[ix][iy + 1] + (lat[ix + 1][iy + 1] - lat[ix][iy + 1]) * tx
+            out[x][y] = 0.3 + 1.4 * (a + (b - a) * ty)
+    return out
+
+
+def _season_table(entries, season):
+    swap = _SEASON_SWAP.get(season, {})
+    merged = {}
+    for kind, w in list(entries) + _SEASON_EXTRA.get(season, []):
+        k = swap.get(kind, kind)
+        merged[k] = merged.get(k, 0) + w
+    return list(merged.items())
+
+
+def generate_decor(map_name, grid, width, height, terrain=None, biome=None, season=None,
+                   rng=None, avoid=()):
     """Sème le décor sur les cases libres. Retourne [(x, y, kind, seed)].
 
-    Utilise sa propre RNG (une seule ponction sur le flux global) pour ne
-    pas décaler les dés de la bataille.
+    Utilise sa propre RNG (une seule ponction sur le flux global, ou `rng`
+    fourni par l'appelant) pour ne pas décaler les dés de la bataille.
+    `season`: l'hiver couvre les fleurs, le printemps en ajoute… `avoid`:
+    cases où ne poser aucun gros objet (chemins).
     """
     table = _decor_table(map_name, biome)
-    wood_decor = _WOOD_DECOR_DESERT if (biome or natural_biome(map_name)) == "Désert" else _WOOD_DECOR
-    rng = random.Random(RNG.randrange(1 << 30))
+    is_desert = (biome or natural_biome(map_name)) == "Désert"
+    wood_decor = _WOOD_DECOR_DESERT if is_desert else _WOOD_DECOR
+    if season and not is_desert:
+        table = dict(table, small=_season_table(table['small'], season),
+                     big=_season_table(table['big'], season))
+        wood_decor = dict(wood_decor, big=_season_table(wood_decor['big'], season))
+    if rng is None:
+        rng = random.Random(RNG.randrange(1 << 30))
+    avoid = set(avoid)
+    clumps = _clumps(rng, width, height)
 
     density = table['density']
     margin_top = height // 4          # au-delà: zone de manœuvre, on allège
@@ -149,7 +204,7 @@ def generate_decor(map_name, grid, width, height, terrain=None, biome=None):
                 props.append((x, y, _weighted_pick(rng, wood_decor['big']),
                               rng.randrange(1 << 16)))
                 continue
-            if rng.random() > density:
+            if rng.random() > density * clumps[x][y]:
                 continue
             # Un gros objet n'a droit de cité que sur les marges ou en
             # lisière d'un couvert existant.
@@ -158,7 +213,7 @@ def generate_decor(map_name, grid, width, height, terrain=None, biome=None):
                 and grid[x + dx][y + dy] in (1, 2)
                 for dx in (-1, 0, 1) for dy in (-1, 0, 1))
             on_margin = y < margin_top or y > margin_bottom
-            if (on_margin or near_cover) and rng.random() < 0.55:
+            if (on_margin or near_cover) and rng.random() < 0.55 and (x, y) not in avoid:
                 kind = _weighted_pick(rng, table['big'])
                 if terrain is not None and kind in ("arbre_pin", "arbre_rond"):
                     kind = "buisson"

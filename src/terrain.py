@@ -19,12 +19,17 @@ PLAIN, HILL, WOOD, RIVER, FORD, BRIDGE, MARSH = (
 # Laissés par la destruction (cf. structures.py): une maison effondrée
 # devient des décombres, un bosquet ou une haie consumés du brûlé.
 RUBBLE, BURNT = "decombres", "brule"
+# Étang: eau dormante des cartes (mare, lac d'oasis). Infranchissable comme
+# la rivière, mais ce n'est PAS une rivière: il n'appartient pas au relief
+# « Rivière » et n'a ni gué ni pont.
+LAKE = "etang"
 
 TERRAINS = {
     PLAIN:  dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=False),
     HILL:   dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=True),
     WOOD:   dict(move=2.0,  passable=True,  charge=False, save_mod=0,  cover=1, blocks_los=1, elevated=False),
     RIVER:  dict(move=None, passable=False, charge=False, save_mod=0,  cover=0, blocks_los=0, elevated=False),
+    LAKE:   dict(move=None, passable=False, charge=False, save_mod=0,  cover=0, blocks_los=0, elevated=False),
     FORD:   dict(move=2.0,  passable=True,  charge=False, save_mod=-1, cover=0, blocks_los=0, elevated=False),
     BRIDGE: dict(move=1.0,  passable=True,  charge=True,  save_mod=0,  cover=0, blocks_los=0, elevated=False),
     MARSH:  dict(move=3.0,  passable=True,  charge=False, save_mod=-1, cover=0, blocks_los=0, elevated=False),

@@ -1,7 +1,8 @@
 """Rendu de la météo (weather.py): un calque en coordonnées ÉCRAN, posé
 après le monde et avant le vignettage.
 
-    Pluie       traînées obliques qui tombent, voile bleuté
+    Pluie       traînées obliques qui tombent, voile bleuté (en hiver:
+                flocons qui descendent en louvoyant, voile blanc)
     Brouillard  voile laiteux et bancs de brume qui dérivent
     Vent        poussière et brins emportés dans le sens du vent
     Crépuscule  teinte ambrée et bords assombris
@@ -25,8 +26,9 @@ _FOG_BANKS = 9
 
 
 class WeatherFx:
-    def __init__(self, weather):
+    def __init__(self, weather, snow=False):
         self.weather = weather or W.Weather()
+        self.snow = snow                 # carte d'hiver: la pluie tombe en neige
         self.rng = random.Random(1234)   # jamais le random du moteur
         self.t = 0
         self._size = None
@@ -56,7 +58,14 @@ class WeatherFx:
         self.t += 1
         w, h = self._size
         name = self.weather.name
-        if name == W.RAIN:
+        if name == W.RAIN and self.snow:
+            for d in self._drops:
+                d[0] += math.sin(self.t * 0.03 + d[3] * 9.0) * 0.6
+                d[1] += d[2] * 0.16
+                if d[1] > h:
+                    d[0] = self.rng.uniform(0, w)
+                    d[1] = self.rng.uniform(-30, 0)
+        elif name == W.RAIN:
             for d in self._drops:
                 d[0] -= d[2] * 0.22
                 d[1] += d[2]
@@ -100,7 +109,12 @@ class WeatherFx:
             return
         if self._size != (w, h):
             self._init_for(w, h)
-        if name == W.RAIN:
+        if name == W.RAIN and self.snow:
+            screen.blit(self._tint(w, h, (220, 228, 240), 34), (0, 0))
+            for x, y, v, a in self._drops:
+                r = 1 if v < 12.5 else 2
+                pygame.draw.circle(screen, (int(236 * a) + 19, int(240 * a) + 15, 250), (int(x), int(y)), r)
+        elif name == W.RAIN:
             screen.blit(self._tint(w, h, (40, 60, 90), 38), (0, 0))
             col = (170, 190, 215)
             for x, y, v, a in self._drops:

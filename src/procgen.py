@@ -18,7 +18,7 @@ from rng_scope import RNG
 
 import terrain as tr
 
-WET = (tr.RIVER, tr.FORD, tr.BRIDGE)
+WET = (tr.RIVER, tr.FORD, tr.BRIDGE, tr.LAKE)
 
 
 def _in(width, height, x, y):

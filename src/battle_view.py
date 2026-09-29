@@ -23,8 +23,10 @@ import hud
 import icons
 import renderer as R
 import settings as settings_mod
+import terrain_render
 import theme as T
 import ui
+import unit_sprites
 from fx_render import FxRenderer
 from weather_render import WeatherFx
 
@@ -259,7 +261,7 @@ class BattleView:
         bf = battle.battlefield
         self.grid_surface = R.build_grid_surface(battle, cs)
         self.fxr.reset(bf.width * cs, bf.height * cs)
-        self.wfx = WeatherFx(getattr(bf, 'weather', None))
+        self.wfx = WeatherFx(getattr(bf, 'weather', None), snow=terrain_render.is_winter(bf))
         self.gate_state = R.gate_visual_state(bf)
         self.world_w = bf.width * cs
         self.world_h = bf.height * cs
@@ -1400,15 +1402,19 @@ class BattleView:
         sont assemblés une fois pour toutes (renderer.unit_body) et posés
         d'un seul blit."""
         cs = self.cell_size
+        # Orientation de la figurine: celle de l'unité (toujours posée au
+        # déploiement), à défaut l'est
+        angle = ui.facing_angle(u)
+        direction = unit_sprites.dir_index(angle) or 0
         body, half = R.unit_body((u.siege_engine, u.fleeing, u.token_name, u.color,
-                                  R.unit_glyph(u), ur, uw, uh, cs, team_color))
+                                  R.unit_glyph(u), ur, uw, uh, cs, team_color, direction))
         surf.blit(body, (cx - half, cy - half))
 
         ring_r = ur + 2
         ring_w = max(2, cs // 8)
         # Chevron d'orientation: vers la cible, sinon vers la marche
         if acs >= 14 and not u.fleeing:
-            ui.draw_facing(surf, cx, cy, ring_r, ui.facing_angle(u), team_color)
+            ui.draw_facing(surf, cx, cy, ring_r, angle, team_color)
         if is_hovered:
             pygame.draw.circle(surf, (255, 240, 170), (cx, cy), ring_r + max(4, ring_w + 2), 2)
 

@@ -114,7 +114,7 @@ def draw_facing(screen, cx, cy, ring_r, angle, color):
 # ─── Mini-carte ───
 
 _MINI_TERRAIN = {
-    tr.HILL: (104, 112, 70), tr.WOOD: (26, 58, 26), tr.RIVER: (48, 96, 140),
+    tr.HILL: (104, 112, 70), tr.WOOD: (26, 58, 26), tr.RIVER: (48, 96, 140), tr.LAKE: (48, 96, 140),
     tr.FORD: (86, 128, 148), tr.BRIDGE: (118, 86, 52), tr.MARSH: (64, 76, 44),
     tr.RUBBLE: (104, 96, 86), tr.BURNT: (34, 30, 26),
 }

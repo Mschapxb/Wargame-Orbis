@@ -85,6 +85,13 @@ RELIEFS = {
 }
 RANDOM_RELIEF = "Aléatoire"
 
+# Saison: purement visuelle (couleurs, feuillages, neige). Aucun effet de
+# jeu, et « Aléatoire » ne tire aucun dé du générateur de carte: la saison
+# se déduit de la graine, la carte d'une graine reste la même.
+SEASONS = ("Printemps", "Été", "Automne", "Hiver")
+NATURAL_SEASON = "Été"
+RANDOM_SEASON = "Aléatoire"
+
 # (rivière, collines) de la carte historique
 NATURAL_RELIEF = {
     "Prairie": (False, True),
@@ -116,8 +123,20 @@ def natural_relief_name(map_name):
     return next(name for name, v in RELIEFS.items() if v == pair)
 
 
+def resolve_season(options=None):
+    """Saison demandée; « Aléatoire » se déduit de la graine de carte (sans
+    graine: l'été, pour rester déterministe)."""
+    choice = (options or {}).get('season')
+    if choice in SEASONS:
+        return choice
+    if choice == RANDOM_SEASON and (options or {}).get('seed') is not None:
+        import random
+        return random.Random(f"saison-{options['seed']}").choice(SEASONS)
+    return NATURAL_SEASON
+
+
 def resolve_options(map_name, options=None):
-    """Options complètes {biome, river, hills} d'une carte.
+    """Options complètes {biome, river, hills, season} d'une carte.
 
     `options` peut donner `relief` (clé de RELIEFS ou "Aléatoire") au lieu
     de `river`/`hills`. Sans options: le thème naturel. Le Défilé n'a pas
@@ -135,35 +154,45 @@ def resolve_options(map_name, options=None):
             river, hills = RELIEFS[relief]
         river = bool(options.get('river', river))
         hills = bool(options.get('hills', hills))
-    return {'biome': biome, 'river': river, 'hills': hills}
+    return {'biome': biome, 'river': river, 'hills': hills, 'season': resolve_season(options)}
 
 
-def get_map_info(name, biome=None):
-    """Couleurs et description d'une carte, dans le biome demandé.
-    `grassy`: le sol porte des brins d'herbe (sinon des gravillons)."""
+def get_map_info(name, biome=None, season=None):
+    """Couleurs et description d'une carte, dans le biome et la saison
+    demandés. `grassy`: le sol porte des brins d'herbe (sinon des
+    gravillons)."""
     base = MAP_TYPES.get(name, MAP_TYPES["Prairie"])
     info = dict(base)
     if biome in _BIOME_TINT and biome != natural_biome(name):
         tint = _BIOME_TINT[biome]
         for key in ("bg_color", "obstacle_color", "grid_color"):
             info[key] = tuple(max(0, min(255, c + d)) for c, d in zip(base[key], tint))
+    if season in SEASONS and season != NATURAL_SEASON:
+        import scenery
+        info['bg_color'] = scenery.ground_color(info['bg_color'], biome or natural_biome(name), season)
     info['grassy'] = name in ("Prairie", "Forêt") or biome == "Forêt"
     return info
 
 
 def theme_info(bf):
-    """Couleurs du champ de bataille `bf` (disposition + biome choisi)."""
+    """Couleurs du champ de bataille `bf` (disposition, biome, saison)."""
     theme = getattr(bf, 'theme', None) or {}
-    return get_map_info(bf.map_name, theme.get('biome'))
+    return get_map_info(bf.map_name, theme.get('biome'), theme.get('season'))
 
 
 def describe_options(map_name, opts):
     """Libellé court pour la console et le menu: « Village, désert, rivière »."""
-    if map_name not in THEMED_MAPS or not opts:
+    if not opts:
         return map_name
-    parts = [map_name]
+    season = opts.get('season', NATURAL_SEASON)
+    head = map_name + (f" ({opts['style']})" if opts.get('style') else "")
+    if map_name not in THEMED_MAPS:
+        return head + (", " + season.lower() if season != NATURAL_SEASON else "")
+    parts = [head]
     if map_name not in OPEN_MAPS:
         parts.append(opts['biome'].lower())
     parts.append(next(n for n, v in RELIEFS.items()
                       if v == (opts['river'], opts['hills'])).lower())
+    if season != NATURAL_SEASON:
+        parts.append(season.lower())
     return ", ".join(parts)

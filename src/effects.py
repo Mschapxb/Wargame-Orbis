@@ -29,6 +29,28 @@ class _FxClock:
 FX_CLOCK = _FxClock()
 
 
+def unit_glyph(u):
+    """Classe lisible d'une unité, pour sa figurine ou l'insigne de son
+    jeton quand elle n'a pas d'image: artillerie, mage, officier,
+    cavalerie, tir, monstre, héros, mêlée."""
+    if getattr(u, 'is_artillery', False):
+        return "artillery"
+    if u.spells:
+        return "mage"
+    if u.encouragement_range > 0:
+        return "officer"
+    kind = (getattr(u, 'unit_type', "") or "").lower()
+    if "cavalerie" in kind or (u.size >= 2 and u.vitesse >= 6):
+        return "cavalry"
+    if u._max_range >= 4:
+        return "ranged"
+    if kind in ("large", "monstre"):
+        return "monster"
+    if kind.startswith("h") and "ros" in kind:
+        return "hero"
+    return "melee"
+
+
 def _resolve_delay(delay):
     return FX_CLOCK.current_delay if delay is None else max(0, int(delay))
 
@@ -296,16 +318,19 @@ class DeathAnimation(_TimedEffect):
     l'instant du coup — sinon la victime disparaissait avant d'être touchée.
     """
     __slots__ = ['from_pos', 'to_pos', 'cells', 'token_name', 'unit_color',
-                 'team_color', 'fall_angle', 'texts', 'decal_done', 'seed']
+                 'team_color', 'fall_angle', 'texts', 'decal_done', 'seed', 'glyph', 'direction']
 
     def __init__(self, from_pos, to_pos, cells, token_name, unit_color, team_color,
-                 fall_angle, texts=(), duration=70, delay=None, seed=0):
+                 fall_angle, texts=(), duration=70, delay=None, seed=0, glyph=None, direction=0):
         self.from_pos = from_pos        # centre pixel au début du round
         self.to_pos = to_pos            # centre pixel à la mort
         self.cells = cells              # (largeur, hauteur) en cases
         self.token_name = token_name
         self.unit_color = unit_color
         self.team_color = team_color
+        # Classe et orientation de la figurine (unités sans image de jeton)
+        self.glyph = glyph
+        self.direction = direction
         self.fall_angle = fall_angle    # direction de chute (radians)
         self.texts = list(texts)        # textes flottants encore à afficher
         self.decal_done = False

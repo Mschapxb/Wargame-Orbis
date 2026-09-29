@@ -154,13 +154,13 @@ un clic ouvre le dossier (`Vidéos/Wargame Orbis`).
 
 | Carte | Description |
 |-------|-------------|
-| **Prairie** | Campagne ouverte et vallonnée: collines éparses de formes et d'orientations variées au nord et au sud (parfois coiffées de rochers), butte irrégulière au centre, bosquets sur les flancs. Le couloir central reste dégagé: favorise la cavalerie et les charges. |
-| **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. Bosquets à cœur impénétrable et sous-bois traversable, ruisseau à deux gués. |
-| **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. Bourg sur une butte, jardins, mare. |
+| **Prairie** | Campagne ouverte: butte irrégulière au centre, couloir central dégagé (cavalerie et charges), et un **style tiré au sort** — *buttes* éparses, *vallons* ondulés, *étangs* cernés de roseaux, *bocage* aux bosquets nombreux ou *rocailles* et crêtes rocheuses (cf. « Styles et saisons »). |
+| **Forêt** | Massif boisé **au centre** du champ de bataille, fait de bosquets entre lesquels on se faufile, avec clairières et sentiers. Les armées se déploient dans les champs et doivent entrer dans le bois pour se rencontrer. Bosquets à cœur impénétrable et sous-bois traversable, ruisseau à deux gués. Style tiré au sort: *futaie*, *massifs* serrés ou *clairières* aérées. |
+| **Village** | Bourg **circulaire** au centre: place, maisons en anneaux, rues rayonnantes et haie d'enceinte percée à chaque rue. On se déploie hors du bourg et on s'engage dans les rues. Bourg sur une butte, jardins, mare, champs cultivés alentour. Taille du bourg, nombre de rues, fermes et vergers tirés au sort. |
 | **Siège** | Forteresse avec murs, remparts et portes destructibles. L'armée 2 défend. Fossé boueux au pied du mur (chaussée devant la porte), glacis derrière les escaliers, palissades inflammables côté assaillant, mur que les machines de guerre peuvent percer. |
 | **Citadelle** | Double enceinte. L'armée 2 défend. Mur extérieur à **deux portes** (fossé, glacis, palissades côté assaillant), **basse-cour** avec maisons, jardins et butte, puis **donjon** à une porte. Quand l'enceinte extérieure est sur le point de tomber, la défense **se replie sur le donjon**. |
 | **Défilé** | Goulet montagneux aux parois découpées et éperons rocheux, qui se resserre en douceur vers un étranglement central. Pentes, éboulis, torrent avec pont et gué. |
-| **Désert** | Reg ouvert: affleurements rocheux destructibles, longues dunes (collines) et oasis centrale (mare boueuse, palmeraie). |
+| **Désert** | Reg ouvert: affleurements rocheux destructibles, longues dunes (collines) et, selon le style tiré, *oasis* centrale, *oasis jumelles* au nord et au sud, *mesas* rocheuses, *erg* (mer de dunes) ou *reg* caillouteux. |
 
 ### Thèmes procéduraux
 
@@ -181,6 +181,38 @@ Garanties testées (`src/test_themes.py`): symétrie, deux passages d'un camp à
 l'autre sur grande carte (dont un sans marais), déploiement hors eau/bois/marais,
 chaque porte atteignable par l'assaillant, relief conforme au choix.
 
+### Styles et saisons
+
+Pour qu'une carte ne ressemble jamais tout à fait à la précédente, chaque
+bataille rangée tire un **style** (`src/maps/open_field.py`,
+`src/maps/features.py`) — mêmes règles d'équité, autre paysage:
+
+| Carte | Styles |
+|-------|--------|
+| **Prairie** | *buttes* éparses (parfois rocheuses) · *vallons*: nappes de relief doux tirées d'un bruit fractal · *étangs*: une ou deux mares d'eau dormante sur les flancs, berges de roseaux · *bocage*: bosquets deux fois plus nombreux et plus grands · *rocailles*: crêtes rocheuses sur des dos de colline et amas de rochers |
+| **Désert** | *oasis* centrale · *oasis jumelles* au nord et au sud (centre découvert) · *mesas*: plateaux de roche aux flancs d'éboulis · *erg*: mer de dunes · *reg*: plaine de cailloux semée d'affleurements |
+| **Forêt** | *futaie* (la carte historique) · *massifs* plus étroits aux bosquets serrés · *clairières*: massif plus large et aéré |
+| **Village** | Taille du bourg, place, nombre de rues (4 à 7), fermes, vergers et mare tirés au sort |
+
+Le style tiré s'affiche dans le résumé de l'écran carte (« Prairie (étangs),
+collines, automne »). Tout reste en miroir; un étang ou une mesa qui
+couperait le passage d'un camp à l'autre est retiré. Les étangs et les mesas ne
+se posent jamais devant les lignes de déploiement.
+
+La **saison** (rangée *Saison* de l'écran carte; *Aléatoire* par défaut) est
+**purement visuelle** — aucune incidence de jeu, et elle ne tire aucun dé:
+*Aléatoire* se déduit de la graine de la carte, la même graine redonne la même
+carte. *Printemps*: vert tendre, arbres en fleurs, prés fleuris. *Été*: la
+palette historique. *Automne*: feuillages roux et or, feuilles au sol, champs
+moissonnés. *Hiver*: neige, feuillus nus, résineux et toits enneigés, eaux
+froides — et la pluie tombe en flocons. Le désert ne se couvre pas de neige.
+
+Le **paysage** ajoute enfin, sans aucun effet de jeu (`src/maps/landscape.py`):
+routes de campagne (par le pont s'il y a une rivière), rues de terre du village,
+sentiers de la forêt, piste du défilé, routes de l'assaillant jusqu'aux portes
+d'un siège; champs cultivés (blé, labours, prés) autour des fermes; camp de
+l'assiégeant (tentes, feux, oriflammes, bois et vivres) loin derrière ses lignes.
+
 ### Terrain
 
 Chaque case porte un terrain qui change la manière de se battre. Chaque
@@ -192,6 +224,7 @@ les couleurs. `L` affiche la légende en bataille.
 | **Colline** | ×1,5 pour monter | un tireur en hauteur voit par-dessus les bois; une colline masque ce qui est derrière | tir depuis la hauteur: +1 portée; mêlée contre une unité en hauteur: +1 au seuil de toucher (plus difficile) |
 | **Bois** | ×2 | 3 cases de bois masquent la cible | tirs reçus: +1 au seuil de toucher (plus difficile); pas de charge |
 | **Rivière** | infranchissable | — | — |
+| **Étang** | infranchissable (eau dormante; n'appartient pas au relief « Rivière ») | — | — |
 | **Gué** | ×2 | — | sauvegarde -1; pas de charge |
 | **Pont** | normal | — | passage étroit |
 | **Marais** | ×3 | — | sauvegarde -1; pas de charge |
@@ -504,7 +537,11 @@ cache, rotations comprises.
 | **Sorts** | Boule de feu animée avec traînée de braises, explosion (éclair, anneau, braises, fumée, trace calcinée), orbe arcanique lumineux, rayon de soin et croix qui s'élèvent, rune de bouclier tournante, blocs qui surgissent du sol |
 | **Impacts** | Étincelles, gouttes de sang, poussière ou débris selon le coup; éclairs lumineux en mélange additif |
 | **Morts** | Le token reste debout jusqu'à l'instant du coup fatal, recule sous le choc, chute dans le sens du coup, s'assombrit puis s'efface en laissant une dépouille au sol |
-| **Cartes** | Grain de texture, taches de terrain organiques, décor semé (arbres, buissons, rochers, caisses…), maisons d'un seul tenant, falaises stratifiées, remparts crénelés avec ombre portée, portes qui se fissurent |
+| **Terrain** | Aucune case ne se voit: chaque zone (colline, eau, marais, bois, décombres, brûlé) est un champ de « métaboules » — un noyau radial par case, sommé puis seuillé — aux bords droits sur la limite des cases, aux angles arrondis, aux contours légèrement organiques. Collines en **courbes de niveau** (une par case de hauteur), versants à l'ombre au sud-est et rebords éclairés; rivières à berge de vase ou de sable, eau plus sombre au milieu, écume du rivage, rides; gués sablonneux à pierres de passage; ponts d'un seul tenant; marais à flaques et roseaux; falaises du Défilé en blocs à paliers |
+| **Décor** (`scenery.py`) | Sprites dessinés en code, suréchantillonnés (bords lissés), en 6 variantes et aux couleurs du biome et de la saison: feuillus en houppiers lobés, résineux en étoiles, palmiers, arbres nus d'hiver, buissons, rochers facettés (mousse ou neige), souches, troncs, fougères, fleurs, roseaux, champignons; caisses, tonneaux, charrettes, bottes de foin, braseros, chevaux de frise, tentes, feux de camp, puits, oriflammes… Les bois se remplissent d'arbres (un sur deux environ, le reste en sous-bois: on y voit passer les troupes), plus denses au cœur des bosquets infranchissables; tout est trié de haut en bas pour que les houppiers se chevauchent |
+| **Sol** | Marbrures à grande échelle, taches organiques, grain, brins d'herbe; chemins de terre à ornières, champs cultivés à sillons; neige à ombres bleutées en hiver |
+| **Villages et sièges** | Maisons d'un seul tenant aux toits de tuiles, d'ardoise ou de chaume, cheminées, colombages, toits enneigés l'hiver; haies aux couleurs de la saison; remparts crénelés avec ombre portée, portes qui se fissurent |
+| **Unités** (`unit_sprites.py`) | Une unité sans image de jeton devient une **figurine** vue de dessus, sur un socle clair teinté de son camp, **tournée vers là où elle fait face** (16 orientations): fantassin au bouclier et à la lance, tireur à l'arc et au carquois, cavalier sur sa monture, mage au bâton lumineux, officier à l'étendard, artillerie, monstre cornu, héros à la cape et à l'épée — aux couleurs de l'unité. Les jetons illustrés restent tels quels |
 | **Destruction** | Flammes animées et variées, halo qui palpite, braises et colonnes de fumée qui dérivent; maisons au toit percé puis éventré; effondrement dans un nuage de poussière; décombres, sol calciné et souches noires; cratères permanents |
 | **Interface** | Zoom ×0,5 à ×2 (le monde est dessiné à taille réelle puis mis à l'échelle: ≤ 3 ms par image), mini-carte cliquable, fiche d'unité au survol, bandeau à deux panneaux (jauges au combat / en fuite / tombés, posture, plan, tempérament), chevron d'orientation vers la cible, bannières limitées aux 3 plus récentes |
 | **Ambiance** | Ombres de nuages qui dérivent, vignettage des bords de l'écran |
@@ -541,10 +578,14 @@ battle-simulator/
 ├── effects.py           # Données d'effets horodatées (projectiles, coups, sorts, morts)
 ├── fx_render.py         # Mise en scène: particules, décalques, animations de mort
 ├── sprites.py           # Sprites procéduraux mis en cache (projectiles, lames, sorts…)
+├── scenery.py           # Sprites de décor (arbres, rochers, objets) par biome et saison
+├── unit_sprites.py      # Figurines orientées des unités sans image de jeton
 ├── maps/                # Cartes: catalog, common, open_field, village, siege,
-│                        #   defile, themes, advantage, decor (tout réexporté par maps)
+│                        #   defile, themes, advantage, features (étangs, crêtes,
+│                        #   mesas, bruit), landscape (chemins, champs, camp),
+│                        #   decor (tout réexporté par maps)
 ├── terrain.py           # Règles de terrain (coûts, vue, modificateurs)
-├── terrain_render.py    # Motifs et légende du terrain
+├── terrain_render.py    # Rendu lissé du terrain (métaboules) et légende
 ├── facing.py            # Orientation: arcs de face, de flanc, de dos
 ├── weather.py           # Météo: règles (tir, feu, fatigue) et tirage
 ├── weather_render.py    # Météo: calque visuel (pluie, brume, vent…)
@@ -619,6 +660,7 @@ python src/test_battle_plan.py              # plans de bataille: choix, phases, 
 python src/test_formation.py                # formations en bloc: géométrie, marche, rupture, cas exclus
 python src/test_ui.py                       # interface: zoom, mini-carte, fiche d'unité, bandeau, boucle réelle
 python src/test_themes.py                   # thèmes: biome × relief, symétrie, passages, déploiement
+python src/test_graphismes.py               # saisons, sprites, figurines, styles, étangs, repeint exact
 python src/test_determinism.py              # une graine rejoue la même bataille; graine de carte isolée
 python src/test_main.py                     # unittest: armes, sorts, unités, cartes
 python src/test_edge_cases.py               # cas limites: armées vides, carte minuscule, siège dégénéré…
@@ -875,7 +917,7 @@ ennemi qui bouge sans frapper, 2 rounds de suite) passent de 7,3 % à 3,8 %.
 
 ## 🎨 Tokens personnalisés
 
-Placez des images PNG dans le dossier `tokens/` avec le nom correspondant au `token_name` de l'unité. Les tokens sont automatiquement redimensionnés à la taille de la cellule.
+Placez des images PNG dans le dossier `tokens/` avec le nom correspondant au `token_name` de l'unité. Les tokens sont automatiquement redimensionnés à la taille de la cellule. Sans image, l'unité est dessinée en figurine orientée selon sa classe (cf. « Rendu graphique »).
 
 Exemple : pour une unité avec `token_name = "chevalier"`, créez `tokens/chevalier.png`.
 

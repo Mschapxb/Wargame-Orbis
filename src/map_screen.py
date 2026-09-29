@@ -25,6 +25,14 @@ from menu import (BTN_ACTIVE, BTN_HOVER, BTN_NORMAL, GOLD, TEXT, TEXT_BRIGHT, TE
 TEAM_COLORS = T.TEAM
 _SEEDS = random.Random()          # jamais le random du moteur
 
+SEASON_NOTES = {
+    "Printemps": "Vert tendre, arbres en fleurs. Purement visuel.",
+    "Été": "Feuillage dense, herbe mûre. Purement visuel.",
+    "Automne": "Feuillages roux et or, feuilles au sol. Purement visuel.",
+    "Hiver": "Neige, arbres nus, eaux froides; la pluie tombe en neige. Purement visuel.",
+    "Aléatoire": "Tirée de la graine de la carte: chaque nouvelle carte a sa saison.",
+}
+
 
 # ═══════════════════════════════════════════════════════════════
 #                   ÉTAT DE L'ÉCRAN (testable)
@@ -42,6 +50,9 @@ class MapSetup:
         self.advantage = maps_mod.ADVANTAGE_NONE
         self.level = maps_mod.ADVANTAGE_LEVELS[0]
         self.fortification = maps_mod.FORTIFICATION_LEVELS[0]
+        # Saison tirée de la graine par défaut: chaque nouvelle carte a son
+        # ambiance (purement visuelle)
+        self.season = maps_mod.RANDOM_SEASON
         self.seed = _SEEDS.randrange(1, 1_000_000)
 
     def set_map(self, name):
@@ -63,7 +74,7 @@ class MapSetup:
     def options(self):
         """map_options pour Battle (et pour le redémarrage R)."""
         opts = {'biome': self.biome, 'relief': self.relief,
-                'weather': self.weather, 'seed': self.seed}
+                'weather': self.weather, 'season': self.season, 'seed': self.seed}
         if self.advantage_allowed and self.advantage != maps_mod.ADVANTAGE_NONE:
             opts['advantage'] = self.advantage
             opts['advantage_level'] = self.level
@@ -76,8 +87,8 @@ class MapSetup:
         return (self.map_name, tuple(sorted(self.options().items())))
 
     # ── Mémoire d'une session à l'autre (cf. settings.py) ──
-    _SAVED = ('map_name', 'biome', 'relief', 'weather', 'advantage', 'level', 'fortification',
-              'seed')
+    _SAVED = ('map_name', 'biome', 'relief', 'weather', 'season', 'advantage', 'level',
+              'fortification', 'seed')
 
     def to_dict(self):
         return {k: getattr(self, k) for k in self._SAVED}
@@ -89,6 +100,7 @@ class MapSetup:
             'map_name': maps_mod.get_map_names(), 'biome': maps_mod.BIOMES,
             'relief': list(maps_mod.RELIEFS) + [maps_mod.RANDOM_RELIEF],
             'weather': list(weather_mod.WEATHERS) + [weather_mod.RANDOM_WEATHER],
+            'season': list(maps_mod.SEASONS) + [maps_mod.RANDOM_SEASON],
             'advantage': list(maps_mod.ADVANTAGE_SIDES), 'level': maps_mod.ADVANTAGE_LEVELS,
             'fortification': list(maps_mod.FORTIFICATION_LEVELS),
         }
@@ -110,6 +122,7 @@ def build_preview(army1, army2, setup, grid_w, grid_h, fit_w, fit_h):
     exactement comme celle qui sera jouée (mêmes armées, même graine)."""
     from battle import Battle
     import renderer
+    import terrain_render
     from weather_render import WeatherFx
 
     b = Battle(army1, army2, grid_w, grid_h, 8, map_name=setup.map_name,
@@ -126,7 +139,7 @@ def build_preview(army1, army2, setup, grid_w, grid_h, fit_w, fit_h):
             r = max(2, int(cell * 0.42 * max(w, h)))
             pygame.draw.circle(surf, (15, 15, 20), (int(cx), int(cy)), r + 1)
             pygame.draw.circle(surf, col, (int(cx), int(cy)), r)
-    WeatherFx(bf.weather).draw(surf, surf.get_width(), surf.get_height())
+    WeatherFx(bf.weather, snow=terrain_render.is_winter(bf)).draw(surf, surf.get_width(), surf.get_height())
     scale = min(fit_w / surf.get_width(), fit_h / surf.get_height(), 1.0)
     if scale < 1.0:
         surf = pygame.transform.smoothscale(
@@ -167,7 +180,7 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
     margin = 15
     rows_top = 62
     row_h = 32
-    preview_top = rows_top + 4 * row_h + 8
+    preview_top = rows_top + 5 * row_h + 8
     preview_rect = pygame.Rect(margin, preview_top, screen_w - 2 * margin,
                                max(80, screen_h - preview_top - 96))
 
@@ -250,6 +263,13 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
                 and setup.weather in (weather_mod.FOG, weather_mod.DUSK)):
             sky_desc += " Très dur pour l'assaillant d'un siège."
         clipped_note(sky_desc, x + 10, y)
+
+        # ─── Saison (purement visuelle) ───
+        y += row_h
+        T.text(screen, "Saison", label_font, (margin, y + 4), T.GOLD)
+        seasons = list(maps_mod.SEASONS) + [maps_mod.RANDOM_SEASON]
+        setup.season, x = choice_row(seasons, setup.season, margin + label_w, y)
+        clipped_note(SEASON_NOTES.get(setup.season, ""), x + 10, y)
 
         # ─── Avantage du terrain (bataille rangée) / Défenses (siège) ───
         y += row_h

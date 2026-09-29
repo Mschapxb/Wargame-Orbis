@@ -288,7 +288,8 @@ class FxRenderer:
         cs = self.cs
         uw, uh = d.cells
         tsize = max(4, min(uw, uh) * cs - 4)
-        key = (d.token_name, d.unit_color, d.team_color, tsize)
+        glyph = getattr(d, 'glyph', None)
+        key = (d.token_name, d.unit_color, d.team_color, tsize, glyph, getattr(d, 'direction', 0))
         snap = self._snap_cache.get(key)
         if snap is None:
             size = tsize + 8
@@ -298,6 +299,10 @@ class FxRenderer:
             img = self.load_token(d.token_name, tsize) if d.token_name else None
             if img:
                 snap.blit(img, (c - tsize // 2, c - tsize // 2))
+            elif glyph and ur >= 7:
+                import renderer
+                renderer._draw_figure(snap, c, c, ur, d.unit_color, glyph, d.team_color,
+                                      getattr(d, 'direction', 0))
             else:
                 pygame.draw.circle(snap, d.unit_color, (c, c), ur)
             pygame.draw.circle(snap, d.team_color, (c, c), ur + 2, max(2, cs // 8))

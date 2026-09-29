@@ -25,11 +25,13 @@ def generate_village(width, height):
     """
     grid = [[0] * height for _ in range(width)]
     cx, cy = width // 2, height // 2
-    R = max(7, int(min(height * 0.40, width * 0.12)))
-    plaza = max(2.5, R * 0.22)
+    # Taille du bourg et nombre de rues tirés au sort: un hameau ramassé ou
+    # un gros bourg étoilé
+    R = max(7, int(min(height * RNG.uniform(0.34, 0.42), width * 0.12)))
+    plaza = max(2.5, R * RNG.uniform(0.18, 0.26))
 
-    # Rues rayonnantes: la grand-rue est-ouest, plus 5 à 6 rues en étoile
-    n_side = RNG.randint(5, 6)
+    # Rues rayonnantes: la grand-rue est-ouest, plus 4 à 7 rues en étoile
+    n_side = RNG.randint(4, 7)
     streets = [(0.0, 1.6), (math.pi, 1.6)]
     base = RNG.uniform(0, math.pi / n_side)
     for i in range(n_side):
@@ -111,7 +113,7 @@ def generate_village(width, height):
             grid[x][y] = 1
 
     # ── Fermes isolées dans les champs (jamais sur l'axe des armées) ──
-    for _ in range(RNG.randint(2, 4)):
+    for _ in range(RNG.randint(1, 5)):
         for _try in range(30):
             a = RNG.uniform(0, math.tau)
             if abs(math.sin(a)) < 0.6:
@@ -147,6 +149,7 @@ def generate_village(width, height):
                            rough=0.35)
     # Jardins et vergers entre les maisons (jamais dans une rue, ni la
     # nôtre ni celle d'en face une fois le terrain mis en miroir)
+    orchards = RNG.uniform(0.18, 0.38)
     for x in range(width // 2):
         for y in range(1, height - 1):
             d = math.hypot(x - mx, y - cy)
@@ -154,10 +157,22 @@ def generate_village(width, height):
                 continue
             if in_street(x, y) or in_street(width - 1 - x, y):
                 continue
-            if RNG.random() < 0.30:
+            if RNG.random() < orchards:
                 terr[x][y] = tr.WOOD
     # Mare boueuse au bord de la place, hors de la grand-rue
-    _paint_disc(terr, mx - (plaza + 2.5), cy + plaza + 1.5, 1.6, tr.MARSH, width, height)
+    _paint_disc(terr, mx - (plaza + 2.5), cy + plaza + 1.5, RNG.uniform(1.2, 2.0), tr.MARSH,
+                width, height)
     _mirror_terrain(terr, width, height)
 
-    return grid, {'deploy_gap': R + 5, 'terrain': terr}
+    # Rues de terre battue (visuelles): celles de l'ouest, recopiées à l'est
+    # comme les maisons; la grand-rue court d'un bord à l'autre
+    paths = [[(0.0, cy + 0.5), (width + 0.0, cy + 0.5)]]
+    for a, _half in streets:
+        if math.cos(a) > -0.05 or a == math.pi:
+            continue
+        L = R + 2.5
+        line = [(cx + 0.5 + math.cos(a) * t, cy + 0.5 + math.sin(a) * t)
+                for t in [plaza * 0.6 + k * 1.5 for k in range(int((L - plaza * 0.6) / 1.5) + 1)]]
+        paths.append(line)
+        paths.append([(width - px, py) for (px, py) in line])
+    return grid, {'deploy_gap': R + 5, 'terrain': terr, '_paths': paths}

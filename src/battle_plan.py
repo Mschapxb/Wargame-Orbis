@@ -189,7 +189,7 @@ class BattlePlan:
                 x = tactics.mirror_round_x(mc[0] + (wp[0] - mc[0]) * k / 20, bf.width)
                 y = int(round(mc[1] + (wp[1] - mc[1]) * k / 20))
                 n += 1
-                if bf.grid[x][y] != 0 or (terr is not None and terr[x][y] in (tr.WOOD, tr.MARSH, tr.RIVER, tr.FORD)):
+                if bf.grid[x][y] != 0 or (terr is not None and terr[x][y] in (tr.WOOD, tr.MARSH, tr.RIVER, tr.FORD, tr.LAKE)):
                     bad += 1
             if bad * 4 <= n:
                 return True

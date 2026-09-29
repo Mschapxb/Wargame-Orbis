@@ -55,6 +55,9 @@ class Battlefield:
         _raw = dict(map_data or {})
         self.decor = list(_raw.pop('decor', []))
         self.ground_patches = list(_raw.pop('ground_patches', []))
+        # Chemins et champs cultivés: visuels eux aussi (cf. maps/landscape.py)
+        self.paths = list(_raw.pop('paths', []))
+        self.fields = list(_raw.pop('fields', []))
         # Demi-écart entre les fronts au déploiement, imposé par la carte
         # (forêt, village: juste à l'extérieur du terrain central)
         self.deploy_gap = _raw.pop('deploy_gap', None)

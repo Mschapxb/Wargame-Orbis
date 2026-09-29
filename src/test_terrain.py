@@ -449,22 +449,25 @@ def test_forest_grove_core_is_wood():
     # Le cœur d'un bosquet (case obstacle dont les 8 voisines sont aussi
     # des obstacles) reste impassable, mais doit être du bois pour bloquer
     # la ligne de vue comme le sous-bois qui l'entoure.
-    random.seed(3)
+    # Plusieurs graines: le style tiré (futaie, massifs, clairières) change
+    # la densité des bosquets, certaines forêts aérées n'ont aucun cœur.
     w, h = 178, 64
-    grid, data = maps.generate_map("Forêt", w, h)
-    terr = data['terrain']
     found_core = False
-    for x in range(w):
-        for y in range(h):
-            if grid[x][y] != 1:
-                continue
-            is_core = all(
-                not (0 <= x + dx < w and 0 <= y + dy < h) or grid[x + dx][y + dy] == 1
-                for dx in (-1, 0, 1) for dy in (-1, 0, 1))
-            if is_core:
-                found_core = True
-                assert terr[x][y] == tr.WOOD, (x, y, terr[x][y])
-    assert found_core, "aucune case de cœur de bosquet trouvée pour cette graine"
+    for seed in range(3, 9):
+        random.seed(seed)
+        grid, data = maps.generate_map("Forêt", w, h)
+        terr = data['terrain']
+        for x in range(w):
+            for y in range(h):
+                if grid[x][y] != 1:
+                    continue
+                is_core = all(
+                    not (0 <= x + dx < w and 0 <= y + dy < h) or grid[x + dx][y + dy] == 1
+                    for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+                if is_core:
+                    found_core = True
+                    assert terr[x][y] == tr.WOOD, (seed, x, y, terr[x][y])
+    assert found_core, "aucune case de cœur de bosquet trouvée sur ces graines"
 
 
 @test
@@ -488,20 +491,34 @@ def test_map_defile():
     assert {tr.HILL, tr.MARSH, tr.RIVER, tr.BRIDGE, tr.FORD} <= names, names
 @test
 def test_decor_follows_terrain():
+    """Le décor évite l'eau. Dans les bois il ne sème que du sous-bois: les
+    ARBRES d'un bois sont dessinés par le rendu du terrain (ils disparaissent
+    quand le bois brûle), et aucun arbre isolé ne fait croire à un couvert."""
+    import terrain_render as trr
     random.seed(6)
     grid, data = maps.generate_map("Forêt", 178, 64)
     terr = data['terrain']
-    wet = {tr.RIVER, tr.FORD, tr.BRIDGE}
-    trees = {"arbre_pin", "arbre_rond"}
-    on_wood = off_wood = 0
+    wet = {tr.RIVER, tr.FORD, tr.BRIDGE, tr.LAKE}
+    understory = {"fougere", "champignon", "souche", "tronc", "herbe", "caillou"}
+    on_wood = 0
     for x, y, kind, _ in data['decor']:
         assert terr[x][y] not in wet, (x, y, kind, terr[x][y])
-        if kind in trees:
-            if terr[x][y] == tr.WOOD:
-                on_wood += 1
-            else:
-                off_wood += 1
-    assert on_wood > off_wood, (on_wood, off_wood)
+        assert kind not in ("arbre_pin", "arbre_rond", "palmier"), (x, y, kind)
+        if terr[x][y] == tr.WOOD:
+            on_wood += 1
+            assert kind in understory, (x, y, kind)
+    assert on_wood > 0
+    # Les arbres des bois: seulement sur des cases de bois libres
+    bf = type("BF", (), {})()
+    bf.width, bf.height, bf.map_name = 178, 64, "Forêt"
+    bf.grid, bf.terrain, bf.fires, bf.theme = grid, terr, {}, data['theme']
+    trees = [t for t in trr.tall_sprites(bf, 16, (0, 0, 177, 63))
+             if t[1] in ("arbre_pin", "arbre_rond", "palmier")]
+    assert len(trees) > 100
+    for (_y, _kind, _v, px, py, _st) in trees:
+        x, y = int(px // 16), int(py // 16)
+        assert any(terr[x + dx][y + dy] == tr.WOOD for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                   if 0 <= x + dx < 178 and 0 <= y + dy < 64)
 
 
 @test

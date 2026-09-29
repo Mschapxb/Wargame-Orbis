@@ -701,7 +701,7 @@ class Unit:
                             and random.random() < st.FIREBALL_IGNITE):
                         st.ignite(bf, gx, gy)
             # Pas de brûlure au sol sur l'eau (rivière, gué, pont)
-            if bf.terrain is None or bf.terrain[tx][ty] not in (tr.RIVER, tr.FORD, tr.BRIDGE):
+            if bf.terrain is None or bf.terrain[tx][ty] not in (tr.RIVER, tr.FORD, tr.BRIDGE, tr.LAKE):
                 events.append({'type': 'crater', 'at_grid': target.position,
                                'radius_cells': half + 0.5, 'at': FLIGHT + 2})
             battle._flush_structure_changes()

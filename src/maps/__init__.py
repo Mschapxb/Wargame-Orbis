@@ -30,13 +30,20 @@ Organisation du paquet:
 Tous leurs noms sont réexportés ici: `import maps; maps.generate_map(...)`.
 """
 
+import random
+
+from rng_scope import RNG
+
 from .catalog import (  # noqa: F401
     BIOMES,
     MAP_TYPES,
     NATURAL_RELIEF,
     OPEN_MAPS,
+    NATURAL_SEASON,
     RANDOM_RELIEF,
+    RANDOM_SEASON,
     RELIEFS,
+    SEASONS,
     SIEGE_MAPS,
     THEMED_MAPS,
     _BIOME_TINT,
@@ -46,6 +53,7 @@ from .catalog import (  # noqa: F401
     natural_biome,
     natural_relief_name,
     resolve_options,
+    resolve_season,
     theme_info,
 )
 from .common import (  # noqa: F401
@@ -99,6 +107,17 @@ from .fortification import (  # noqa: F401
     apply_fortification,
     level_of as fortification_of,
 )
+from .landscape import (  # noqa: F401
+    CROPS,
+    generate_fields,
+    generate_paths,
+    siege_camp,
+)
+from .open_field import (  # noqa: F401
+    DESERT_STYLES,
+    FOREST_STYLES,
+    PRAIRIE_STYLES,
+)
 from .decor import (  # noqa: F401
     _DECOR_TABLES,
     _DESERT_SWAP,
@@ -145,6 +164,12 @@ def generate_map(map_name, width, height, options=None):
     opts = resolve_options(map_name, options)
     grid, map_data = gen(width, height)
     map_data = dict(map_data or {})
+    # Clés privées des générateurs: le style tiré va dans le thème, les
+    # tracés de rues et de sentiers deviennent des chemins (visuels)
+    style = map_data.pop('_style', None)
+    hint_paths = map_data.pop('_paths', None)
+    if style:
+        opts = dict(opts, style=style)
     apply_theme(map_name, grid, map_data, width, height, opts)
     side, level = advantage_of(options)
     if side and map_name not in SIEGE_MAPS:
@@ -153,8 +178,21 @@ def generate_map(map_name, width, height, options=None):
     if map_name in SIEGE_MAPS:
         apply_fortification(map_data, fortification_of(options))
     map_data['theme'] = opts
-    map_data['decor'] = generate_decor(map_name, grid, width, height,
-                                       map_data.get('terrain'), opts['biome'])
+    # Paysage visuel (chemins, champs, camp) et décor: un seul dé tiré du
+    # flux de la carte, tout le reste sur un générateur local
+    local = random.Random(RNG.randrange(1 << 30))
+    terr = map_data.get('terrain')
+    paths = generate_paths(map_name, grid, width, height, map_data, hint_paths, local)
+    map_data['paths'] = paths
+    map_data['fields'] = generate_fields(map_name, grid, width, height, map_data, style, local)
+    on_road = {(int(x), int(y)) for p in paths for (x, y) in p}
+    decor = generate_decor(map_name, grid, width, height, terr, opts['biome'],
+                           opts.get('season'), rng=local, avoid=on_road)
+    if map_name in SIEGE_MAPS:
+        camp = siege_camp(grid, width, height, local)
+        taken = {(x, y) for (x, y, _k, _s) in camp}
+        decor = [d for d in decor if (d[0], d[1]) not in taken] + camp
+    map_data['decor'] = decor
     map_data['ground_patches'] = generate_ground_patches(map_name, width, height,
                                                          opts['biome'])
     if 'structures' not in map_data:

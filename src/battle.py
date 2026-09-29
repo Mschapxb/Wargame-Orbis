@@ -20,7 +20,7 @@ from unit import reassign_uid
 from effects import (FloatingText, AttackLine, Projectile,
                      AoeExplosion, HealBeam, ArmorShimmer, WallEffect,
                      ImpactBurst, ShockWave, SlashEffect, ThrustEffect,
-                     DeathAnimation, FX_CLOCK)
+                     DeathAnimation, FX_CLOCK, unit_glyph)
 from ai_commander import CommanderAI
 
 # RNG dédiée aux effets visuels (délais de volée, dispersion...)
@@ -82,6 +82,14 @@ TRAP_DAMAGE = "1d2"
 TRAP_BURN = 2
 T_ACTION_START, T_ACTION_END = 0.34, 0.96
 
+
+
+def _facing_dir(unit):
+    """Orientation d'une unité en 16 secteurs (0 = est), pour sa figurine."""
+    f = getattr(unit, 'facing', None)
+    if not f:
+        return 0
+    return int(round(math.atan2(f[1], f[0]) / (math.tau / 16))) % 16
 
 class Battle(spatial.Neighbourhood):
     def __init__(self, army1, army2, battlefield_width=40, battlefield_height=30, 
@@ -2043,7 +2051,8 @@ class Battle(spatial.Neighbourhood):
                                    unit.token_name, unit.color, team_c, fall,
                                    texts=list(unit.floating_texts), duration=70,
                                    delay=getattr(unit, '_hit_flash_delay', 0),
-                                   seed=id(unit) & 0xFFFF))
+                                   seed=id(unit) & 0xFFFF, glyph=unit_glyph(unit),
+                                   direction=_facing_dir(unit)))
                 self.battlefield.remove_unit(unit)
 
     def _handle_routers(self):
