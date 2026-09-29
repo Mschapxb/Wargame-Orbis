@@ -75,6 +75,31 @@ class MapSetup:
         """Ce qui change la carte: sert à ne régénérer l'aperçu qu'au besoin."""
         return (self.map_name, tuple(sorted(self.options().items())))
 
+    # ── Mémoire d'une session à l'autre (cf. settings.py) ──
+    _SAVED = ('map_name', 'biome', 'relief', 'weather', 'advantage', 'level', 'fortification',
+              'seed')
+
+    def to_dict(self):
+        return {k: getattr(self, k) for k in self._SAVED}
+
+    def load_dict(self, data):
+        """Reprend des choix enregistrés; une valeur inconnue (option
+        disparue depuis) garde la valeur par défaut."""
+        valid = {
+            'map_name': maps_mod.get_map_names(), 'biome': maps_mod.BIOMES,
+            'relief': list(maps_mod.RELIEFS) + [maps_mod.RANDOM_RELIEF],
+            'weather': list(weather_mod.WEATHERS) + [weather_mod.RANDOM_WEATHER],
+            'advantage': list(maps_mod.ADVANTAGE_SIDES), 'level': maps_mod.ADVANTAGE_LEVELS,
+            'fortification': list(maps_mod.FORTIFICATION_LEVELS),
+        }
+        for k in self._SAVED:
+            v = data.get(k)
+            if k == 'seed':
+                if isinstance(v, int) and v > 0:
+                    self.seed = v
+            elif v in valid[k]:
+                setattr(self, k, v)
+
 
 # ═══════════════════════════════════════════════════════════════
 #                          APERÇU
@@ -89,7 +114,7 @@ def build_preview(army1, army2, setup, grid_w, grid_h, fit_w, fit_h):
 
     b = Battle(army1, army2, grid_w, grid_h, 8, map_name=setup.map_name,
                map_options=setup.options())
-    cell = max(3, min(12, fit_w // grid_w, fit_h // grid_h))
+    cell = max(3, min(16, fit_w // grid_w, fit_h // grid_h))
     surf = renderer.build_grid_surface(b, cell)
     bf = b.battlefield
     for side, army in enumerate((b.army1, b.army2)):
@@ -164,6 +189,11 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
                     return "launch"
                 if event.key in (pygame.K_n, pygame.K_F5):
                     setup.new_seed()
+                if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                    # ←/→: carte précédente / suivante, sans viser un bouton
+                    names = maps_mod.get_map_names()
+                    step = 1 if event.key == pygame.K_RIGHT else -1
+                    setup.set_map(names[(names.index(setup.map_name) + step) % len(names)])
 
         screen.blit(background, (0, 0))
         T.title(screen, "Champ de bataille", screen_w // 2, 8, 28)
@@ -291,7 +321,7 @@ def run_map_screen(screen, screen_w, screen_h, army1, army2, setup, grid_size):
             return "launch"
 
         help_txt = small_font.render(
-            "ENTRÉE = combat  |  N = nouvelle carte  |  ÉCHAP = retour aux armées",
+            "ENTRÉE = combat  ·  ←/→ = carte  ·  N = nouvelle carte  ·  ÉCHAP = retour aux armées",
             True, TEXT_DIM)
         screen.blit(help_txt, ((screen_w - help_txt.get_width()) // 2, screen_h - 14))
 

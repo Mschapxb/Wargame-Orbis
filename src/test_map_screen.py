@@ -5,6 +5,7 @@ carte et de l'avantage de terrain (maps.apply_advantage).
     python test_map_screen.py avantage   # seulement les tests dont le nom contient 'avantage'
 """
 import os, sys, random, traceback
+os.environ.setdefault("WARGAME_ORBIS_SETTINGS", "memory")  # réglages du joueur intacts
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
@@ -174,6 +175,84 @@ def test_boucle_reelle_de_l_ecran_carte():
     assert res == "back" and setup.seed != seed0
     res = drive({2: [E(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0, unicode="\r", scancode=0)]})
     assert res == "launch"
+
+
+# ── Mémoire de session et ergonomie de l'écran des armées ──
+
+
+@test
+def test_reglages_relus_et_fichier_abime_ignore():
+    import tempfile
+    import settings
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "settings.json")
+        s = settings.Settings(path)
+        s.set("battle", "speed", "fast")
+        s.set("video", "fps", 30)
+        s.save()
+        again = settings.Settings(path)
+        assert again.get("battle", "speed") == "fast" and again.get("video", "fps") == 30
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"battle": {"speed": 3, "inconnu": 1}, "video": "x"')   # abîmé
+        broken = settings.Settings(path)
+        assert broken.get("battle", "speed") == "normal"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"battle": {"speed": 3, "show_lines": false}}')         # mauvais type
+        typed = settings.Settings(path)
+        assert typed.get("battle", "speed") == "normal"
+        assert typed.get("battle", "show_lines") is False
+
+
+@test
+def test_armees_et_carte_retrouvees_a_la_session_suivante():
+    import tempfile
+    import menu
+    import settings
+    pygame.display.set_mode((1200, 720))
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "settings.json")
+        settings.reset(path)
+        m = menu.ArmyMenu(1200, 720)
+        m.states[0].add_unit("Armée Skaldienne", "Infanterie régulière", 7)
+        m.states[0].add_group()
+        m.states[0].add_unit("Armée Skaldienne", "Arbaletrier régulier", 2)
+        m.states[1].add_unit("Armée Orlandar", "Cavalier covaliir", 3)
+        m.states[1].bonuses["moral"] = 2
+        m.setup.set_map("Village")
+        m.setup.weather = "Pluie"
+        seed = m.setup.seed
+        m.remember()
+        settings.reset(path)                      # « relance du jeu »
+        m2 = menu.ArmyMenu(1200, 720)
+        assert m2.states[0].groups == [{("Armée Skaldienne", "Infanterie régulière"): 7},
+                                       {("Armée Skaldienne", "Arbaletrier régulier"): 2}]
+        assert m2.states[1].composition == {("Armée Orlandar", "Cavalier covaliir"): 3}
+        assert m2.states[1].bonuses["moral"] == 2
+        assert (m2.setup.map_name, m2.setup.weather, m2.setup.seed) == ("Village", "Pluie", seed)
+        # Combat immédiat: les mêmes armées sur la même carte, sans l'écran 2
+        a1, a2, name, opts = m2.quick_launch()
+        assert len(a1) == 9 and len(a2) == 3 and name == "Village" and opts['seed'] == seed
+    settings.reset()
+
+
+@test
+def test_recherche_filtre_et_factions_repliees():
+    import menu
+    import settings
+    settings.reset()
+    pygame.display.set_mode((1200, 720))
+    m = menu.ArmyMenu(1200, 720)
+    m.search = "ARBALETRIER"                      # ni casse ni accents
+    units = [r[2]["nom"] for r in m._unit_rows() if r[0] == "unit"]
+    assert units and all("arbal" in menu.fold(n) for n in units)
+    m.search = ""
+    m.faction_filter = "Armée Orlandar"
+    rows = m._unit_rows()
+    assert {r[1] for r in rows} == {"Armée Orlandar"}
+    m.collapsed = {"Armée Orlandar"}
+    assert [r[0] for r in m._unit_rows()] == ["header"]   # repliée: son bandeau seul
+    m.search = "cavalier"                          # une recherche montre tout
+    assert any(r[0] == "unit" for r in m._unit_rows())
 
 
 if __name__ == "__main__":

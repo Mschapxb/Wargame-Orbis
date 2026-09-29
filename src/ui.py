@@ -31,6 +31,12 @@ _ROLE_FR = {
 
 # ─── Zoom et caméra ───
 
+def round_label(battle):
+    """« Round N », ou « Déploiement » avant le premier round."""
+    played = battle.round - 1
+    return f"Round {played}" if played > 0 else "Déploiement"
+
+
 def next_zoom(zoom, direction):
     """Niveau de zoom voisin (+1 = rapprocher, -1 = éloigner)."""
     idx = min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - zoom))
@@ -421,8 +427,14 @@ def draw_bottom_hud(screen, battle, screen_w, top, height, fonts, status, status
                      T.darken(status_color, 0.15))
     screen.blit(st, (cx - st.get_width() // 2, top + 5))
     sky = getattr(battle.battlefield, 'weather', None)
-    sky_txt = f"   ·   {sky.label}" if sky is not None and sky.name != "Clair" else ""
-    T.text(screen, f"Round {battle.round - 1}{sky_txt}   ·   zoom ×{zoom:g}   ·   {fps} i/s",
-           tiny, (cx, top + 31), T.PARCHMENT_DIM, align="center")
-    hint = tiny.render(help_text, True, T.MUTED)
-    screen.blit(hint, (cx - hint.get_width() // 2, top + height - hint.get_height() - 4))
+    parts = [round_label(battle)]
+    if sky is not None and sky.name != "Clair":
+        parts.append(sky.label)
+    if zoom is not None and abs(zoom - 1.0) > 1e-3:
+        parts.append(f"zoom ×{zoom:.2g}")
+    if fps is not None:
+        parts.append(f"{fps} i/s")
+    T.text(screen, "   ·   ".join(parts), tiny, (cx, top + 31), T.PARCHMENT_DIM, align="center")
+    if help_text:
+        hint = tiny.render(help_text, True, T.MUTED)
+        screen.blit(hint, (cx - hint.get_width() // 2, top + height - hint.get_height() - 4))

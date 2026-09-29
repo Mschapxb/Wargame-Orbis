@@ -251,6 +251,24 @@ def text(surf, s, fnt, pos, color=PARCHMENT, align="left", shadow=True, alpha=25
     return pygame.Rect(x, y, img.get_width(), img.get_height())
 
 
+_glyph_cache = {}
+
+
+def has_glyphs(fnt, s):
+    """La police sait-elle dessiner tous les caractères de `s` ? Les polices
+    de titre (Palatino, Garamond) s'arrêtent au Latin-1 — leur « ŏ » est un
+    ornement: au-delà, mieux vaut la police d'interface."""
+    key = (id(fnt), s)
+    ok = _glyph_cache.get(key)
+    if ok is None:
+        try:
+            ok = all(ord(ch) < 256 for ch in s) and all(m is not None for m in fnt.metrics(s))
+        except pygame.error:
+            ok = True
+        _glyph_cache[key] = ok
+    return ok
+
+
 def gold_text(s, fnt, top=GOLD_BRIGHT, bottom=GOLD_DIM):
     """Texte doré (dégradé vertical), mis en cache."""
     def build():

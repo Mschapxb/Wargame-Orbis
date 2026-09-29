@@ -100,15 +100,55 @@ def get_shadow(sh_w, sh_h):
 _body_cache = {}
 
 
+def unit_glyph(u):
+    """Classe lisible d'une unité, pour l'insigne de son jeton quand elle n'a
+    pas d'image: artillerie, mage, officier, cavalerie, tir, monstre, héros,
+    mêlée."""
+    if getattr(u, 'is_artillery', False):
+        return "artillery"
+    if u.spells:
+        return "mage"
+    if u.encouragement_range > 0:
+        return "officer"
+    kind = (getattr(u, 'unit_type', "") or "").lower()
+    if "cavalerie" in kind or (u.size >= 2 and u.vitesse >= 6):
+        return "cavalry"
+    if u._max_range >= 4:
+        return "ranged"
+    if kind in ("large", "monstre"):
+        return "monster"
+    if kind.startswith("h") and "ros" in kind:
+        return "hero"
+    return "melee"
+
+
+def _draw_badge(surf, cx, cy, ur, color, glyph):
+    """Jeton sans image: disque éclairé par le haut à la couleur de l'unité,
+    liseré sombre, et l'insigne de sa classe (lisible sur toute couleur)."""
+    import icons
+    pygame.draw.circle(surf, T.darken(color, 0.55), (cx, cy), ur)
+    pygame.draw.circle(surf, T.darken(color, 0.12), (cx, cy), max(1, ur - 1))
+    pygame.draw.circle(surf, T.lighten(color, 0.12), (cx, cy - max(1, ur // 6)),
+                       max(1, int(ur * 0.72)))
+    size = max(8, int(ur * 1.4))
+    light = T.luminance(color) < 150
+    ink = (250, 244, 228) if light else (26, 22, 16)
+    halo = (16, 14, 12) if light else (255, 250, 236)
+    back = icons.icon("glyph_" + glyph, size, halo)
+    back.set_alpha(150)
+    surf.blit(back, (cx - size // 2 + 1, cy - size // 2 + 1))
+    surf.blit(icons.icon("glyph_" + glyph, size, ink), (cx - size // 2, cy - size // 2))
+
+
 def unit_body(spec):
     """Surface du corps et demi-côté, pour un blit centré en (cx, cy).
 
-    `spec` = (engin, en fuite, jeton, couleur, rôle, ur, uw, uh, cs, couleur
-    d'équipe) — tout ce dont le dessin dépend, et rien d'autre."""
+    `spec` = (engin, en fuite, jeton, couleur, insigne, ur, uw, uh, cs,
+    couleur d'équipe) — tout ce dont le dessin dépend, et rien d'autre."""
     got = _body_cache.get(spec)
     if got is not None:
         return got
-    engine, fleeing, token_name, color, role, ur, uw, uh, cs, team_color = spec
+    engine, fleeing, token_name, color, glyph, ur, uw, uh, cs, team_color = spec
     sh_w, sh_h = max(4, ur * 2), max(2, ur // 2 + 2)
     ring_r, ring_w = ur + 2, max(2, cs // 8)
     token_size = min(uw, uh) * cs - 4
@@ -122,16 +162,13 @@ def unit_body(spec):
                           pygame.Rect(cx - uw * cs // 2, cy - uh * cs // 2,
                                       uw * cs, uh * cs), team_color)
     elif fleeing:
-        pygame.draw.circle(surf, (255, 140, 0), (cx, cy), ur)
+        _draw_badge(surf, cx, cy, ur, (255, 140, 0), glyph)
     else:
         token_img = load_token(token_name, token_size) if token_name else None
         if token_img:
             surf.blit(token_img, (cx - token_size // 2, cy - token_size // 2))
         else:
-            pygame.draw.circle(surf, color, (cx, cy), ur)
-            rc = ((255, 255, 255) if role == "front" else (128, 128, 128)
-                  if role == "mid" else (0, 0, 0))
-            pygame.draw.circle(surf, rc, (cx, cy), max(1, 3 * cs // 32))
+            _draw_badge(surf, cx, cy, ur, color, glyph)
     if not engine:      # l'engin porte déjà son liseré d'équipe
         pygame.draw.circle(surf, team_color, (cx, cy), ring_r, ring_w)
     if len(_body_cache) > 512:
@@ -1441,8 +1478,10 @@ def _draw_dashed_circle(screen, center, radius, color):
                          (cx + math.cos(a1) * radius, cy + math.sin(a1) * radius), 2)
 
 
-def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font):
-    """Rapport de bataille: panneau du thème sur la carte assombrie."""
+def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny_font, footer=0):
+    """Rapport de bataille: panneau du thème sur la carte assombrie.
+    `footer`: hauteur réservée en bas du panneau (boutons d'action).
+    Retourne le rect du panneau."""
     header_font = T.font('title', 18)
     body_font = T.font('ui_bold', 13)
     detail_font = T.font('ui', 13)
@@ -1453,10 +1492,12 @@ def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny
     screen.blit(veil, (0, 0))
 
     panel_w = min(780, screen_w - 20)
-    panel_h = min(660, battlefield_h - 10)
+    panel_h = min(660 + footer, battlefield_h - 10)
     px = (screen_w - panel_w) // 2
     py = (battlefield_h - panel_h) // 2
     prect = T.panel(screen, (px, py, panel_w, panel_h))
+    content = prect.inflate(-8, -8)
+    content.h -= footer
 
     y = T.title(screen, "Rapport de bataille", prect.centerx, py + 14, 26)
     T.text(screen, f"Victoire : {report['winner']}   ·   {report['rounds']} rounds",
@@ -1465,7 +1506,7 @@ def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny
 
     col_w = (panel_w - 60) // 2
     clip = screen.get_clip()
-    screen.set_clip(prect.inflate(-8, -8))
+    screen.set_clip(content)
 
     def listing(label, items, color, item_color, col_x, cy):
         cy = T.section_header(screen, label, col_x, cy, col_w, color, 14)
@@ -1531,7 +1572,11 @@ def draw_battle_report(screen, report, screen_w, battlefield_h, small_font, tiny
             cy = listing("Tombés", army['dead'], T.DANGER, (215, 160, 150), col_x, cy)
 
     screen.set_clip(clip)
-    pygame.draw.line(screen, T.darken(T.GOLD_DIM, 0.4), (prect.centerx, y), (prect.centerx, prect.bottom - 20))
+    pygame.draw.line(screen, T.darken(T.GOLD_DIM, 0.4), (prect.centerx, y),
+                     (prect.centerx, content.bottom - 12))
+    if footer:
+        T.divider(screen, prect.x + 30, prect.right - 30, content.bottom + 2)
+    return prect
 
 
 def run_visual(battle, cell_size):

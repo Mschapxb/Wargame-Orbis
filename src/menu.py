@@ -6,7 +6,10 @@ avant de lancer la bataille.
 
 import pygame
 import sys
+import unicodedata
 
+import icons
+import settings as settings_mod
 import theme as T
 
 from unit_library import get_library, list_armies
@@ -160,6 +163,29 @@ class ArmyState:
         self.active = 0
         self.bonuses = dict(other.bonuses)
 
+    # ── Mémoire d'une session à l'autre (cf. settings.py) ──
+    def to_dict(self):
+        return {'groups': [[[army, unit, n] for (army, unit), n in g.items() if n > 0]
+                           for g in self.groups],
+                'bonuses': dict(self.bonuses)}
+
+    def load_dict(self, data, known):
+        """Reprend une composition enregistrée; `known(faction, unité)` dit si
+        l'unité existe encore (une unité supprimée depuis est ignorée)."""
+        groups = []
+        for g in data.get('groups') or []:
+            comp = {}
+            for entry in g:
+                if (isinstance(entry, list) and len(entry) == 3 and isinstance(entry[2], int)
+                        and entry[2] > 0 and known(entry[0], entry[1])):
+                    comp[(entry[0], entry[1])] = entry[2]
+            groups.append(comp)
+        self.groups = groups[:self.MAX_GROUPS] or [{}]
+        self.active = 0
+        for k, v in (data.get('bonuses') or {}).items():
+            if k in self.bonuses and isinstance(v, int):
+                self.bonuses[k] = max(-5, min(5, v))
+
     def get_all_units_flat(self):
         """Retourne [(army_name, unit_def), ...] pour toutes les factions."""
         result = []
@@ -239,11 +265,12 @@ BONUS_LABELS = {
     "degats": "Dégâts",
 }
 
-HELP_TEXT = ("Clic gauche sur une ligne = +1  |  Clic droit = -1  |  Molette = défiler  |  "
-             "ENTRÉE = choisir le champ de bataille  |  ÉCHAP = quitter")
+HELP_TEXT = ("Clic = +1  ·  Maj+clic = +5  ·  clic droit = −1  ·  tapez pour chercher  ·  "
+             "ENTRÉE = champ de bataille  ·  Maj+ENTRÉE = combat immédiat  ·  ÉCHAP = quitter")
 
 PANEL_MARGIN = 15
-PANEL_TOP = 58
+FILTER_TOP = 54
+PANEL_TOP = 94
 FACTION_HEADER_H = 24
 UNIT_ROW_H = 38
 SCROLL_STEP_PX = 20   # pixels par cran de défilement
@@ -252,6 +279,12 @@ SCROLL_STEP_PX = 20   # pixels par cran de défilement
 def _quit():
     pygame.quit()
     sys.exit()
+
+
+def fold(text):
+    """Minuscules sans accents: « Arbalétrier » se trouve en tapant « arbaletrier »."""
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower())
+                   if unicodedata.category(c) != "Mn")
 
 
 class ArmyMenu:
@@ -284,11 +317,44 @@ class ArmyMenu:
         self.setup = MapSetup()
         self.bg_surface = T.background(screen_w, screen_h)
 
+        # Ce qui a été choisi la dernière fois revient tel quel: relancer
+        # la même bataille, c'est ENTRÉE deux fois.
+        self.settings = settings_mod.get()
+        self._restore_session()
+        # Liste des unités: filtre de faction, recherche, factions repliées
+        self.faction_filter = None
+        self.search = ""
+        self.collapsed = set()
+        self.shift = False
+
         # Entrées de l'image en cours
         self.mouse_pos = (0, 0)
         self.clicked = False
         self.right_clicked = False
         self.scroll_delta = 0
+
+    # ─── Mémoire de session ───
+
+    def _known_unit(self, army_name, unit_name):
+        return any(u["nom"] == unit_name for u in self.db.get(army_name, {}).get("units", []))
+
+    def _restore_session(self):
+        session = self.settings.section("session")
+        for state, data in zip(self.states, session.get("armies") or []):
+            if isinstance(data, dict):
+                state.load_dict(data, self._known_unit)
+        if isinstance(session.get("map"), dict):
+            self.setup.load_dict(session["map"])
+
+    def remember(self):
+        """Garde armées et champ de bataille pour la prochaine fois."""
+        self.settings.set("session", "armies", [st.to_dict() for st in self.states])
+        self.settings.set("session", "map", self.setup.to_dict())
+        self.settings.save()
+
+    def quit(self):
+        self.remember()
+        _quit()
 
     # ─── Boucle ───
 
@@ -311,9 +377,10 @@ class ArmyMenu:
     def _handle_events(self):
         self.clicked = self.right_clicked = False
         self.scroll_delta = 0
+        self.shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                _quit()
+                self.quit()
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     self.clicked = True
@@ -324,13 +391,43 @@ class ArmyMenu:
                 elif event.button == 5:
                     self.scroll_delta = 1
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    _quit()
-                if event.key in (pygame.K_RETURN, pygame.K_SPACE) and self.can_launch:
-                    result = self.next_screen()
-                    if result is not None:
-                        return result
+                result = self._key(event)
+                if result is not None:
+                    return result
         return None
+
+    def _key(self, event):
+        """Clavier: la recherche prend les lettres tapées; ENTRÉE avance,
+        Maj+ENTRÉE lance le combat sur la dernière carte, ÉCHAP efface la
+        recherche puis quitte."""
+        shift = bool(event.mod & pygame.KMOD_SHIFT)
+        if event.key == pygame.K_ESCAPE:
+            if self.search:
+                self.search = ""
+                return None
+            self.quit()
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if self.can_launch:
+                return self.quick_launch() if shift else self.next_screen()
+            return None
+        if event.key == pygame.K_BACKSPACE:
+            self.search = self.search[:-1]
+            return None
+        if event.key == pygame.K_SPACE and not self.search:
+            return self.next_screen() if self.can_launch else None
+        ch = event.unicode
+        if ch and ch.isprintable() and not (event.mod & (pygame.KMOD_CTRL | pygame.KMOD_ALT)):
+            if len(self.search) < 30:
+                self.search += ch
+                for st in self.states:
+                    st.scroll_offset = 0
+        return None
+
+    def quick_launch(self):
+        """Combat immédiat: les armées composées, sur la dernière carte."""
+        self.remember()
+        return (self.states[0].build(), self.states[1].build(), self.setup.map_name,
+                self.setup.options())
 
     def next_screen(self):
         """Écran 2. Retourne le résultat final du menu, ou None (retour)."""
@@ -341,6 +438,7 @@ class ArmyMenu:
         grid_w, grid_h, _cell = compute_grid_from_screen()
         if run_map_screen(self.screen, self.screen_w, self.screen_h, a1, a2, self.setup,
                           (grid_w, grid_h)) == "launch":
+            self.remember()
             return a1, a2, self.setup.map_name, self.setup.options()
         pygame.display.set_caption("Composition des armées")
         return None
@@ -358,6 +456,7 @@ class ArmyMenu:
         screen = self.screen
         screen.blit(self.bg_surface, (0, 0))
         T.title(screen, "Composition des armées", self.screen_w // 2, 8, 28)
+        self._draw_filter_bar()
         panel_w = (self.screen_w - PANEL_MARGIN * 3) // 2
         panel_h = self.screen_h - PANEL_TOP - 80
         rows = self._unit_rows()
@@ -365,20 +464,82 @@ class ArmyMenu:
             px = PANEL_MARGIN + i * (panel_w + PANEL_MARGIN)
             self._draw_panel(i, state, pygame.Rect(px, PANEL_TOP, panel_w, panel_h), rows)
         self._draw_custom_units_button()
+        result = self._draw_quick_button()
+        if result is not None:
+            return result
         result = self._draw_launch_button()
         help_txt = self.small_font.render(HELP_TEXT, True, TEXT_DIM)
         screen.blit(help_txt, ((self.screen_w - help_txt.get_width()) // 2, self.screen_h - 16))
         return result
 
     def _unit_rows(self):
-        """[("header", faction, couleur) | ("unit", faction, unit_def)]."""
+        """[("header", faction, couleur, nb d'unités) | ("unit", faction,
+        unit_def)] — après filtre de faction, recherche et factions repliées
+        (une recherche montre tout ce qui correspond)."""
         rows = []
+        query = fold(self.search.strip())
         for army_name in self.army_names:
+            if self.faction_filter and army_name != self.faction_filter:
+                continue
             army_data = self.db.get(army_name, {})
-            rows.append(("header", army_name, army_data.get("color", (180, 180, 180))))
-            for unit_def in army_data.get("units", []):
+            units = [u for u in army_data.get("units", [])
+                     if not query or query in fold(u["nom"])]
+            if query and not units:
+                continue
+            rows.append(("header", army_name, army_data.get("color", (180, 180, 180)),
+                         len(units)))
+            if army_name in self.collapsed and not query:
+                continue
+            for unit_def in units:
                 rows.append(("unit", army_name, unit_def))
         return rows
+
+    def _draw_filter_bar(self):
+        """Filtre de faction (puces) et recherche, communs aux deux armées."""
+        screen = self.screen
+        y, x = FILTER_TOP, PANEL_MARGIN
+        search_w = min(320, self.screen_w // 4)
+        chips_right = self.screen_w - PANEL_MARGIN - search_w - 16
+        for name in [None] + self.army_names:
+            label = "Toutes les factions" if name is None else name
+            w = self.small_font.size(label)[0] + (34 if name else 22)
+            if x + w > chips_right:
+                break
+            rect = pygame.Rect(x, y, w, 28)
+            selected = self.faction_filter == name
+            if self._button(rect, "", self.small_font, BTN_ACTIVE if selected else BTN_NORMAL):
+                self.faction_filter = name
+                for st in self.states:
+                    st.scroll_offset = 0
+            color = (30, 23, 12) if selected else TEXT
+            tx = rect.x + 11
+            if name:
+                fc = self.db.get(name, {}).get("color", (180, 180, 180))
+                pygame.draw.circle(screen, fc, (rect.x + 14, rect.centery), 5)
+                pygame.draw.circle(screen, T.INK, (rect.x + 14, rect.centery), 5, 1)
+                tx += 12
+            img = self.small_font.render(label, True, color)
+            screen.blit(img, (tx, rect.centery - img.get_height() // 2))
+            x += w + 5
+        box = pygame.Rect(self.screen_w - PANEL_MARGIN - search_w, y, search_w, 28)
+        active = bool(self.search)
+        screen.blit(T.rounded_gradient(box.w, box.h, (20, 22, 28), (30, 33, 41), 7), box)
+        pygame.draw.rect(screen, T.GOLD if active else T.darken(T.GOLD_DIM, 0.2), box, 1,
+                         border_radius=7)
+        screen.blit(icons.icon("search", 16, T.GOLD if active else TEXT_DIM),
+                    (box.x + 9, box.centery - 8))
+        if active:
+            txt = self.body_font.render(self.search, True, TEXT_BRIGHT)
+            screen.blit(txt, (box.x + 32, box.centery - txt.get_height() // 2))
+            caret_x = box.x + 33 + txt.get_width()
+            if (pygame.time.get_ticks() // 500) % 2:
+                pygame.draw.line(screen, T.GOLD, (caret_x, box.y + 7), (caret_x, box.bottom - 7))
+            clear = pygame.Rect(box.right - 26, box.y + 4, 20, 20)
+            if self._button(clear, "×", self.small_font):
+                self.search = ""
+        else:
+            hint = self.small_font.render("Tapez pour chercher une unité…", True, TEXT_DIM)
+            screen.blit(hint, (box.x + 32, box.centery - hint.get_height() // 2))
 
     def _draw_panel(self, i, state, panel, rows):
         team_color = HIGHLIGHT if i == 0 else HIGHLIGHT2
@@ -446,7 +607,8 @@ class ArmyMenu:
             rh = FACTION_HEADER_H if row[0] == "header" else UNIT_ROW_H
             if draw_y + rh > area.top and draw_y < area.bottom:
                 if row[0] == "header":
-                    self._draw_faction_header(row[1], row[2], cx, draw_y, area.w)
+                    self._draw_faction_header(row[1], row[2], cx, draw_y, area.w, row[3],
+                                              area)
                 else:
                     self._draw_unit_row(state, row[1], row[2], cx, draw_y, area.w)
             draw_y += rh
@@ -463,13 +625,30 @@ class ArmyMenu:
                              border_radius=3)
             pygame.draw.rect(screen, T.GOLD_DIM, (area.right - 9, sb_y, 5, sb_h), border_radius=3)
 
-    def _draw_faction_header(self, army_name, fc, cx, y, panel_w):
+    def _draw_faction_header(self, army_name, fc, cx, y, panel_w, count=0, area=None):
+        """Bandeau de faction; un clic le replie ou le déplie."""
         rh = FACTION_HEADER_H
-        self.screen.blit(T.rounded_gradient(panel_w - 24, rh - 3, T.darken(fc, 0.62),
-                                            T.darken(fc, 0.78), 4), (cx, y + 1))
+        rect = pygame.Rect(cx, y + 1, panel_w - 24, rh - 3)
+        hovered = rect.collidepoint(self.mouse_pos) and (area is None
+                                                        or area.collidepoint(self.mouse_pos))
+        top, bottom = T.darken(fc, 0.62), T.darken(fc, 0.78)
+        if hovered:
+            top, bottom = T.darken(fc, 0.5), T.darken(fc, 0.68)
+        self.screen.blit(T.rounded_gradient(rect.w, rect.h, top, bottom, 4), rect)
         pygame.draw.rect(self.screen, T.lighten(fc, 0.1), (cx, y + 1, 3, rh - 3))
-        T.diamond(self.screen, cx + 13, y + rh // 2, 3, T.lighten(fc, 0.3))
-        T.text(self.screen, army_name, self.faction_font, (cx + 22, y + 3), T.lighten(fc, 0.35))
+        folded = army_name in self.collapsed and not self.search
+        # Chevron dessiné: la police de titre n'a pas les triangles Unicode
+        mx, my = cx + 14, y + rh // 2
+        pts = ([(mx - 3, my - 5), (mx + 4, my), (mx - 3, my + 5)] if folded
+               else [(mx - 5, my - 3), (mx + 5, my - 3), (mx, my + 4)])
+        pygame.draw.polygon(self.screen, T.lighten(fc, 0.3), pts)
+        fnt = self.faction_font if T.has_glyphs(self.faction_font, army_name) else self.name_font
+        T.text(self.screen, army_name, fnt, (cx + 24, y + 3), T.lighten(fc, 0.35))
+        T.text(self.screen, f"{count} unité{'s' if count > 1 else ''}", self.stat_font,
+               (rect.right - 10, y + 5), T.lighten(fc, 0.2), align="right")
+        if hovered and self.clicked and not self.search:
+            self.collapsed.symmetric_difference_update({army_name})
+            self.clicked = False
 
     def _draw_unit_row(self, state, army_name, unit_def, cx, y, panel_w):
         """Une unité: nom, stats, boutons -5/-1/+1/+5 et compteur du groupe
@@ -521,11 +700,12 @@ class ArmyMenu:
             state.add_unit(army_name, uname, 5)
 
         buttons_zone = pygame.Rect(bx, btn_y, 140, btn_h)
+        step = 5 if self.shift else 1          # Maj+clic: par cinq
         if row_rect.collidepoint(self.mouse_pos):
             if self.clicked and not buttons_zone.collidepoint(self.mouse_pos):
-                state.add_unit(army_name, uname, 1)
+                state.add_unit(army_name, uname, step)
             elif self.right_clicked:
-                state.remove_unit(army_name, uname, 1)
+                state.remove_unit(army_name, uname, step)
 
     def army_summary(self, state):
         """Compte CaC / Tir / Sorts / Cavalerie de la composition."""
@@ -648,6 +828,22 @@ class ArmyMenu:
             # Recharger la bibliothèque après édition
             load_custom_units_into_db()
             self.db.update(get_library())
+
+    def _draw_quick_button(self):
+        """Combat immédiat: saute l'écran du champ de bataille et reprend la
+        dernière carte (mêmes options, même graine)."""
+        rect = pygame.Rect(PANEL_MARGIN, self.screen_h - 52, 250, 36)
+        enabled = self.can_launch
+        hovered = T.button(self.screen, rect, "", self.small_font, self.mouse_pos,
+                           enabled=enabled)
+        color = T.GOLD_BRIGHT if enabled else T.MUTED
+        self.screen.blit(icons.icon("quick", 16, color), (rect.x + 12, rect.centery - 8))
+        T.text(self.screen, "Combat immédiat", self.name_font, (rect.x + 34, rect.y + 2), color)
+        T.text(self.screen, f"{self.setup.map_name} · Maj+Entrée", self.stat_font,
+               (rect.x + 34, rect.y + 19), TEXT_DIM)
+        if enabled and hovered and self.clicked:
+            return self.quick_launch()
+        return None
 
     def _draw_launch_button(self):
         launch_w, launch_h = 420, 44

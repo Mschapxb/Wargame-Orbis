@@ -3,6 +3,7 @@
     python test_ui.py zoom       # seulement les tests dont le nom contient 'zoom'
 """
 import os, sys, random, traceback
+os.environ.setdefault("WARGAME_ORBIS_SETTINGS", "memory")  # réglages du joueur intacts
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -188,6 +189,77 @@ def test_boucle_relance_et_retour_menu():
     assert not view.running and view.return_action == "menu"
     for action in set(battle_view.KEY_ACTIONS.values()):
         assert callable(getattr(view, action)), action
+
+
+@test
+def test_barre_d_outils_panneaux_et_souris():
+    """Tout se fait aussi à la souris: boutons de la barre (retrouvés par leur
+    infobulle), Échap → menu en pause, options, glisser pour déplacer la vue,
+    vue globale, clic sur une unité pour la suivre."""
+    import battle_view
+    pygame.display.set_mode((1400, 800))
+    view = battle_view.BattleView(battle(seed=4), 20, threaded=False)
+    E = pygame.event.Event
+    real_pos = pygame.mouse.get_pos
+    try:
+        pygame.mouse.get_pos = lambda: (5, 5)
+        view.draw(0)
+
+        def click_tooltip(start):
+            zone = next(z for z in view.clicks.zones if z[2] and z[2].startswith(start))
+            view.handle_event(E(pygame.MOUSEBUTTONDOWN, button=1, pos=zone[0].center))
+            view.handle_event(E(pygame.MOUSEBUTTONUP, button=1, pos=zone[0].center))
+            view.draw(0)
+
+        assert view.paused
+        click_tooltip("Lecture")                    # ▶ de la barre
+        assert not view.paused
+        click_tooltip("Vitesse ×4")
+        assert view.speed == "faster" and view.settings.get("battle", "speed") == "faster"
+        click_tooltip("Lignes de ciblage")
+        assert view.show_lines is False
+        view.handle_event(E(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=0))
+        assert view.overlay == "menu" and view.paused
+        view.handle_event(E(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0, unicode="", scancode=0))
+        assert view.overlay is None and not view.paused   # l'état d'avant revient
+        view.handle_event(E(pygame.KEYDOWN, key=pygame.K_o, mod=0, unicode="o", scancode=0))
+        view.draw(0)
+        assert view.overlay == "options"
+        view.handle_event(E(pygame.MOUSEBUTTONDOWN, button=1, pos=(3, 3)))   # hors du panneau
+        assert view.overlay is None
+
+        view.view_all()
+        assert abs(view.zoom - min(1.0, view.fit_zoom())) < 0.01
+        view.zoom = 1.0
+        view.cam_x, view.cam_y = 200.0, 20.0         # dans les bornes de la caméra
+        view.draw(0)
+        start = (600, 300)
+        view.handle_event(E(pygame.MOUSEBUTTONDOWN, button=1, pos=start))
+        view.handle_event(E(pygame.MOUSEMOTION, pos=(560, 280), rel=(-40, -20), buttons=(1, 0, 0)))
+        view.handle_event(E(pygame.MOUSEBUTTONUP, button=1, pos=(560, 280)))
+        assert (view.cam_x, view.cam_y) == (240.0, 40.0), "glisser déplace la vue"
+        assert view.follow_uid is None, "un glisser n'est pas un clic"
+
+        u = view.battle.army1[0]
+        cs = view.cell_size
+        view.cam_x, view.cam_y = u.position[0] * cs - 400, u.position[1] * cs - 300
+        view.clamp_camera()
+        sx = int((u.position[0] + 0.5) * cs - view.cam_x)
+        sy = int((u.position[1] + 0.5) * cs - view.cam_y)
+        view.draw(0)
+        view.handle_event(E(pygame.MOUSEBUTTONDOWN, button=1, pos=(sx, sy)))
+        view.handle_event(E(pygame.MOUSEBUTTONUP, button=1, pos=(sx, sy)))
+        assert view.follow_uid == u.uid, "clic sur une unité: suivie"
+
+        # Fin de bataille: les actions sont des boutons du rapport
+        view.winner = "Armée 1"
+        view.battle_report = view.battle.get_battle_report()
+        view.draw(0)
+        labels = {z[1] for z in view.clicks.zones if z[1] is not None}
+        assert view.restart in labels and view.to_menu in labels and view.export_video in labels
+    finally:
+        pygame.mouse.get_pos = real_pos
+        view.pipeline.close()
 
 
 def _units_state(battle):

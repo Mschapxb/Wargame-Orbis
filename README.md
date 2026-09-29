@@ -36,8 +36,18 @@ python src/main.py
   est **déployée comme un corps séparé** (front, centre et tireurs propres), marquée
   d'une pastille de couleur sur le terrain et **comptée à part dans le rapport de
   bataille**. Les boutons `+/-` alimentent le groupe sélectionné.
-- Ajouter/retirer des unités individuellement avec les boutons **+/-**
-- **SUIVANT : CHAMP DE BATAILLE →** (ou `Entrée`) ouvre le second écran
+- Ajouter/retirer des unités: clic sur la ligne = **+1**, `Maj`+clic = **+5**,
+  clic droit = **−1** (ou les boutons `-5 -1 +1 +5`)
+- **Trouver une unité sans défiler**: filtre par faction (puces au-dessus des
+  listes), recherche au clavier — il suffit de taper, sans casse ni accents
+  (`arbaletrier` trouve *Arbalétrier*) —, et un clic sur le bandeau d'une
+  faction la replie ou la déplie
+- **SUIVANT : CHAMP DE BATAILLE →** (ou `Entrée`) ouvre le second écran;
+  **Combat immédiat** (`Maj+Entrée`) lance directement la bataille sur la
+  dernière carte choisie
+- **Tout est retenu d'une partie à l'autre** (armées, groupes, bonus, carte,
+  météo, graine): pour rejouer la même bataille au lancement suivant, `Entrée`
+  deux fois suffit (fichier `%APPDATA%/Wargame-Orbis/settings.json`)
 
 **2. Champ de bataille** (`src/map_screen.py`)
 
@@ -52,6 +62,7 @@ python src/main.py
   relief et la météo effectivement tirés; **Nouvelle carte** (`N`) en tire une
   autre. La bataille se joue exactement sur la carte de l'aperçu, et `R` en
   bataille rejoue la même carte (la graine voyage dans `map_options['seed']`).
+- `←` / `→` changent de carte sans viser les boutons
 - **← Armées** (`Échap`) revient au premier écran sans rien perdre;
   **COMBAT !** (`Entrée`) lance la bataille
 
@@ -84,24 +95,58 @@ tour pour contre-attaquer.
 
 ### Contrôles en bataille
 
+Tout se fait **à la souris** — une barre d'outils en bas de l'écran porte
+chaque commande (lecture/pause, vitesses ×1 ×2 ×4, zoom, vue globale,
+calques, vidéo, relance, options, aide, menu); son infobulle rappelle la
+touche — ou **au clavier**. `H` affiche l'aide complète.
+
 | Touche | Action |
 |--------|--------|
-| `ESPACE` | Pause / Reprendre |
-| `F` | Mode rapide |
-| `N` | Mode normal |
+| `Espace` | Pause / reprise (au lancement, un clic sur la carte suffit aussi) |
+| `1` / `2` / `3` | Vitesse ×1, ×2, ×4 (`N` et `F` restent des alias) |
 | `ZQSD` / `Flèches` | Déplacer la caméra |
-| `Molette` | Zoom (×0,5 à ×2) autour du curseur |
+| `Molette` | Zoom autour du curseur, jusqu'à la vue globale |
 | `+` / `-` / `0` | Zoomer / dézoomer / revenir à ×1 |
-| `Clic milieu` | Glisser la caméra |
-| `Tab` | Afficher/masquer la mini-carte (clic ou glissé dessus pour s'y rendre) |
-| Survol d'une unité | Fiche: PV, moral, sauvegarde (et ses bonus), traits, armes, sorts, seuils contre sa cible avec le détail des modificateurs, état, ordre et rôle dans le plan |
-| `T` | Afficher/masquer les lignes de ciblage |
-| `I` | Afficher/masquer les intentions des plans de bataille (flèches, aile refusée, colline) |
-| `L` | Afficher/masquer la légende du terrain |
-| `B` | Basculer plein écran / fenêtré sans bordure |
-| `R` | Relancer la bataille |
+| `G` / `Origine` | **Vue globale**: toute la carte à l'écran |
+| `Tab` | Mini-carte (clic ou glissé dessus pour s'y rendre) |
+| `T` / `I` / `L` | Lignes de ciblage / intentions des généraux / légende du terrain |
+| `V` | **Vidéo de la bataille** en vue globale (cf. ci-dessous) |
+| `O` | Options (enregistrées automatiquement) |
+| `H` / `F1` | Aide et raccourcis |
+| `B` | Plein écran / fenêtré sans bordure |
+| `R` | Relancer la même bataille |
 | `M` | Retour au menu |
-| `ESC` | Quitter |
+| `Échap` | Menu (pause): reprendre, options, aide, relancer, menu, quitter — ou fermer le panneau ouvert |
+
+| Souris | Action |
+|--------|--------|
+| Glisser (clic gauche ou milieu) | Déplacer la vue |
+| Clic sur une unité | La **suivre** (caméra accrochée); clic dans le vide: arrêter |
+| Survol d'une unité | Fiche: PV, moral, sauvegarde (et ses bonus), traits, armes, sorts, seuils contre sa cible avec le détail des modificateurs, état, ordre et rôle dans le plan; zone atteignable et chemin suivi |
+| Clic droit | Fermer le panneau ouvert |
+
+**Options** (`O`): calques affichés, défilement quand la souris touche le
+bord, vitesse de défilement, vitesse de jeu, attente avant le lancement,
+réglages vidéo. Tout est gardé d'une partie à l'autre.
+
+**Fin de bataille**: le rapport porte les boutons *Rejouer*, *Vidéo*, *Menu*
+et *Quitter*.
+
+### Vidéo de la bataille (`video_export.py`)
+
+`V`, le bouton caméra ou le bouton *Vidéo* du rapport enregistrent **toute la
+bataille, du premier au dernier round, en vue globale** (carte entière,
+bandeau des forces, annonces, bilan final), même si l'on n'en a regardé
+qu'une partie. La bataille est rejouée à l'identique dans un autre processus
+— le jeu continue pendant ce temps; une notification suit l'avancement, puis
+un clic ouvre le dossier (`Vidéos/Wargame Orbis`).
+
+- Définition 720p ou 1080p, 24 ou 30 images/s, 0,5 à 1,5 s par round
+  (options).
+- Format: **MP4** (H.264) si `ffmpeg` est installé (dans le PATH, ou
+  `pip install imageio-ffmpeg`); sinon **AVI Motion-JPEG**, sans aucune
+  dépendance, lisible par VLC et les lecteurs de Windows — mais une
+  cinquantaine de fois plus lourd.
 
 ---
 
@@ -486,6 +531,10 @@ battle-simulator/
 ├── renderer.py          # Primitives de rendu (terrain, structures, rapport)
 ├── battle_view.py       # Écran de bataille: boucle, caméra, touches (KEY_ACTIONS), HUD
 ├── battle_pipeline.py   # Simulation en tâche de fond: un instantané par round pour l'écran
+├── hud.py               # Barre d'outils, infobulles, notifications, panneaux (mode immédiat)
+├── icons.py             # Icônes vectorielles et insignes de classe d'unité
+├── settings.py          # Réglages et mémoire de session (JSON)
+├── video_export.py      # Vidéo de la bataille en vue globale (autre processus)
 ├── unit.py              # Classe Unit (stats, combat, animations)
 ├── unit_library.py      # Base de données d'unités et armées prédéfinies
 ├── models.py            # Armes et sorts (Arme, SpellFireball, etc.)

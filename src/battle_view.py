@@ -12,23 +12,62 @@ calcule pendant que l'écran anime le précédent, et `self.battle` n'est
 jamais la bataille jouée mais l'INSTANTANÉ du dernier round calculé.
 """
 import math
+import os
+import random
 import sys
 
 import pygame
 
 import battle_pipeline as BP
+import hud
+import icons
 import renderer as R
+import settings as settings_mod
 import theme as T
 import ui
 from fx_render import FxRenderer
 from weather_render import WeatherFx
 
-CAM_SPEED = 12            # pixels écran par image
+CAM_SPEED = 12            # pixels écran par image (cf. réglage camera_speed)
 EDGE_SCROLL_MARGIN = 30   # bande de défilement au bord de l'écran
+DRAG_THRESHOLD = 5        # pixels avant qu'un clic gauche devienne un glisser
 WORLD_BG = (25, 40, 30)
 
-HELP_TEXT = ("ESPACE pause · F/N vitesse · molette/+/- zoom · Tab carte · I intentions · "
-             "T lignes · L terrain · R relancer · M menu · ESC quitter")
+HELP_TEXT = "H  aide et raccourcis   ·   Échap  menu   ·   glisser  déplacer la vue"
+
+# Vitesses: (images par round, libellé, icône)
+SPEEDS = {
+    "normal": (R.ROUND_FRAMES_NORMAL, "×1", "speed1"),
+    "fast": (R.ROUND_FRAMES_FAST, "×2", "speed2"),
+    "faster": (10, "×4", "speed3"),
+}
+CAMERA_SPEEDS = ((8, "Lente"), (12, "Normale"), (20, "Rapide"))
+
+# Aide: (touches, action), dans l'ordre d'affichage
+KEY_HELP = (
+    (("Espace",), "Pause / reprise"),
+    (("1", "2", "3"), "Vitesse ×1, ×2, ×4"),
+    (("Molette", "+", "−"), "Zoom (0 : taille réelle)"),
+    (("G",), "Vue globale de toute la carte"),
+    (("Flèches", "ZQSD"), "Déplacer la vue"),
+    (("Tab",), "Mini-carte"),
+    (("T",), "Lignes de ciblage"),
+    (("I",), "Intentions des généraux"),
+    (("L",), "Légende du terrain"),
+    (("V",), "Vidéo de la bataille (vue globale)"),
+    (("R",), "Relancer la même bataille"),
+    (("O",), "Options"),
+    (("M",), "Retour au menu"),
+    (("B",), "Plein écran"),
+    (("Échap",), "Menu / fermer un panneau"),
+)
+MOUSE_HELP = (
+    ("Glisser (clic gauche)", "Déplacer la vue"),
+    ("Clic sur une unité", "La suivre (clic dans le vide : arrêter)"),
+    ("Survol d'une unité", "Fiche, zone atteignable et chemin"),
+    ("Clic sur la mini-carte", "Y centrer la vue"),
+    ("Molette", "Zoom autour du curseur"),
+)
 
 _MANEUVER_FR = {"envelop": "débordement", "concentrate": "concentration",
                 "collapse": "curée", "breach": "percée"}
@@ -53,10 +92,11 @@ _PATH_COLOR = (255, 225, 120)
 
 KEY_ACTIONS = {
     pygame.K_SPACE: "toggle_pause",
-    pygame.K_f: "speed_fast",
-    pygame.K_n: "speed_normal",
+    pygame.K_1: "speed_normal", pygame.K_KP1: "speed_normal", pygame.K_n: "speed_normal",
+    pygame.K_2: "speed_fast", pygame.K_KP2: "speed_fast", pygame.K_f: "speed_fast",
+    pygame.K_3: "speed_faster", pygame.K_KP3: "speed_faster",
     pygame.K_p: "pause_on",
-    pygame.K_ESCAPE: "quit",
+    pygame.K_ESCAPE: "escape",
     pygame.K_m: "to_menu",
     pygame.K_r: "restart",
     pygame.K_t: "toggle_lines",
@@ -65,7 +105,11 @@ KEY_ACTIONS = {
     pygame.K_PLUS: "zoom_in", pygame.K_KP_PLUS: "zoom_in", pygame.K_EQUALS: "zoom_in",
     pygame.K_MINUS: "zoom_out", pygame.K_KP_MINUS: "zoom_out",
     pygame.K_0: "zoom_reset", pygame.K_KP0: "zoom_reset",
+    pygame.K_g: "view_all", pygame.K_HOME: "view_all",
     pygame.K_l: "toggle_legend",
+    pygame.K_v: "export_video",
+    pygame.K_h: "toggle_help", pygame.K_F1: "toggle_help",
+    pygame.K_o: "toggle_options",
     pygame.K_b: "toggle_fullscreen",
 }
 
@@ -76,6 +120,21 @@ SCROLL_KEYS = (
     ((pygame.K_UP, pygame.K_z), (0, -1)),
     ((pygame.K_DOWN, pygame.K_s), (0, 1)),
 )
+
+
+def _open_folder(path):
+    """Ouvre le dossier d'un fichier (Windows: l'Explorateur, fichier
+    sélectionné)."""
+    import subprocess
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", path])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+    except OSError:
+        pass
 
 
 def _unit_dims(u):
@@ -108,16 +167,24 @@ class BattleView:
         """threaded=False: chaque round est simulé au moment de l'afficher,
         dans ce fil (ancien comportement, déterministe image par image)."""
         info = pygame.display.Info()
-        self.screen_w = info.current_w
-        self.screen_h = info.current_h
-        self.view_h = self.screen_h - R.HUD_HEIGHT
-        self.screen = pygame.display.set_mode((self.screen_w, self.screen_h), pygame.NOFRAME)
-        pygame.display.set_caption("Battle Simulator")
+        screen = pygame.display.set_mode((info.current_w, info.current_h), pygame.NOFRAME)
+        pygame.display.set_caption("Wargame Orbis — bataille")
+        self._setup(battle, cell_size, screen, threaded)
+
+    def _setup(self, battle, cell_size, screen, threaded, hud_height=R.HUD_HEIGHT):
+        """Tout ce qui ne dépend pas de la fenêtre (cf. video_export, qui
+        dessine sur une surface hors écran)."""
+        self.screen = screen
+        self.screen_w, self.screen_h = screen.get_size()
+        self.view_h = self.screen_h - hud_height
         self.clock = pygame.time.Clock()
         self.is_borderless = True   # False = plein écran exclusif (touche B)
         self.cell_size = cell_size
         self.threaded = threaded
         self.pipeline = None
+        self.settings = settings_mod.get()
+        prefs = self.settings.section("battle")
+        self.world_bg = WORLD_BG        # fond hors de la carte
 
         self.small_font = T.font('ui', max(9, cell_size // 3) + 1)
         self.tiny_font = T.font('ui', max(7, cell_size // 4) + 1)
@@ -133,14 +200,27 @@ class BattleView:
         self.fxr = FxRenderer(cell_size, R.load_token, self.tiny_font)
         self.minimap = ui.Minimap(battle, cell_size, self.screen_w, 38)
 
-        self.paused = True
-        self.speed = "normal"
+        self.paused = prefs["start_paused"]
+        self.speed = prefs["speed"] if prefs["speed"] in SPEEDS else "normal"
         self.running = True
         self.return_action = None
-        self.show_lines = True
-        self.show_intents = True
-        self.show_minimap = True
-        self.show_terrain_legend = False
+        # Affichage: repris des réglages, et gardé pour la prochaine fois
+        self.show_lines = prefs["show_lines"]
+        self.show_intents = prefs["show_intents"]
+        self.show_minimap = prefs["show_minimap"]
+        self.show_terrain_legend = prefs["show_legend"]
+
+        # Interface: zones cliquables de la dernière image, panneau ouvert
+        # (None, "menu", "help", "options"), notifications, suivi d'unité
+        self.clicks = hud.Clicks()
+        self.overlay = None
+        self._paused_before_menu = False
+        self.toasts = hud.Toasts()
+        self.tooltip = hud.Tooltip()
+        self.follow_uid = None
+        self._press = None              # clic gauche en cours sur le monde
+        self._left_drag = False
+        self.video_job = None
 
         # Zoom: le monde est dessiné à sa taille de case dans une surface de
         # vue (écran / zoom), puis mis à l'échelle — aucune coordonnée ne change.
@@ -169,7 +249,13 @@ class BattleView:
             self.pipeline.close()
         self.pipeline = BP.RoundPipeline(battle, threaded=self.threaded)
         # L'écran ne touche plus la bataille jouée, seulement ses instantanés
+        live = battle
         battle = self.battle = self.pipeline.initial_snapshot()
+        # De quoi rejouer EXACTEMENT cette bataille ailleurs (vidéo): l'état
+        # de départ et celui du hasard, avant que le premier round n'y tire
+        self._replay_kit = BP.pack_battle(live, random.getstate())
+        self._by_uid = {u.uid: u for u in battle.army1 + battle.army2}
+        self.follow_uid = None
         bf = battle.battlefield
         self.grid_surface = R.build_grid_surface(battle, cs)
         self.fxr.reset(bf.width * cs, bf.height * cs)
@@ -219,6 +305,7 @@ class BattleView:
         finally:
             sys.setswitchinterval(switch)
             self.pipeline.close()
+            self.settings.save()
         return self.return_action
 
     # ─── Caméra ───
@@ -246,24 +333,75 @@ class BattleView:
             self.clamp_camera()
         return target is not None
 
+    def fit_zoom(self):
+        """Zoom où toute la carte tient dans la vue."""
+        return min(self.screen_w / max(1, self.world_w), self.view_h / max(1, self.world_h))
+
+    def _zoom_levels(self):
+        levels = list(ui.ZOOM_LEVELS)
+        fit = round(self.fit_zoom(), 3)
+        if fit < levels[0]:
+            levels.insert(0, fit)
+        return levels
+
+    def _next_zoom(self, direction):
+        levels = self._zoom_levels()
+        idx = min(range(len(levels)), key=lambda i: abs(levels[i] - self.zoom))
+        return levels[max(0, min(len(levels) - 1, idx + direction))]
+
+    def over_ui(self, pos):
+        """La souris est-elle sur l'interface (bandeau, bouton, panneau) ?"""
+        return (self.overlay is not None or pos[1] >= self.view_h
+                or self.clicks.at(pos) is not None)
+
     def scroll_camera(self):
-        """Défilement continu: touches maintenues et souris au bord."""
-        step = CAM_SPEED / self.zoom
+        """Défilement continu: touches maintenues et souris au bord (sauf
+        sur l'interface: on ne fait pas défiler la carte en visant un
+        bouton). Toute commande de caméra arrête le suivi d'une unité."""
+        prefs = self.settings.section("battle")
+        step = prefs["camera_speed"] / self.zoom
         keys = pygame.key.get_pressed()
-        for key_group, (dx, dy) in SCROLL_KEYS:
-            if any(keys[k] for k in key_group):
-                self.cam_x += dx * step
-                self.cam_y += dy * step
+        moved = False
+        if self.overlay is None:
+            for key_group, (dx, dy) in SCROLL_KEYS:
+                if any(keys[k] for k in key_group):
+                    self.cam_x += dx * step
+                    self.cam_y += dy * step
+                    moved = True
         mx, my = pygame.mouse.get_pos()
-        if mx < EDGE_SCROLL_MARGIN:
-            self.cam_x -= step
-        elif mx > self.screen_w - EDGE_SCROLL_MARGIN:
-            self.cam_x += step
-        if my < EDGE_SCROLL_MARGIN:
-            self.cam_y -= step
-        elif self.view_h - EDGE_SCROLL_MARGIN < my < self.view_h:
-            self.cam_y += step
+        if (prefs["edge_scroll"] and pygame.mouse.get_focused() and not self._left_drag
+                and not self.over_ui((mx, my))):
+            if mx < EDGE_SCROLL_MARGIN:
+                self.cam_x -= step
+                moved = True
+            elif mx > self.screen_w - EDGE_SCROLL_MARGIN:
+                self.cam_x += step
+                moved = True
+            if my < EDGE_SCROLL_MARGIN:
+                self.cam_y -= step
+                moved = True
+            elif self.view_h - EDGE_SCROLL_MARGIN < my < self.view_h:
+                self.cam_y += step
+                moved = True
+        if moved:
+            self.follow_uid = None
+        self._follow_camera()
         self.clamp_camera()
+
+    def _follow_camera(self):
+        """Caméra accrochée à l'unité suivie (glissement doux)."""
+        if self.follow_uid is None:
+            return
+        u = self._by_uid.get(self.follow_uid)
+        if u is None or not u.is_alive or u.position is None:
+            self.follow_uid = None
+            self.toasts.add("Unité suivie hors de combat", T.WARNING, 2.5)
+            return
+        uw, uh = _unit_dims(u)
+        cx, cy = self._unit_center(u, uw, uh, 0, 0, pygame.time.get_ticks())
+        vw, vh = self.screen_w / self.zoom, self.view_h / self.zoom
+        self.cam_x += (cx - vw / 2 - self.cam_x) * 0.18
+        self.cam_y += (cy - vh / 2 - self.cam_y) * 0.18
 
     # ─── Événements ───
 
@@ -271,42 +409,106 @@ class BattleView:
         if event.type == pygame.QUIT:
             self.quit()
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 2:   # clic molette: glisser la vue
+            if event.button == 1:
+                self._left_down(event.pos)
+            elif event.button == 2 and self.overlay is None:   # clic molette: glisser
                 self.dragging = True
                 self.drag_start = event.pos
                 self.drag_cam_start = (self.cam_x, self.cam_y)
-            elif event.button == 1 and self.show_minimap:
-                self.minimap_drag = self._minimap_jump(event.pos)
+            elif event.button == 3 and self.overlay is not None:
+                self.overlay = None          # clic droit: fermer le panneau
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 2:
                 self.dragging = False
             elif event.button == 1:
-                self.minimap_drag = False
+                self._left_up(event.pos)
         elif event.type == pygame.MOUSEMOTION:
             if self.dragging:
                 self.cam_x = self.drag_cam_start[0] + (self.drag_start[0] - event.pos[0]) / self.zoom
                 self.cam_y = self.drag_cam_start[1] + (self.drag_start[1] - event.pos[1]) / self.zoom
+                self.follow_uid = None
                 self.clamp_camera()
             elif self.minimap_drag:
                 self._minimap_jump(event.pos)
-        elif event.type == pygame.MOUSEWHEEL and event.y:
+            elif self._press is not None:
+                self._left_motion(event.pos)
+        elif event.type == pygame.MOUSEWHEEL and event.y and self.overlay is None:
             wmx, wmy = pygame.mouse.get_pos()
-            self.set_zoom(ui.next_zoom(self.zoom, 1 if event.y > 0 else -1), wmx, wmy)
+            self.set_zoom(self._next_zoom(1 if event.y > 0 else -1), wmx, wmy)
         elif event.type == pygame.KEYDOWN:
             action = KEY_ACTIONS.get(event.key)
             if action:
                 getattr(self, action)()
 
+    # ─── Souris: interface d'abord, puis mini-carte, puis le monde ───
+
+    def _left_down(self, pos):
+        zone = self.clicks.at(pos)
+        if zone is not None:
+            if zone[1] is not None:
+                zone[1]()
+            return
+        if self.overlay is not None:
+            self.overlay = None            # clic hors du panneau: le fermer
+            return
+        if self.show_minimap and self.minimap.rect.collidepoint(pos):
+            self.minimap_drag = self._minimap_jump(pos)
+            self.follow_uid = None
+            return
+        if pos[1] >= self.view_h:
+            return
+        if self.paused and self.winner is None and self.battle.round <= 1:
+            self.paused = False            # premier clic sur la carte: on lance
+        self._press = (pos, self.cam_x, self.cam_y)
+        self._left_drag = False
+
+    def _left_motion(self, pos):
+        (sx, sy), cx, cy = self._press
+        if not self._left_drag and abs(pos[0] - sx) + abs(pos[1] - sy) < DRAG_THRESHOLD:
+            return
+        self._left_drag = True
+        self.follow_uid = None
+        self.cam_x = cx + (sx - pos[0]) / self.zoom
+        self.cam_y = cy + (sy - pos[1]) / self.zoom
+        self.clamp_camera()
+
+    def _left_up(self, pos):
+        self.minimap_drag = False
+        if self._press is not None and not self._left_drag:
+            self._world_click(pos)
+        self._press = None
+        self._left_drag = False
+
+    def _world_click(self, pos):
+        """Clic (sans glisser) sur la carte: suivre l'unité cliquée, ou
+        arrêter de suivre."""
+        wx, wy = ui.screen_to_world(pos[0], pos[1], self.cam_x, self.cam_y, self.zoom)
+        u = ui.unit_at(self.battle, wx, wy, self.cell_size)
+        if u is None or u.uid == self.follow_uid:
+            self.follow_uid = None
+        else:
+            self.follow_uid = u.uid
+
     # ─── Actions clavier (cf. KEY_ACTIONS) ───
 
     def toggle_pause(self):
+        if self.overlay == "menu":
+            self.close_overlay()
+            return
         self.paused = not self.paused
 
-    def speed_fast(self):
-        self.speed, self.paused = "fast", False
+    def _set_speed(self, speed):
+        self.speed, self.paused = speed, False
+        self.settings.set("battle", "speed", speed)
 
     def speed_normal(self):
-        self.speed, self.paused = "normal", False
+        self._set_speed("normal")
+
+    def speed_fast(self):
+        self._set_speed("fast")
+
+    def speed_faster(self):
+        self._set_speed("faster")
 
     def pause_on(self):
         self.paused = True
@@ -324,32 +526,123 @@ class BattleView:
         # Le fil finit son round AVANT la nouvelle bataille: la génération de
         # la carte ne doit pas tirer dans le même hasard que lui
         self.pipeline.close()
+        self.overlay = None
         self._load_battle(Battle(*self._restart_args, **self._restart_kwargs))
 
+    def _toggle_pref(self, attr, key):
+        value = not getattr(self, attr)
+        setattr(self, attr, value)
+        self.settings.set("battle", key, value)
+
     def toggle_lines(self):
-        self.show_lines = not self.show_lines
+        self._toggle_pref("show_lines", "show_lines")
 
     def toggle_intents(self):
-        self.show_intents = not self.show_intents
+        self._toggle_pref("show_intents", "show_intents")
 
     def toggle_minimap(self):
-        self.show_minimap = not self.show_minimap
+        self._toggle_pref("show_minimap", "show_minimap")
 
     def _zoom_centered(self, new_zoom):
         self.set_zoom(new_zoom, self.screen_w / 2, self.view_h / 2)
 
     def zoom_in(self):
-        self._zoom_centered(ui.next_zoom(self.zoom, 1))
+        self._zoom_centered(self._next_zoom(1))
 
     def zoom_out(self):
-        self._zoom_centered(ui.next_zoom(self.zoom, -1))
+        self._zoom_centered(self._next_zoom(-1))
 
     def zoom_reset(self):
         self._zoom_centered(1.0)
 
+    def view_all(self):
+        """Vue globale: toute la carte à l'écran (G, Origine)."""
+        self.follow_uid = None
+        self.zoom = min(1.0, round(self.fit_zoom(), 3))
+        self.clamp_camera()
+
     def toggle_legend(self):
-        self.show_terrain_legend = not self.show_terrain_legend
+        self._toggle_pref("show_terrain_legend", "show_legend")
         self.terrain_legend = None   # reconstruite au prochain affichage
+
+    # ─── Panneaux (menu Échap, aide, options) ───
+
+    def escape(self):
+        """Échap: ferme le panneau ouvert, sinon ouvre le menu (pause)."""
+        if self.overlay is not None:
+            self.close_overlay()
+        else:
+            self.open_menu()
+
+    def open_menu(self):
+        self._paused_before_menu = self.paused
+        self.paused = True
+        self.overlay = "menu"
+
+    def close_overlay(self):
+        if self.overlay == "menu":
+            self.paused = self._paused_before_menu
+        self.overlay = None
+        self.settings.save()
+
+    def resume(self):
+        self.overlay = None
+        self.paused = False
+
+    def toggle_help(self):
+        self.overlay = None if self.overlay == "help" else "help"
+
+    def toggle_options(self):
+        if self.overlay == "options":
+            self.close_overlay()
+        else:
+            self.overlay = "options"
+
+    # ─── Vidéo ───
+
+    def export_video(self):
+        """Vidéo de TOUTE la bataille, en vue globale, rejouée dans un autre
+        processus (le jeu continue pendant ce temps)."""
+        import video_export
+        if self.video_job is not None and self.video_job.running:
+            self.toasts.add("Une vidéo est déjà en préparation", T.WARNING, 3)
+            return
+        expected = self.battle.round - 1 if self.winner else None
+        self.video_job = video_export.ExportJob(
+            self._replay_kit, dict(self.settings.section("video")),
+            title=self._battle_title(), expected_rounds=expected)
+        self.toasts.add("Vidéo en préparation…", T.GOLD, None, key="video",
+                        sub="vue globale de toute la bataille", progress=0.0)
+
+    def _battle_title(self):
+        bf = self.battle.battlefield
+        sky = getattr(bf, 'weather', None)
+        parts = [self.battle.map_name]
+        if sky is not None and sky.name != "Clair":
+            parts.append(sky.label.lower())
+        return " · ".join(parts)
+
+    def _poll_video(self):
+        job = self.video_job
+        if job is None:
+            return
+        state = job.poll()
+        if state['state'] == "running":
+            total = state.get('total')
+            done = state.get('round', 0)
+            sub = (f"round {done} / {total}" if total else f"round {done}")
+            self.toasts.add("Vidéo en préparation…", T.GOLD, None, key="video", sub=sub,
+                            progress=(done / total) if total else None)
+        elif state['state'] == "done":
+            path = state['path']
+            self.toasts.add("Vidéo enregistrée — cliquer pour ouvrir", T.SUCCESS, 12,
+                            key="video", sub=os.path.basename(path),
+                            action=lambda p=path: _open_folder(p))
+            self.video_job = None
+        elif state['state'] == "error":
+            self.toasts.add("La vidéo a échoué", T.DANGER, 8, key="video",
+                            sub=state.get('message', "")[:80])
+            self.video_job = None
 
     def toggle_fullscreen(self):
         """Bascule entre fenêtre sans bord et plein écran exclusif."""
@@ -363,9 +656,10 @@ class BattleView:
     # ─── Simulation ───
 
     def _round_frames(self):
-        return R.ROUND_FRAMES_FAST if self.speed == "fast" else R.ROUND_FRAMES_NORMAL
+        return SPEEDS.get(self.speed, SPEEDS["normal"])[0]
 
     def update(self):
+        self._poll_video()
         if not self.paused and self.winner is None:
             # ── Cadence CONTINUE ──
             # Le round n'est plus « simuler, animer, puis attendre »: sa
@@ -444,6 +738,7 @@ class BattleView:
         R.apply_destruction(self.grid_surface, old, self.cell_size, 10 ** 6)
         BP.carry_over(old, snap)
         self.battle = battle = snap
+        self._by_uid = {u.uid: u for u in battle.army1 + battle.army2}
         self.round_frame = 0
         # Rafraîchir la grille si siège (portes détruites)
         if battle.battlefield.gate_hp:
@@ -498,7 +793,14 @@ class BattleView:
 
     def draw(self, now):
         screen = self.screen
-        hovered, hmx, hmy = self._hovered_unit()
+        mouse = pygame.mouse.get_pos()
+        # Survol: décidé sur les zones de l'image précédente (un bouton
+        # masque l'unité qui est dessous)
+        if self.over_ui(mouse) or self._left_drag:
+            hovered = None
+        else:
+            hovered = self._hovered_unit()[0]
+        clicks = self.clicks = hud.Clicks()
         self._draw_world(now, hovered)
         self.wfx.draw(screen, self.screen_w, self.view_h)
         self.fxr.draw_screen(screen, self.screen_w, self.view_h)
@@ -509,16 +811,244 @@ class BattleView:
             self.minimap.refresh(self.battle)
             self.minimap.draw(screen, self.battle, self.cam_x, self.cam_y, self.screen_w,
                               self.view_h, self.zoom)
-        if self.paused and self.winner is None and not self.battle_report:
-            self._draw_pause()
+            clicks.add(self.minimap.rect.inflate(12, 12), self._minimap_click,
+                       "Mini-carte : cliquer pour y aller")
         self._draw_bottom_hud()
+        self._draw_follow_chip(mouse)
         if self.battle_report:
-            R.draw_battle_report(screen, self.battle_report, self.screen_w, self.view_h,
-                                 self.small_font, self.tiny_font)
+            panel = R.draw_battle_report(screen, self.battle_report, self.screen_w, self.view_h,
+                                         self.small_font, self.tiny_font, footer=58)
+            self._draw_report_buttons(panel, mouse)
+        else:
+            self._draw_toolbar(mouse)
+            if self.paused and self.winner is None and self.overlay is None:
+                self._draw_pause(mouse)
+        self.toasts.draw(screen, clicks, self.screen_w - 14, self.view_h - 62, now,
+                         (self.hud_bold, self.hud_font), mouse)
+        if self.overlay == "menu":
+            self._draw_menu_overlay(mouse)
+        elif self.overlay == "help":
+            self._draw_help_overlay(mouse)
+        elif self.overlay == "options":
+            self._draw_options_overlay(mouse)
         # Fiche de l'unité survolée (par-dessus tout)
-        if hovered is not None and not self.battle_report:
-            ui.draw_unit_card(screen, hovered, self.battle, hmx, hmy, self.card_font,
+        if hovered is not None and not self.battle_report and self.overlay is None:
+            ui.draw_unit_card(screen, hovered, self.battle, mouse[0], mouse[1], self.card_font,
                               pygame.Rect(0, 30, self.screen_w, self.view_h - 30))
+        self.tooltip.draw(screen, clicks.at(mouse), now, self.hud_font,
+                          pygame.Rect(0, 0, self.screen_w, self.screen_h))
+
+    def _minimap_click(self):
+        self.minimap_drag = self._minimap_jump(pygame.mouse.get_pos())
+        self.follow_uid = None
+
+    # ─── Interface: barre d'outils, pause, suivi, rapport ───
+
+    def _draw_toolbar(self, mouse):
+        playing = not self.paused
+        speed_keys = {"normal": "1", "fast": "2", "faster": "3"}
+        exporting = self.video_job is not None and self.video_job.running
+        groups = [
+            [("pause" if playing else "play", self.toggle_pause,
+              ("Pause" if playing else "Lecture") + "  —  Espace", False)],
+            [(SPEEDS[s][2], getattr(self, f"speed_{s}"),
+              f"Vitesse {SPEEDS[s][1]}  —  {speed_keys[s]}", self.speed == s)
+             for s in ("normal", "fast", "faster")],
+            [("zoom_out", self.zoom_out, "Éloigner  —  molette, −", False),
+             ("fit", self.view_all, "Vue globale  —  G", self.zoom < 0.999
+              and abs(self.zoom - min(1.0, self.fit_zoom())) < 0.01),
+             ("zoom_in", self.zoom_in, "Rapprocher  —  molette, +", False)],
+            [("lines", self.toggle_lines, "Lignes de ciblage  —  T", self.show_lines),
+             ("intents", self.toggle_intents, "Intentions des généraux  —  I",
+              self.show_intents),
+             ("minimap", self.toggle_minimap, "Mini-carte  —  Tab", self.show_minimap),
+             ("legend", self.toggle_legend, "Légende du terrain  —  L",
+              self.show_terrain_legend)],
+            [("record" if exporting else "video", self.export_video,
+              "Vidéo de la bataille, vue globale  —  V", exporting)],
+            [("restart", self.restart, "Relancer la même bataille  —  R", False),
+             ("options", self.toggle_options, "Options  —  O", self.overlay == "options"),
+             ("help", self.toggle_help, "Aide et raccourcis  —  H", self.overlay == "help"),
+             ("menu", self.open_menu, "Menu  —  Échap", self.overlay == "menu")],
+        ]
+        hud.toolbar(self.screen, self.clicks, groups, self.screen_w // 2, self.view_h - 8, mouse)
+
+    def _draw_pause(self, mouse):
+        """Carton de pause (ou de lancement), cliquable: pas besoin de
+        connaître la touche pour lancer la bataille."""
+        screen = self.screen
+        first = self.battle.round <= 1
+        title = "Prêts au combat" if first else "Pause"
+        pt = T.gold_text(title, self.pause_font)
+        pw, ph = max(340, pt.get_width() + 90), pt.get_height() + 98
+        prect = pygame.Rect((self.screen_w - pw) // 2, (self.view_h - ph) // 2 - 40, pw, ph)
+        T.glass(screen, prect, 215, 10)
+        T.corner_marks(screen, prect, T.GOLD_DIM, 9)
+        screen.blit(pt, (prect.centerx - pt.get_width() // 2, prect.y + 8))
+        T.divider(screen, prect.x + 30, prect.right - 30, prect.y + 12 + pt.get_height())
+        brect = pygame.Rect(0, 0, 230, 40)
+        brect.midbottom = (prect.centerx, prect.bottom - 26)
+        hud.text_button(screen, self.clicks, brect,
+                        "Lancer la bataille" if first else "Reprendre", self.hud_bold, mouse,
+                        self.resume, icon_name="play", primary=True)
+        T.text(screen, "ou Espace  ·  clic sur la carte" if first else "ou Espace",
+               self.top_small, (prect.centerx, prect.bottom - 20), T.PARCHMENT_DIM,
+               align="center")
+
+    def _draw_follow_chip(self, mouse):
+        """Puce « Suivi : unité » sous le bandeau, avec sa croix."""
+        u = self._by_uid.get(self.follow_uid) if self.follow_uid is not None else None
+        if u is None:
+            return
+        img = self.hud_font.render(f"Suivi : {u.name}", True, T.PARCHMENT)
+        rect = pygame.Rect(0, 0, img.get_width() + 68, 28)
+        rect.midtop = (self.screen_w // 2, 40 + (48 if self.event_banners else 0))
+        T.glass(self.screen, rect, 225, 8)
+        self.screen.blit(icons.icon("follow", 16, T.GOLD), (rect.x + 10, rect.y + 6))
+        self.screen.blit(img, (rect.x + 32, rect.y + 5))
+        hud.icon_button(self.screen, self.clicks, (rect.right - 26, rect.y + 4, 20, 20),
+                        "close", mouse, self._stop_follow, "Arrêter de suivre")
+
+    def _stop_follow(self):
+        self.follow_uid = None
+
+    def _draw_report_buttons(self, panel, mouse):
+        """Actions de fin de bataille, sans avoir à connaître les touches."""
+        labels = (("Rejouer", "restart", self.restart, True),
+                  ("Vidéo", "video", self.export_video, False),
+                  ("Menu", "menu", self.to_menu, False),
+                  ("Quitter", "exit", self.quit, False))
+        w, gap = 150, 12
+        total = len(labels) * w + (len(labels) - 1) * gap
+        x = panel.centerx - total // 2
+        y = panel.bottom - 50
+        for label, icon_name, action, primary in labels:
+            hud.text_button(self.screen, self.clicks, (x, y, w, 38), label, self.hud_bold, mouse,
+                            action, icon_name=icon_name, primary=primary)
+            x += w + gap
+
+    # ─── Panneaux ───
+
+    def _modal_blocker(self):
+        """Tout l'écran capte la souris; un clic hors du panneau le ferme."""
+        self.clicks.add(pygame.Rect(0, 0, self.screen_w, self.screen_h), self.close_overlay)
+
+    def _draw_menu_overlay(self, mouse):
+        self._modal_blocker()
+        panel, y = hud.modal(self.screen, pygame.Rect(0, 0, self.screen_w, self.screen_h),
+                             380, 470, "Menu", "La bataille est en pause")
+        self.clicks.add(panel)
+        entries = (("Reprendre", "play", self.resume, True),
+                   ("Options", "options", self.toggle_options, False),
+                   ("Aide et raccourcis", "help", self.toggle_help, False),
+                   ("Relancer la bataille", "restart", self.restart, False),
+                   ("Retour au menu", "menu", self.to_menu, False),
+                   ("Quitter le jeu", "exit", self.quit, False))
+        for label, icon_name, action, primary in entries:
+            hud.text_button(self.screen, self.clicks, (panel.x + 40, y, panel.w - 80, 40), label,
+                            self.hud_bold, mouse, action, icon_name=icon_name, primary=primary,
+                            danger=icon_name == "exit")
+            y += 50
+
+    def _draw_help_overlay(self, mouse):
+        self._modal_blocker()
+        panel, y = hud.modal(self.screen, pygame.Rect(0, 0, self.screen_w, self.screen_h),
+                             900, 620, "Aide et raccourcis")
+        self.clicks.add(panel)
+        col_w = (panel.w - 80) // 2
+        kx, mx_ = panel.x + 30, panel.x + 50 + col_w
+        ky = T.section_header(self.screen, "Clavier", kx, y, col_w)
+        for keys, what in KEY_HELP:
+            x = kx
+            for i, k in enumerate(keys):
+                if i:
+                    x += 2 + T.text(self.screen, "/", self.top_small, (x + 2, ky + 3),
+                                    T.MUTED).w + 2
+                x += hud.keycap(self.screen, k, self.top_small, x, ky) + 2
+            T.text(self.screen, what, self.hud_font, (kx + 150, ky + 1), T.PARCHMENT)
+            ky += 25
+        my = T.section_header(self.screen, "Souris", mx_, y, col_w)
+        for gesture, what in MOUSE_HELP:
+            T.text(self.screen, gesture, self.hud_bold, (mx_, my), T.GOLD_BRIGHT)
+            T.text(self.screen, what, self.hud_font, (mx_, my + 18), T.PARCHMENT)
+            my += 44
+        my = T.section_header(self.screen, "Astuces", mx_, my + 6, col_w)
+        for tip in ("Survolez un bouton pour voir sa touche.",
+                    "Vos choix (armées, carte, affichage) sont gardés",
+                    "d'une partie à l'autre.",
+                    "La vidéo rejoue toute la bataille en vue globale,",
+                    "sans ralentir le jeu."):
+            T.text(self.screen, tip, self.hud_font, (mx_, my), T.PARCHMENT_DIM)
+            my += 19
+        hud.text_button(self.screen, self.clicks, (panel.centerx - 80, panel.bottom - 54, 160, 38),
+                        "Fermer", self.hud_bold, mouse, self.close_overlay, icon_name="close")
+
+    def _draw_options_overlay(self, mouse):
+        self._modal_blocker()
+        prefs = self.settings.section("battle")
+        video = self.settings.section("video")
+        panel, y = hud.modal(self.screen, pygame.Rect(0, 0, self.screen_w, self.screen_h),
+                             760, 600, "Options", "Enregistrées automatiquement")
+        self.clicks.add(panel)
+        s, f, fb = self.screen, self.hud_font, self.hud_bold
+        x0, w = panel.x + 34, panel.w - 68
+        label_w = 190
+
+        def row(label, y):
+            T.text(s, label, f, (x0, y + 3), T.PARCHMENT_DIM)
+            return x0 + label_w
+
+        y = T.section_header(s, "Affichage", x0, y, w)
+        x = x0
+        for label, attr, action in (("Lignes de ciblage", "show_lines", self.toggle_lines),
+                                    ("Intentions", "show_intents", self.toggle_intents),
+                                    ("Mini-carte", "show_minimap", self.toggle_minimap),
+                                    ("Légende du terrain", "show_terrain_legend",
+                                     self.toggle_legend)):
+            x += hud.checkbox(s, self.clicks, x, y, label, getattr(self, attr), f, mouse,
+                              action) + 22
+        y += 40
+
+        y = T.section_header(s, "Caméra", x0, y, w)
+        hud.checkbox(s, self.clicks, x0, y, "Défilement quand la souris touche le bord",
+                     prefs["edge_scroll"], f, mouse,
+                     lambda: self.settings.set("battle", "edge_scroll", not prefs["edge_scroll"]))
+        y += 32
+        hud.choice(s, self.clicks, row("Vitesse de défilement", y), y, CAMERA_SPEEDS,
+                   prefs["camera_speed"], f, mouse,
+                   lambda v: self.settings.set("battle", "camera_speed", v))
+        y += 42
+
+        y = T.section_header(s, "Bataille", x0, y, w)
+        hud.choice(s, self.clicks, row("Vitesse", y), y,
+                   [(k, SPEEDS[k][1]) for k in ("normal", "fast", "faster")], self.speed, f,
+                   mouse, self._set_speed)
+        y += 32
+        hud.checkbox(s, self.clicks, x0, y, "Attendre avant de lancer une nouvelle bataille",
+                     prefs["start_paused"], f, mouse,
+                     lambda: self.settings.set("battle", "start_paused", not prefs["start_paused"]))
+        y += 42
+
+        y = T.section_header(s, "Vidéo (vue globale)", x0, y, w)
+        hud.choice(s, self.clicks, row("Définition", y), y,
+                   (("720p", "720p"), ("1080p", "1080p")), video["resolution"], f, mouse,
+                   lambda v: self.settings.set("video", "resolution", v))
+        y += 32
+        hud.choice(s, self.clicks, row("Images par seconde", y), y, ((24, "24"), (30, "30")),
+                   video["fps"], f, mouse, lambda v: self.settings.set("video", "fps", v))
+        y += 32
+        hud.choice(s, self.clicks, row("Durée d'un round", y), y,
+                   ((0.5, "0,5 s"), (1.0, "1 s"), (1.5, "1,5 s")), video["seconds_per_round"],
+                   f, mouse, lambda v: self.settings.set("video", "seconds_per_round", v))
+        y += 34
+        import video_export
+        folder = video_export.output_dir()
+        T.text(s, f"Dossier : {folder}", self.top_small, (x0, y + 4), T.MUTED)
+        hud.icon_button(s, self.clicks, (panel.right - 64, y, 28, 26), "folder", mouse,
+                        lambda: _open_folder(os.path.join(folder, ".")), "Ouvrir le dossier")
+        T.text(s, video_export.encoder_label(), self.top_small, (x0, y + 22), T.MUTED)
+        hud.text_button(s, self.clicks, (panel.centerx - 80, panel.bottom - 54, 160, 38),
+                        "Fermer", fb, mouse, self.close_overlay, icon_name="close")
 
     def _hovered_unit(self):
         """Unité sous la souris (hors HUD et mini-carte) et position souris."""
@@ -552,7 +1082,7 @@ class BattleView:
                 self.world_view = pygame.Surface(size)
             surf = self.world_view
         elif not covered:
-            real_screen.fill(WORLD_BG)
+            real_screen.fill(self.world_bg)
         if surf is not real_screen and not covered:
             # La surface de vue est entièrement repeinte à chaque image: seules
             # les bandes que la carte (opaque) ne couvre pas ont besoin du fond
@@ -594,15 +1124,15 @@ class BattleView:
         mw, mh = self.grid_surface.get_size()
         x0, y0, x1, y1 = ox, oy, ox + mw, oy + mh
         if y0 > 0:
-            surf.fill(WORLD_BG, (0, 0, view_w, y0))
+            surf.fill(self.world_bg, (0, 0, view_w, y0))
         if y1 < view_h:
-            surf.fill(WORLD_BG, (0, y1, view_w, view_h - y1))
+            surf.fill(self.world_bg, (0, y1, view_w, view_h - y1))
         top, bottom = max(0, y0), min(view_h, y1)
         if bottom > top:
             if x0 > 0:
-                surf.fill(WORLD_BG, (0, top, x0, bottom - top))
+                surf.fill(self.world_bg, (0, top, x0, bottom - top))
             if x1 < view_w:
-                surf.fill(WORLD_BG, (x1, top, view_w - x1, bottom - top))
+                surf.fill(self.world_bg, (x1, top, view_w - x1, bottom - top))
 
     def _draw_move_overlay(self, surf, u, ox, oy):
         """Au survol: cases où l'unité peut s'arrêter au prochain round
@@ -871,7 +1401,7 @@ class BattleView:
         d'un seul blit."""
         cs = self.cell_size
         body, half = R.unit_body((u.siege_engine, u.fleeing, u.token_name, u.color,
-                                  u.role, ur, uw, uh, cs, team_color))
+                                  R.unit_glyph(u), ur, uw, uh, cs, team_color))
         surf.blit(body, (cx - half, cy - half))
 
         ring_r = ur + 2
@@ -975,7 +1505,7 @@ class BattleView:
                T.lighten(T.TEAM[0], 0.3), align="right")
         T.text(screen, f"{a2c}", self.top_bold, (bar_x + bar_w + 8, bar_y - 3),
                T.lighten(T.TEAM[1], 0.3))
-        T.text(screen, f"Round {battle.round - 1}", T.font('serif', 12),
+        T.text(screen, ui.round_label(battle), T.font('serif', 12),
                (sw // 2, bar_y + bar_h + 1), T.GOLD, align="center")
 
         # Postures IA aux extrémités
@@ -1040,27 +1570,14 @@ class BattleView:
             self.screen.blit(self.terrain_legend,
                              (12, self.view_h - self.terrain_legend.get_height() - 12))
 
-    def _draw_pause(self):
-        screen = self.screen
-        pt = T.gold_text("Pause", self.pause_font)
-        pw, ph = max(260, pt.get_width() + 90), pt.get_height() + 48
-        prect = pygame.Rect((self.screen_w - pw) // 2, (self.view_h - ph) // 2, pw, ph)
-        T.glass(screen, prect, 215, 10)
-        T.corner_marks(screen, prect, T.GOLD_DIM, 9)
-        screen.blit(pt, (prect.centerx - pt.get_width() // 2, prect.y + 8))
-        T.divider(screen, prect.x + 30, prect.right - 30, prect.y + 12 + pt.get_height())
-        T.text(screen, "ESPACE pour reprendre", T.font('ui', 13),
-               (prect.centerx, prect.bottom - 22), T.PARCHMENT_DIM, align="center")
-
     def _draw_bottom_hud(self):
         if self.winner:
-            status, color = "VICTOIRE: " + self.winner, (255, 215, 0)
+            status, color = "VICTOIRE : " + self.winner, (255, 215, 0)
         elif self.paused:
-            status, color = "PAUSE", (255, 130, 100)
-        elif self.speed == "fast":
-            status, color = ">> RAPIDE", (255, 220, 80)
+            status, color = "EN PAUSE", (255, 150, 110)
         else:
-            status, color = "> NORMAL", (110, 220, 110)
+            status = f"LECTURE {SPEEDS.get(self.speed, SPEEDS['normal'])[1]}"
+            color = (120, 220, 130) if self.speed == "normal" else (255, 220, 80)
         ui.draw_bottom_hud(self.screen, self.battle, self.screen_w, self.view_h, R.HUD_HEIGHT,
                            (self.hud_font, self.hud_bold), status, color, self.zoom,
-                           int(self.clock.get_fps()), HELP_TEXT, R.POSTURE_LABELS)
+                           None, HELP_TEXT, R.POSTURE_LABELS)

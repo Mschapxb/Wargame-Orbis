@@ -24,8 +24,9 @@ def suites():
 
 
 def run(cmd):
+    # Réglages en mémoire: les tests ne lisent ni n'écrivent ceux du joueur
     env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy",
-               PYTHONIOENCODING="utf-8")
+               PYTHONIOENCODING="utf-8", WARGAME_ORBIS_SETTINGS="memory")
     t0 = time.time()
     p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")

@@ -23,6 +23,7 @@ round. carry_over() raccorde ensuite deux instantanés successifs: ce qui
 jouait encore à la fin d'un round continue au suivant.
 """
 import copy
+import pickle
 import threading
 
 import spatial
@@ -52,15 +53,30 @@ def take_snapshot(battle):
     return snap
 
 
+def _all_units(battle):
+    """Toutes les unités de la bataille (rôles, armées, grille), sans doublon."""
+    seen = {}
+    for army in (battle.army1_roster, battle.army2_roster, battle.army1, battle.army2,
+                 list(battle.battlefield.units.values())):
+        for u in army:
+            seen.setdefault(id(u), u)
+    return list(seen.values())
+
+
 def _fix_identities(live, snap, memo):
     """Ce qui est indexé par id(unité) désigne encore les unités vivantes:
     recalé sur leurs copies (ou reconstruit)."""
     idmap = {}
-    for army in (live.army1_roster, live.army2_roster, live.army1, live.army2):
-        for u in army:
-            twin = memo.get(id(u))
-            if twin is not None:
-                idmap[id(u)] = id(twin)
+    for u in _all_units(live):
+        twin = memo.get(id(u))
+        if twin is not None:
+            idmap[id(u)] = id(twin)
+    _reidentify(snap, idmap)
+
+
+def _reidentify(snap, idmap):
+    """Recale sur `idmap` (ancien id → nouvel id) tout ce qui est indexé par
+    id(unité), et reconstruit ce qui peut l'être."""
     snap._army1_ids = snap._army2_ids = None
     snap._alive_cache['dirty'] = True
     snap._near_enemy_cache = None
@@ -90,6 +106,24 @@ def _remap_ids(obj, idmap):
                                 for k, v in val.items()})
         elif isinstance(val, set) and any(k in idmap for k in val if isinstance(k, int)):
             setattr(obj, name, {idmap.get(k, k) if isinstance(k, int) else k for k in val})
+
+
+def pack_battle(battle, rng_state):
+    """Bataille (au repos, entre deux rounds) et état du hasard global → octets,
+    pour la rejouer ailleurs à l'identique (cf. video_export). Les id() ne
+    survivent pas au voyage: on emporte la correspondance uid → id."""
+    ids = {u.uid: id(u) for u in _all_units(battle)}
+    return pickle.dumps({'battle': battle, 'rng': rng_state, 'ids': ids},
+                        protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def unpack_battle(data):
+    """(bataille, état du hasard) depuis pack_battle, identités recalées."""
+    kit = pickle.loads(data)
+    battle = kit['battle']
+    now = {u.uid: id(u) for u in _all_units(battle)}
+    _reidentify(battle, {old: now[uid] for uid, old in kit['ids'].items() if uid in now})
+    return battle, kit['rng']
 
 
 def _hand_over(live):
