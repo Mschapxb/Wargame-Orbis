@@ -104,6 +104,9 @@ class Unit:
     # Garnison d'une place (défenseur de siège): en Citadelle, elle se fait
     # ouvrir ses propres portes (cf. Battlefield.gate_cells_open_for)
     garrison = False
+    # Détachement de coup de main (cf. CommanderAI._plan_raid): la poterne
+    # de l'enceinte active s'ouvre pour lui seul, dans les deux sens
+    _sally = False
 
     def __init__(self, name, pv, vitesse, morale, sauvegarde, color,
                  armes=None, spells=None, special=None, role="front",

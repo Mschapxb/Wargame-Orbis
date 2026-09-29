@@ -219,13 +219,20 @@ class Battlefield:
             dans les deux sens, pour circuler entre basse-cour et donjon;
           • porte de l'enceinte assaillie: seulement pour RENTRER (une
             unité de la garnison restée dehors).
+        Un détachement de coup de main (`_sally`, Siège comme Citadelle)
+        passe la poterne de l'enceinte active dans les deux sens.
         L'assaillant ne passe jamais une porte intacte et fermée."""
         base = self.open_gate_cells
-        if (unit is None or not getattr(unit, 'garrison', False) or len(self.rings) < 2
+        if (unit is None or not getattr(unit, 'garrison', False) or not self.rings
                 or unit.position is None):
             return base
+        sally = getattr(unit, '_sally', False)
+        if len(self.rings) < 2 and not sally:
+            return base
         cells = set(base)
-        for i in range(self.active_ring, len(self.rings)):
+        if sally:
+            cells.update(self.rings[self.active_ring]['gates'])
+        for i in range(self.active_ring, len(self.rings) if len(self.rings) >= 2 else 0):
             ring = self.rings[i]
             if i > self.active_ring or unit.position[0] <= ring['wall_x']:
                 cells.update(ring['gates'])

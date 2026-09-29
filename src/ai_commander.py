@@ -35,6 +35,7 @@ import tactics
 import structures as st
 from battle_plan import BattlePlan
 from siege_plan import SiegePlan
+import siege_engines as se
 import terrain as tr
 
 
@@ -111,6 +112,28 @@ ENGAGE_RANGE = 2
 MELEE_DIST_COST = 3.2
 MELEE_DIST_COST_DEFENSIVE = 1.65
 
+# ─── Garnison face à une machine qui la surclasse en portée ───
+# Une baliste (portée 23) pilonne le rempart hors de portée des arbalètes
+# (9): tenir le créneau sous ce feu, c'est mourir pour rien (Siège avec
+# baliste: défenseur 11/12 sans elle, 1/12 avec). La garnison descend à
+# couvert tant qu'aucune cible n'approche, et lance un COUP DE MAIN par la
+# poterne quand la machine est assez peu gardée pour être détruite.
+COVER_MARGIN = 3        # remonter au créneau quand l'ennemi arrive à portée + N
+RAID_CORRIDOR = 4       # ennemis à ≤ N cases du trajet poterne → machine
+RAID_EDGE = 1.6         # force du détachement ≥ N × celle qui le gênera
+RAID_MAX_SHARE = 0.6    # au plus 60 % de la mêlée disponible quitte les murs
+RAID_MAX_ROUNDS = 14    # un coup de main qui s'éternise rentre
+RAID_COOLDOWN = 8       # après un coup de main avorté, on attend avant de ressortir
+RAID_SHOOTERS = 2       # avec l'avantage, N tireurs accompagnent le coup de main
+# Avantage de la garnison (valeur restante, cf. assess): au-delà, une sortie
+# emmène aussi les tireurs hors des murs
+SORTIE_ADVANTAGE = 1.25
+# Sortir contre une machine seulement si le couvert ne suffit pas (elle nous
+# saigne encore) et l'avantage est net: sinon la garnison quitte ses murs
+# pour une armée entière (mesuré: Siège 7+4+baliste, 25/40 → 17/40)
+SORTIE_BATTERY_RATIO = 1.6
+SORTIE_BATTERY_BLEED = 0.04
+
 
 class CommanderAI(spatial.Neighbourhood):
     # Plans de bataille multi-rounds (cf. battle_plan.py). Désactivables pour
@@ -166,6 +189,11 @@ class CommanderAI(spatial.Neighbourhood):
         self.plan = SiegePlan(is_army1) if battlefield.is_siege else BattlePlan()
         self._fall_back_rounds = 0      # Rounds passés à se replier sur le donjon
         self._rearguard = set()         # id des unités qui couvrent le repli
+        self._batteries = []            # machines ennemies qui nous pilonnent sans réplique
+        self._raid = None               # coup de main en cours: {'gun', 'ids', 'gate', 'rounds'}
+        self._archers_out = False       # sortie en force: les tireurs sortent aussi
+        self._raid_cooldown = 0         # rounds avant un nouveau coup de main (après un échec)
+        self._sortie_reason = None      # "battery" (machines, sur l'avantage) ou "force"
         self._line_hold_rounds = 0      # Rounds passés à dresser la ligne
         self._artillery_wait = 0        # Rounds passés à couvert des machines
         self.breach = None              # Faille repérée dans la ligne adverse
@@ -357,12 +385,23 @@ class CommanderAI(spatial.Neighbourhood):
             # ── CONTRE-ATTAQUE: l'assaillant n'a plus de quoi prendre le fort ──
             counter = (s['en_melee'] < s['my_melee'] * (0.4 * self.aggression)
                        and s['theirs'])
+            # ── SORTIE CONTRE LES MACHINES: une baliste nous pilonne hors de
+            # portée, et nous avons l'avantage: on sort la détruire, tireurs
+            # compris, au lieu de mourir sur le créneau.
+            battery = (bool(self._batteries) and s['bleeding'] >= SORTIE_BATTERY_BLEED
+                       and s['ratio'] >= SORTIE_BATTERY_RATIO and self._siege_advantage(s))
             if self.committed_sortie:
                 if (s['en_ranged'] <= 0.5 and s['en_melee'] > s['my_melee'] * 1.2):
                     return "recall"
+                # Sortie lancée sur l'avantage: l'avantage perdu, on rentre
+                if (self._sortie_reason == "battery" and not counter
+                        and s['ratio'] < SORTIE_ADVANTAGE * 0.75):
+                    return "recall"
                 return "sortie"
-            if outgunned or counter:
+            if outgunned or counter or battery:
                 self.committed_sortie = True
+                self._sortie_reason = ("battery" if battery and not (outgunned or counter)
+                                       else "force")
                 return "sortie"
             return "hold_walls"
 
@@ -557,7 +596,14 @@ class CommanderAI(spatial.Neighbourhood):
         self._refresh_style()
         s = self.assess()
         self._threat = tactics.ThreatField(enemies, bf)
+        # Machines ennemies qui nous pilonnent sans réplique possible (lu
+        # par la posture: avec l'avantage, on sort les détruire)
+        self._batteries = (self._unanswered_guns(alive, enemies, battle)
+                           if is_defender else [])
         self.posture = self._decide_posture(s, is_defender)
+        # Sortie en position de force: les tireurs quittent aussi les murs
+        self._archers_out = (is_defender and self.posture == "sortie"
+                             and self._siege_advantage(s))
         if self.posture == "hold_line" and s.get('artillery_firing', 0):
             self._artillery_wait += 1
         else:
@@ -586,6 +632,12 @@ class CommanderAI(spatial.Neighbourhood):
             elif self.posture == "hold_walls" and bf.gates_open:
                 # Après un repli: on referme dès que tout le monde est rentré
                 self._try_close_gates(battle)
+            # Machines sans réplique: à couvert, et coup de main par la
+            # poterne si elles sont à prendre
+            if self.posture == "hold_walls":
+                self._plan_raid(alive, enemies, battle, s)
+            else:
+                self._end_raid(alive, None)
 
         prio = self._rank_targets(enemies)
         self._pick_focus_target(s, prio)
@@ -2052,6 +2104,11 @@ class CommanderAI(spatial.Neighbourhood):
         bf = self.battlefield
         ux, uy = unit.position
 
+        # En position de force, les tireurs sortent aussi: une baliste hors
+        # de portée du rempart ne l'est plus d'un arbalétrier en plaine
+        if (unit._max_range >= 4 or unit.spells) and unit.vitesse > 0 and self._archers_out:
+            return self._sortie_shooter_order(unit, enemies, prio)
+
         # Nos rares tireurs (s'il en reste) couvrent depuis les remparts
         if (unit._max_range >= 4 or unit.spells) and bf.is_rampart(ux, uy):
             for _, e in prio:
@@ -2067,6 +2124,38 @@ class CommanderAI(spatial.Neighbourhood):
             return TacticalOrder("attack", target_unit=t, priority=6)
         c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
         return TacticalOrder("attack", target_unit=c, priority=3)
+
+    def _siege_advantage(self, s):
+        """La garnison a-t-elle l'avantage au point de sortir ses tireurs ?
+        Valeur restante nettement supérieure, et assez de mêlée pour les
+        couvrir en rase campagne."""
+        return (s['ratio'] >= SORTIE_ADVANTAGE / max(0.8, min(1.25, self.aggression))
+                and s['my_melee'] >= s['en_melee'] * 0.8)
+
+    def _sortie_shooter_order(self, unit, enemies, prio):
+        """Tireur en sortie: les machines d'abord (celles qui pilonnaient le
+        rempart), sinon la meilleure cible en vue, sinon on avance vers les
+        tireurs ennemis — la mêlée ouvre la voie devant."""
+        bf = self.battlefield
+        ux, uy = unit.position
+        unit.status_text = "SORTIE"
+
+        def dist(e):
+            return abs(ux - e.position[0]) + abs(uy - e.position[1])
+
+        def visible(e):
+            return dist(e) <= tr.effective_range(bf, unit, e) and bf.has_line_of_fire(unit, e)
+
+        guns = [g for g in self._batteries if g.is_alive]
+        for g in sorted(guns, key=lambda g: (dist(g), g.uid)):
+            if visible(g):
+                return TacticalOrder("attack", target_unit=g, priority=5)
+        for _, e in self._ranked_near(prio, (ux, uy), unit._max_range + tr.MAX_RANGE_BONUS):
+            if visible(e):
+                return TacticalOrder("attack", target_unit=e, priority=4)
+        pool = guns or [e for e in enemies if e._max_range >= 4 or e.spells] or enemies
+        t = min(pool, key=lambda e: (dist(e), e.uid))
+        return TacticalOrder("attack", target_unit=t, priority=3)
 
     def _recall_order(self, unit, enemies):
         """Repli derrière les murs. Si un ennemi nous colle, on le combat
@@ -2084,11 +2173,239 @@ class CommanderAI(spatial.Neighbourhood):
             return TacticalOrder("protect", target_pos=(wall_x + 2, g[1]), priority=5)
         return TacticalOrder("hold", target_pos=unit.position, priority=2)
 
+    # ─── Siège: machines qui nous surclassent — couvert et coup de main ───
+
+    def _nearest_rampart_dist(self, pos):
+        """Distance de `pos` à la case de rempart la plus proche de
+        l'enceinte active (le meilleur créneau d'où répliquer)."""
+        bf = self.battlefield
+        wx = bf.wall_x
+        px, py = pos
+        return min((abs(x - px) + abs(y - py) for (x, y) in bf.ramparts
+                    if wx < x <= wx + 2), default=99)
+
+    def _unanswered_guns(self, alive, enemies, battle):
+        """Machines de tir ennemies, servies, dehors, qui battent notre
+        rempart alors qu'aucun de nos tireurs ne peut les atteindre, même
+        du meilleur créneau. Critère géométrique (et non « qui touche-t-elle
+        en ce moment »): sinon, la garnison à couvert ferait disparaître la
+        menace, remonterait, et ainsi de suite."""
+        bf = self.battlefield
+        wx = bf.wall_x
+        if wx is None or not getattr(bf, 'ramparts', None):
+            return []
+        shooters = [u for u in alive if u._max_range >= 4]
+        out = []
+        for g in enemies:
+            if not se.needs_crew(g) or g.position[0] >= wx or not se.manned(bf, battle, g):
+                continue
+            d_wall = self._nearest_rampart_dist(g.position)
+            if d_wall > g._max_range:
+                continue
+            gx, gy = g.position
+            answered = False
+            for u in shooters:
+                if u.vitesse > 0:
+                    answered = d_wall <= u._max_range + tr.MAX_RANGE_BONUS
+                else:        # baliste de tour: elle tire d'où elle est
+                    answered = (abs(u.position[0] - gx) + abs(u.position[1] - gy)
+                                <= tr.effective_range(bf, u, g) and bf.has_line_of_fire(u, g))
+                if answered:
+                    break
+            if not answered:
+                out.append(g)
+        return out
+
+    def _exposed(self, unit):
+        """Une machine sans réplique peut-elle nous toucher là où l'on est ?"""
+        bf = self.battlefield
+        ux, uy = unit.position
+        return any(abs(g.position[0] - ux) + abs(g.position[1] - uy)
+                   <= tr.effective_range(bf, g, unit) and bf.has_line_of_fire(g, unit)
+                   for g in self._batteries if g.is_alive)
+
+    def _foe_distance(self, unit, enemies):
+        """Distance au plus proche ennemi qui n'est ni machine ni servant."""
+        ux, uy = unit.position
+        return min((abs(e.position[0] - ux) + abs(e.position[1] - uy) for e in enemies
+                    if not se.is_machine(e) and not se.is_crew(e)), default=99)
+
+    def _cover_order(self, unit, enemies):
+        """Sur le rempart, sous le feu d'une machine qu'on ne peut pas
+        atteindre, sans rien à tirer: on descend derrière le mur. On
+        remonte (cf. _siege_defense) dès que l'ennemi approche."""
+        bf = self.battlefield
+        if not self._batteries or unit.vitesse <= 0 or not bf.is_rampart(*unit.position):
+            return None
+        reach = max(unit._max_range, 1) + tr.MAX_RANGE_BONUS + COVER_MARGIN
+        if self._foe_distance(unit, enemies) <= reach or not self._exposed(unit):
+            return None
+        wx = bf.wall_x
+        ux, uy = unit.position
+        cells = [(x, y) for x in range(wx + 1, min(bf.width, wx + 7))
+                 for y in range(max(1, uy - 3), min(bf.height - 1, uy + 4))
+                 if bf.is_valid(x, y) and not bf.is_rampart(x, y)
+                 and bf.units.get((x, y)) in (None, unit)]
+        if not cells:
+            return None
+        cell = min(cells, key=lambda c: (abs(c[0] - ux) + abs(c[1] - uy), c))
+        unit._cover_post = unit.position     # le créneau à reprendre ensuite
+        unit.status_text = "À COUVERT"
+        return TacticalOrder("withdraw", target_pos=cell, priority=5)
+
+    def _stay_in_cover(self, unit, enemies):
+        """Tireur à couvert: remonter au créneau serait s'offrir à la machine
+        tant qu'aucun ennemi n'est à portée (hystérésis: +1 sur la descente)."""
+        if not self._batteries:
+            return False
+        reach = max(unit._max_range, 1) + tr.MAX_RANGE_BONUS + COVER_MARGIN + 1
+        if self._foe_distance(unit, enemies) <= reach:
+            return False
+        return any(self._nearest_rampart_dist(g.position) <= g._max_range
+                   for g in self._batteries if g.is_alive)
+
+    @staticmethod
+    def _seg_dist(p, a, b):
+        """Distance euclidienne du point p au segment [a, b]."""
+        ax, ay = a
+        dx, dy = b[0] - ax, b[1] - ay
+        L = dx * dx + dy * dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L))
+        return math.hypot(p[0] - ax - t * dx, p[1] - ay - t * dy)
+
+    def _raid_opposition(self, gun, gate, enemies):
+        """Force ennemie que le détachement trouvera entre la poterne et la
+        machine (servants compris; la machine elle-même ne se défend pas)."""
+        p = 0.0
+        for e in enemies:
+            if se.is_machine(e):
+                continue
+            # Tout ce qui peut couper la route en un round de marche
+            if self._seg_dist(e.position, gate, gun.position) <= RAID_CORRIDOR + e.vitesse:
+                p += unit_melee_power(e) + 0.5 * unit_ranged_power(e)
+        return p
+
+    def _raid_candidate(self, unit, enemies):
+        bf = self.battlefield
+        return (unit._max_range < 4 and not unit.spells and unit.vitesse > 0
+                and unit.encouragement_range <= 0 and not _is_siege_staff(unit)
+                and unit.hp * 2 >= unit.max_hp and unit.position[0] > bf.wall_x
+                and self._foe_distance(unit, enemies) > 3)
+
+    def _end_raid(self, alive, text):
+        """Fin du coup de main: ceux qui sont dehors gardent la poterne
+        ouverte pour rentrer (_raid_order), les autres la referment."""
+        if self._raid is not None and text and hasattr(self.plan, 'events'):
+            self.plan.events.append((text, (240, 210, 140)))
+        self._raid = None
+        wx = self.battlefield.wall_x
+        for u in alive:
+            if u._sally and u.position[0] > wx:
+                u._sally = False
+
+    def _plan_raid(self, alive, enemies, battle, s):
+        """Coup de main: un détachement de mêlée sort par la poterne détruire
+        une machine qui nous pilonne sans réplique — seulement si elle est
+        assez peu gardée, et en laissant de quoi tenir les murs."""
+        raid = self._raid
+        if raid is not None:
+            gun = raid['gun']
+            members = [u for u in alive if id(u) in raid['ids']]
+            raid['rounds'] += 1
+            power = sum(unit_melee_power(u) for u in members)
+            if not gun.is_alive:
+                self._end_raid(alive, "machine détruite: le détachement rentre")
+            elif (not members or raid['rounds'] > RAID_MAX_ROUNDS
+                  or self._raid_opposition(gun, raid['gate'], enemies) > power * 1.2):
+                self._end_raid(alive, "coup de main avorté: repli sur la poterne")
+                self._raid_cooldown = RAID_COOLDOWN
+            return
+        self._end_raid(alive, None)
+        if self._raid_cooldown > 0:
+            self._raid_cooldown -= 1
+            return
+        if not self._batteries:
+            return
+        bf = self.battlefield
+        cands = [u for u in alive if self._raid_candidate(u, enemies)]
+        if len(cands) < 2:
+            return
+        cap = max(2, int(len(cands) * RAID_MAX_SHARE))
+        gates = list(bf.active_gates) or []
+        if not gates:
+            return
+        for gun in sorted(self._batteries, key=lambda g: (bf.wall_x - g.position[0], g.uid)):
+            gate = min(gates, key=lambda c: (self._raid_opposition(gun, c, enemies),
+                                             abs(c[0] - gun.position[0]) + abs(c[1] - gun.position[1]),
+                                             c))
+            opp = self._raid_opposition(gun, gate, enemies)
+            cands.sort(key=lambda u: (abs(u.position[0] - gate[0]) + abs(u.position[1] - gate[1]),
+                                      u.uid))
+            party, power = [], 0.0
+            for u in cands[:cap]:
+                party.append(u)
+                power += unit_melee_power(u)
+                if len(party) >= 2 and power >= RAID_EDGE * opp:
+                    break
+            if len(party) >= 2 and power >= RAID_EDGE * opp:
+                # Avec l'avantage, quelques tireurs accompagnent le coup de
+                # main: hors des murs, la machine est enfin à leur portée
+                if self._siege_advantage(s):
+                    bf_wx = bf.wall_x
+                    archers = sorted((u for u in alive
+                                      if u._max_range >= 4 and u.vitesse > 0
+                                      and not _is_siege_staff(u) and u.position[0] > bf_wx
+                                      and u.hp * 2 >= u.max_hp
+                                      and self._foe_distance(u, enemies) > u._max_range),
+                                     key=lambda u: (abs(u.position[0] - gate[0])
+                                                    + abs(u.position[1] - gate[1]), u.uid))
+                    party += archers[:RAID_SHOOTERS]
+                self._raid = {'gun': gun, 'gate': gate, 'rounds': 0,
+                              'ids': {id(u) for u in party}}
+                for u in party:
+                    u._sally = True
+                if hasattr(self.plan, 'events'):
+                    self.plan.events.append(("coup de main: sortie par la poterne contre la machine",
+                                             (240, 210, 140)))
+                return
+
+    def _raid_order(self, unit, enemies):
+        """Ordre d'un membre du détachement (ou d'un rentrant)."""
+        bf = self.battlefield
+        raid = self._raid
+        ux, uy = unit.position
+        if raid is not None and id(unit) in raid['ids']:
+            gun = raid['gun']
+            targets = [gun] + [e for e in enemies if getattr(e, '_attends', None) is gun]
+            adjacent = [e for e in enemies if abs(e.position[0] - ux) + abs(e.position[1] - uy) <= 1]
+            if adjacent and not any(e in targets for e in adjacent):
+                t = min(adjacent, key=lambda e: (e.hp, e.uid))
+            else:
+                t = min(targets, key=lambda e: (abs(e.position[0] - ux) + abs(e.position[1] - uy)
+                                                - (1 if e is gun else 0), e.uid))
+            unit.status_text = "COUP DE MAIN"
+            return TacticalOrder("attack", target_unit=t, priority=7)
+        if not unit._sally:
+            return None
+        if ux > bf.wall_x:
+            unit._sally = False
+            return None
+        gates = list(bf.active_gates)
+        if not gates:
+            return None
+        g = min(gates, key=lambda c: (abs(c[0] - ux) + abs(c[1] - uy), c))
+        unit.status_text = "RETOUR"
+        return TacticalOrder("withdraw", target_pos=(min(bf.width - 2, bf.wall_x + 2), g[1]),
+                             priority=6)
+
     # ─── Siège: défense des murs ───
 
     def _siege_defense(self, unit, enemies, prio, battle):
         bf = self.battlefield
         wall_x = bf.wall_x
+        raid = self._raid_order(unit, enemies)
+        if raid is not None:
+            return raid
         gates_now = bf.active_gates
         # Une brèche ouverte vaut une porte tombée: la défense positionnelle
         # n'a plus de sens, on va au contact
@@ -2123,6 +2440,11 @@ class CommanderAI(spatial.Neighbourhood):
 
         # === Portes intactes: défense positionnelle ===
         if gates_intact:
+            # Pilonnés par une machine hors d'atteinte, sans rien à tirer:
+            # derrière le mur, pas sur le créneau
+            cover = self._cover_order(unit, enemies)
+            if cover is not None:
+                return cover
             if on_ramp and unit._max_range >= 4:
                 if at_gate:
                     t = min(at_gate, key=lambda e: bf.manhattan_distance(unit.position, e.position))
@@ -2148,6 +2470,18 @@ class CommanderAI(spatial.Neighbourhood):
                 return TacticalOrder("hold", target_pos=unit.position, priority=2)
 
             if unit._max_range >= 4 and not on_ramp:
+                if self._stay_in_cover(unit, enemies):
+                    unit.status_text = "À COUVERT"
+                    return TacticalOrder("hold", target_pos=unit.position, priority=3)
+                post = getattr(unit, '_cover_post', None)
+                if post is not None:
+                    # Retour au créneau quitté (ou au plus proche libre), pas
+                    # au premier venu en haut de la carte, loin des portes
+                    free = [(x, y) for (x, y) in bf.ramparts if x == wall_x + 1
+                            and (not bf.is_occupied(x, y) or bf.units.get((x, y)) is unit)]
+                    if free:
+                        cell = min(free, key=lambda c: (abs(c[0] - post[0]) + abs(c[1] - post[1]), c))
+                        return TacticalOrder("protect", target_pos=cell, priority=3)
                 for y in range(1, bf.height - 1):
                     if bf.grid[wall_x + 1][y] == 4 and not bf.is_occupied(wall_x + 1, y):
                         return TacticalOrder("protect", target_pos=(wall_x + 1, y), priority=3)
