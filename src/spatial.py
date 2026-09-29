@@ -26,6 +26,7 @@ Deux propriétés dont le moteur dépend:
   qui en dépend (l'ordre des unités fixe l'ordre des tirages aléatoires) doit
   retrier — cf. Battle.enemies_near, qui trie par uid.
 """
+from bisect import bisect_left
 from math import ceil
 from operator import attrgetter
 
@@ -40,6 +41,8 @@ FOOT_MARGIN_X = 1
 FOOT_MARGIN_Y = 3
 
 _uid = attrgetter('uid')
+# Plus grand que toute distance sur une carte (cf. NearestDistance)
+_FAR = 1 << 60
 
 
 class UnitIndex:
@@ -87,11 +90,15 @@ class UnitIndex:
         self.buckets.clear()
         self.where.clear()
 
-    def in_box(self, x0, y0, x1, y1):
+    def in_box(self, x0, y0, x1, y1, ids=None):
         """Unités dont l'ANCRE tombe dans [x0..x1]×[y0..y1]. Ordre non garanti.
 
         Un compartiment entièrement contenu dans le rectangle est repris en
-        bloc: seuls ceux du bord demandent un test case par case."""
+        bloc: seuls ceux du bord demandent un test case par case.
+
+        ids: ne garder que les unités VIVANTES dont l'id y figure — le tri
+        se fait dans le même parcours, sans liste intermédiaire (cf.
+        Neighbourhood._near_in: c'était la moitié du coût d'une requête)."""
         buckets = self.buckets
         if not buckets:
             return []
@@ -105,28 +112,158 @@ class UnitIndex:
                     continue
                 by0 = by * BUCKET
                 if inside_x and y0 <= by0 and by0 + BUCKET - 1 <= y1:
-                    out.extend(b)
+                    if ids is None:
+                        out.extend(b)
+                    else:
+                        out.extend([u for u in b if u.is_alive and id(u) in ids])
                     continue
                 for u in b:
                     px, py = u.position
-                    if x0 <= px <= x1 and y0 <= py <= y1:
+                    if (x0 <= px <= x1 and y0 <= py <= y1
+                            and (ids is None or (u.is_alive and id(u) in ids))):
                         out.append(u)
         return out
 
-    def near_box(self, x0, y0, x1, y1, radius):
+    def near_box(self, x0, y0, x1, y1, radius, ids=None):
         """Unités dont l'EMPREINTE peut être à `radius` cases ou moins du
-        rectangle donné. Surensemble (cf. FOOT_MARGIN_X/Y)."""
+        rectangle donné. Surensemble (cf. FOOT_MARGIN_X/Y). ids: cf. in_box."""
         r = ceil(radius)                 # un rayon fractionnaire s'arrondit
         mx, my = r + FOOT_MARGIN_X, r + FOOT_MARGIN_Y      # vers le haut
-        return self.in_box(x0 - mx, y0 - my, x1 + mx, y1 + my)
+        return self.in_box(x0 - mx, y0 - my, x1 + mx, y1 + my, ids)
 
-    def near(self, pos, radius):
+    def near(self, pos, radius, ids=None):
         """Unités dont l'empreinte peut être à `radius` cases ou moins de
-        `pos`. Surensemble."""
+        `pos`. Surensemble. ids: cf. in_box."""
         x, y = pos
         r = ceil(radius)
         return self.in_box(x - r - FOOT_MARGIN_X, y - r - FOOT_MARGIN_Y,
-                           x + r + FOOT_MARGIN_X, y + r + FOOT_MARGIN_Y)
+                           x + r + FOOT_MARGIN_X, y + r + FOOT_MARGIN_Y, ids)
+
+
+class NearestDistance:
+    """Distance de Manhattan d'un point au plus proche d'un semis de points,
+    EXACTE — la même valeur que min(|dx| + |dy|) sur tout le semis.
+
+    L'IA pose la question pour chaque unité d'une armée face à chaque unité
+    de l'autre (« à quelle distance est le plus proche des nôtres ? »): du
+    quadratique, qui dominait la phase de commandement à plusieurs centaines
+    d'unités. Ici les points sont rangés par colonne (y triés): on part de
+    la colonne du point demandé et on s'en écarte des deux côtés, en
+    s'arrêtant dès que l'écart en x seul atteint la meilleure distance
+    trouvée. Une armée occupe peu de colonnes: quelques bissections."""
+
+    __slots__ = ('xs', 'cols')
+
+    def __init__(self, points):
+        cols = {}
+        for x, y in points:
+            c = cols.get(x)
+            if c is None:
+                cols[x] = [y]
+            else:
+                c.append(y)
+        self.xs = sorted(cols)
+        self.cols = [sorted(cols[x]) for x in self.xs]
+
+    def __bool__(self):
+        return bool(self.xs)
+
+    def dist(self, x, y, default=None):
+        """Distance au plus proche point, `default` si le semis est vide."""
+        xs, cols = self.xs, self.cols
+        n = len(xs)
+        if not n:
+            return default
+        best = _FAR
+        i = bisect_left(xs, x)
+        for j in range(i, n):                 # colonnes à droite (x compris)
+            dx = xs[j] - x
+            if dx >= best:
+                break
+            d = dx + _col_gap(cols[j], y)
+            if d < best:
+                best = d
+        for j in range(i - 1, -1, -1):        # colonnes à gauche
+            dx = x - xs[j]
+            if dx >= best:
+                break
+            d = dx + _col_gap(cols[j], y)
+            if d < best:
+                best = d
+        return best
+
+
+class NearestUnit:
+    """L'unité la plus proche (Manhattan d'ancre à ancre) d'une liste, et à
+    égalité la PREMIÈRE dans l'ordre de la liste: exactement ce que rend
+    min(units, key=distance). Même rangement par colonnes que
+    NearestDistance, mais une colonne à la même distance que le meilleur
+    trouvé est encore visitée (elle peut cacher un ex æquo mieux classé)."""
+
+    __slots__ = ('units', 'xs', 'ys', 'idx')
+
+    def __init__(self, units):
+        self.units = units
+        cols = {}
+        for i, u in enumerate(units):
+            x, y = u.position
+            c = cols.get(x)
+            if c is None:
+                cols[x] = [(y, i)]
+            else:
+                c.append((y, i))
+        self.xs = sorted(cols)
+        self.ys, self.idx = [], []
+        for x in self.xs:
+            c = sorted(cols[x])
+            self.ys.append([t[0] for t in c])
+            self.idx.append([t[1] for t in c])
+
+    def nearest(self, x, y):
+        """Unité la plus proche de (x, y), None si la liste est vide."""
+        xs = self.xs
+        n = len(xs)
+        if not n:
+            return None
+        best = [_FAR, _FAR]                 # (distance, rang dans la liste)
+        i = bisect_left(xs, x)
+        for j in range(i, n):
+            dx = xs[j] - x
+            if dx > best[0]:
+                break
+            self._scan(j, x, y, dx, best)
+        for j in range(i - 1, -1, -1):
+            dx = x - xs[j]
+            if dx > best[0]:
+                break
+            self._scan(j, x, y, dx, best)
+        return self.units[best[1]]
+
+    def _scan(self, j, x, y, dx, best):
+        """Meilleur candidat de la colonne j: au plus près au-dessus et
+        au-dessous, et pour une même ligne le premier de la liste."""
+        ys, idx = self.ys[j], self.idx[j]
+        k = bisect_left(ys, y)
+        if k < len(ys):
+            d, r = dx + ys[k] - y, idx[k]
+            if d < best[0] or (d == best[0] and r < best[1]):
+                best[0], best[1] = d, r
+        if k:
+            yb = ys[k - 1]
+            d, r = dx + y - yb, idx[bisect_left(ys, yb)]
+            if d < best[0] or (d == best[0] and r < best[1]):
+                best[0], best[1] = d, r
+
+
+def _col_gap(col, y):
+    """|y - y'| minimal pour y' dans la colonne triée `col` (non vide)."""
+    k = bisect_left(col, y)
+    if k == len(col):
+        return y - col[-1]
+    gap = col[k] - y
+    if k and y - col[k - 1] < gap:
+        gap = y - col[k - 1]
+    return gap
 
 
 class Neighbourhood:
@@ -149,8 +286,8 @@ class Neighbourhood:
         if ids is None:
             ids = self.army_ids(units)
         idx = self.battlefield.index
-        found = idx.near_box(*box, radius) if box is not None else idx.near(pos, radius)
-        out = [u for u in found if u.is_alive and id(u) in ids]
+        out = (idx.near_box(*box, radius, ids) if box is not None
+               else idx.near(pos, radius, ids))
         if len(out) > 1:
             # Les uid croissent dans l'ordre des listes d'armée (attribués au
             # déploiement, jamais réordonnés — test_fondations le vérifie).
@@ -195,6 +332,19 @@ class Neighbourhood:
             if got is not None:
                 return got
         ux, uy = unit.position
+        if cache is not None:
+            # Même fenêtre: un rangement par colonnes de chaque camp, bâti
+            # une fois, au lieu d'un balayage de l'armée adverse par unité
+            enemies = self.get_enemies(unit)
+            key = ('nearest', id(enemies))
+            got = cache.get(key)
+            if got is None:
+                got = cache[key] = (enemies, NearestUnit([e for e in enemies if e.is_alive]))
+            best = got[1].nearest(ux, uy)
+            got = (None, 999) if best is None else (
+                best, abs(best.position[0] - ux) + abs(best.position[1] - uy))
+            cache[id(unit)] = got
+            return got
         best, best_d = None, 999
         for e in self.get_enemies(unit):
             if not e.is_alive:

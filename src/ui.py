@@ -183,18 +183,31 @@ class Minimap:
         T.corner_marks(screen, self.rect.inflate(12, 12), T.GOLD_DIM, 6)
         screen.blit(self.thumb, self.rect.topleft)
         sx, sy = self.w / bf.width, self.h / bf.height
-        for army, color in ((battle.army1, TEAM_COLORS[0]), (battle.army2, TEAM_COLORS[1])):
-            for u in army:
-                if u.is_alive and u.position is not None:
-                    px = self.rect.x + int((u.position[0] + 0.5) * sx)
-                    py = self.rect.y + int((u.position[1] + 0.5) * sy)
-                    pygame.draw.rect(screen, color if not u.fleeing else (255, 170, 60),
-                                     (px - 1, py - 1, 3, 3))
+        screen.blit(self._unit_dots(battle, sx, sy), (self.rect.x - 1, self.rect.y - 1))
         cs = self.cs
         view = pygame.Rect(int(self.rect.x + cam_x / cs * sx), int(self.rect.y + cam_y / cs * sy),
                            max(4, int(view_w / zoom / cs * sx)), max(4, int(view_h / zoom / cs * sy)))
         pygame.draw.rect(screen, T.GOLD_BRIGHT, view.clip(self.rect), 1)
         pygame.draw.rect(screen, T.INK, self.rect, 1)
+
+    def _unit_dots(self, battle, sx, sy):
+        """Calque des points d'unités (bordé d'un pixel: un point au bord
+        déborde de la vignette). Positions, morts et fuites ne changent
+        qu'au calcul d'un round: on ne le redessine qu'alors, au lieu d'un
+        rectangle par unité et par image."""
+        key = (battle.round, len(battle.army1), len(battle.army2))
+        if getattr(self, '_dots_for', None) is battle and self._dots_key == key:
+            return self._dots
+        layer = pygame.Surface((self.w + 2, self.h + 2), pygame.SRCALPHA)
+        for army, color in ((battle.army1, TEAM_COLORS[0]), (battle.army2, TEAM_COLORS[1])):
+            for u in army:
+                if u.is_alive and u.position is not None:
+                    px = int((u.position[0] + 0.5) * sx)
+                    py = int((u.position[1] + 0.5) * sy)
+                    pygame.draw.rect(layer, color if not u.fleeing else (255, 170, 60),
+                                     (px, py, 3, 3))
+        self._dots_for, self._dots_key, self._dots = battle, key, layer
+        return layer
 
     def camera_for(self, battle, mx, my, view_w, view_h, zoom):
         """Caméra (pixels monde) centrée sur le point cliqué, ou None."""

@@ -45,6 +45,19 @@ class FxRenderer:
         self.round_frame = 10 ** 6
         self._view = None
         self._collapses_seen = set()
+        # Textes des derniers mots, rendus une fois: (texte, couleur) → surface
+        self._texts = {}
+
+    def _text(self, text, color):
+        """Texte rendu dans la police des effets, mémorisé. Surfaces propres
+        à ce moteur: leur opacité est refixée avant chaque blit."""
+        key = (text, color)
+        s = self._texts.get(key)
+        if s is None:
+            if len(self._texts) > 512:
+                self._texts.clear()
+            s = self._texts[key] = self.font.render(text, True, color)
+        return s
 
     def reset(self, world_w, world_h):
         self.particles.clear()
@@ -593,12 +606,14 @@ class FxRenderer:
         if self.font is not None and cs >= 16:
             for d in ve.get('deaths', ()):
                 x, y = d.to_pos
+                if not d.texts or not visible_pt(x, y):
+                    continue            # hors champ: rien à écrire
                 oy_t = -cs * 0.6
                 for ft in d.texts:
                     if not ft.is_visible():
                         continue
                     pr = ft.get_progress()
-                    ts = self.font.render(ft.text, True, ft.color)
+                    ts = self._text(ft.text, ft.color)
                     ts.set_alpha(255 - int(255 * pr))
                     screen.blit(ts, (x - ts.get_width() // 2 + ox,
                                      y + oy_t - int(pr * ft.duration / 4) + oy))

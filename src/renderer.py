@@ -151,8 +151,8 @@ _LABEL_CACHE_MAX = 4000
 def label(fnt, text, color):
     """Texte rendu, mémorisé par (police, chaîne, couleur).
 
-    La surface est PARTAGÉE: qui joue sur son alpha (textes flottants) doit
-    le refixer avant chaque blit, jamais après."""
+    La surface est PARTAGÉE: qui veut la poser en fondu passe par
+    blit_faded, qui lui rend ensuite sa pleine opacité."""
     key = (id(fnt), text, color)
     s = _label_cache.get(key)
     if s is None:
@@ -160,6 +160,38 @@ def label(fnt, text, color):
             _label_cache.clear()
         s = fnt.render(text, True, color)
         _label_cache[key] = s
+    return s
+
+
+def blit_faded(dest, surf, pos, alpha):
+    """Blit d'une surface PARTAGÉE (cf. label) à l'opacité `alpha`, rendue
+    ensuite à sa pleine opacité: les autres utilisateurs du cache (noms,
+    statuts) ne doivent pas hériter du fondu d'un texte flottant."""
+    surf.set_alpha(alpha)
+    dest.blit(surf, pos)
+    surf.set_alpha(None)
+
+
+# Barres de PV: cadre sombre, fond rouge sombre, jauge — trois rectangles
+# par unité et par image, remplacés par un blit. La largeur de jauge est un
+# entier (0 → bw): le nombre de variantes reste petit.
+_bar_cache = {}
+
+
+def hp_bar(bw, fill_w, color):
+    """Surface (bw + 2) × 5 de la barre, à poser en (x - 1, y - 1) — mêmes
+    pixels que les trois draw.rect qu'elle remplace (couleurs opaques)."""
+    key = (bw, fill_w, color)
+    s = _bar_cache.get(key)
+    if s is None:
+        s = pygame.Surface((bw + 2, 5))
+        s.fill((15, 15, 15))
+        s.fill((90, 25, 25), (1, 1, bw, 3))
+        if fill_w > 0:
+            s.fill(color, (1, 1, fill_w, 3))
+        if len(_bar_cache) > 2048:
+            _bar_cache.clear()
+        _bar_cache[key] = s
     return s
 
 
@@ -210,6 +242,7 @@ def clear_token_cache():
     _pips_cache.clear()
     _body_cache.clear()
     _flash_cache.clear()
+    _bar_cache.clear()
 
 
 

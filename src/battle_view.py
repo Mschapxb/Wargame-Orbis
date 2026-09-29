@@ -136,6 +136,7 @@ class BattleView:
         # vue (écran / zoom), puis mis à l'échelle — aucune coordonnée ne change.
         self.zoom = 1.0
         self.world_view = None
+        self._scaled_view = None        # la vue mise à l'échelle du zoom
         self.dragging = False
         self.drag_start = (0, 0)
         self.drag_cam_start = (0, 0)
@@ -349,12 +350,26 @@ class BattleView:
             # termine avant que l'échange général ne batte son plein.
             self.move_anim_progress = min(1.0, self.round_frame / max(1.0, frames * R.MOVE_WINDOW))
 
-        # Décompter les minuteries d'animation (une fois l'instant venu)
+        # Décompter les minuteries d'animation (une fois l'instant venu).
+        # Les textes flottants vieillissent ICI, pour toutes les unités et
+        # hors pause: vieillis au dessin, ceux d'une unité hors champ (ou
+        # trop petite à l'écran) s'accumulaient et rejouaient tous d'un coup
+        # quand la caméra y revenait — et ils filaient pendant la pause.
         for u in battle.army1 + battle.army2:
             if u._lunge_timer > 0 and self.round_frame >= getattr(u, '_lunge_delay', 0):
                 u._lunge_timer -= 1
             if u._hit_flash > 0 and self.round_frame >= getattr(u, '_hit_flash_delay', 0):
                 u._hit_flash -= 1
+            fts = u.floating_texts
+            if fts and not self.paused:
+                expired = False
+                for ft in fts:
+                    ft.age += 1
+                    expired = expired or not ft.is_alive()
+                if expired:             # deque bornée: filtrée en place
+                    keep = [ft for ft in fts if ft.is_alive()]
+                    fts.clear()
+                    fts.extend(keep)
 
         # Vieillir effets visuels — figés en pause (sinon les effets
         # horodatés se jouaient pendant que le round, lui, était arrêté)
@@ -498,7 +513,10 @@ class BattleView:
         elif not covered:
             real_screen.fill(WORLD_BG)
         if surf is not real_screen and not covered:
-            surf.fill(WORLD_BG)
+            # La surface de vue est entièrement repeinte à chaque image: seules
+            # les bandes que la carte (opaque) ne couvre pas ont besoin du fond
+            # — dézoomé, remplir toute la vue coûtait près de 2 ms par image.
+            self._fill_outside_map(surf, ox, oy, view_w, view_h)
 
         # Clipper le rendu monde pour ne pas déborder sur le HUD
         surf.set_clip(pygame.Rect(0, 0, view_w, view_h))
@@ -519,11 +537,31 @@ class BattleView:
         surf.set_clip(None)
 
         if surf is not real_screen:
-            scaled = pygame.transform.scale(surf, (int(surf.get_width() * self.zoom),
-                                                   int(surf.get_height() * self.zoom)))
+            size = (int(surf.get_width() * self.zoom), int(surf.get_height() * self.zoom))
+            # Surface d'arrivée gardée d'une image à l'autre: une surface
+            # plein écran allouée puis jetée à chaque image, c'est inutile
+            if self._scaled_view is None or self._scaled_view.get_size() != size:
+                self._scaled_view = pygame.Surface(size, 0, surf)
+            scaled = pygame.transform.scale(surf, size, self._scaled_view)
             real_screen.set_clip(pygame.Rect(0, 0, self.screen_w, self.view_h))
             real_screen.blit(scaled, (0, 0))
             real_screen.set_clip(None)
+
+    def _fill_outside_map(self, surf, ox, oy, view_w, view_h):
+        """Fond du monde sur les bandes de la vue hors de la carte posée en
+        (ox, oy)."""
+        mw, mh = self.grid_surface.get_size()
+        x0, y0, x1, y1 = ox, oy, ox + mw, oy + mh
+        if y0 > 0:
+            surf.fill(WORLD_BG, (0, 0, view_w, y0))
+        if y1 < view_h:
+            surf.fill(WORLD_BG, (0, y1, view_w, view_h - y1))
+        top, bottom = max(0, y0), min(view_h, y1)
+        if bottom > top:
+            if x0 > 0:
+                surf.fill(WORLD_BG, (0, top, x0, bottom - top))
+            if x1 < view_w:
+                surf.fill(WORLD_BG, (x1, top, view_w - x1, bottom - top))
 
     def _draw_move_overlay(self, surf, u, ox, oy):
         """Au survol: cases où l'unité peut s'arrêter au prochain round
@@ -535,21 +573,26 @@ class BattleView:
             self._reach_key = key
             # Ancres atteignables → toutes les cases que l'empreinte couvrirait
             uw, uh = _unit_dims(u)
-            self._reach_cells = {(x + i, y + j)
-                                 for x, y in self.battle.battlefield.reachable_cells(u, self.battle)
-                                 for i in range(uw) for j in range(uh)}
-        cells = self._reach_cells
-        if cells:
-            xs = [c[0] for c in cells]
-            ys = [c[1] for c in cells]
-            x0, y0 = min(xs), min(ys)
-            layer = pygame.Surface(((max(xs) - x0 + 1) * cs, (max(ys) - y0 + 1) * cs),
-                                   pygame.SRCALPHA)
-            for (x, y) in cells:
-                r = pygame.Rect((x - x0) * cs, (y - y0) * cs, cs, cs)
-                layer.fill(_REACH_FILL, r)
-                pygame.draw.rect(layer, _REACH_EDGE, r, 1)
-            surf.blit(layer, (x0 * cs + ox, y0 * cs + oy))
+            cells = {(x + i, y + j)
+                     for x, y in self.battle.battlefield.reachable_cells(u, self.battle)
+                     for i in range(uw) for j in range(uh)}
+            # Le calque ne dépend que des cases: construit une fois, pas à
+            # chaque image tant que la souris reste sur l'unité
+            self._reach_layer = None
+            if cells:
+                xs = [c[0] for c in cells]
+                ys = [c[1] for c in cells]
+                x0, y0 = min(xs), min(ys)
+                layer = pygame.Surface(((max(xs) - x0 + 1) * cs, (max(ys) - y0 + 1) * cs),
+                                       pygame.SRCALPHA)
+                for (x, y) in cells:
+                    r = pygame.Rect((x - x0) * cs, (y - y0) * cs, cs, cs)
+                    layer.fill(_REACH_FILL, r)
+                    pygame.draw.rect(layer, _REACH_EDGE, r, 1)
+                self._reach_layer = (layer, x0 * cs, y0 * cs)
+        if self._reach_layer is not None:
+            layer, lx, ly = self._reach_layer
+            surf.blit(layer, (lx + ox, ly + oy))
         path = getattr(u, '_move_path', None)
         if path and len(path) > 1:
             uw, uh = _unit_dims(u)
@@ -641,10 +684,13 @@ class BattleView:
             # Hors champ: on ne dessine pas. Le test porte sur la position de
             # DÉPART comme sur celle d'arrivée — une unité qui entre dans le
             # cadre doit apparaître dès le début de son animation.
+            # L'empreinte compte, pas seulement l'ancre: une unité 2×4 dont
+            # l'ancre sort par le haut a encore son bas dans le cadre.
             px, py = u.position
             qx, qy = getattr(u, '_prev_position', None) or (px, py)
-            if (max(px, qx) * cs < vx0 or min(px, qx) * cs > vx1
-                    or max(py, qy) * cs < vy0 or min(py, qy) * cs > vy1):
+            uw, uh = _unit_dims(u)
+            if ((max(px, qx) + uw) * cs < vx0 or min(px, qx) * cs > vx1
+                    or (max(py, qy) + uh) * cs < vy0 or min(py, qy) * cs > vy1):
                 continue
             side = 0 if id(u) in army1_ids else 1
             pips = group_colors[side] if multi_contingent[side] else None
@@ -825,9 +871,7 @@ class BattleView:
         """Barre de PV: vert → jaune → rouge."""
         hp_r = max(0, u.hp / u.max_hp) if u.max_hp > 0 else 0
         hp_c = (50, 190, 50) if hp_r > 0.6 else (220, 190, 40) if hp_r > 0.3 else (230, 70, 50)
-        pygame.draw.rect(surf, (15, 15, 15), (cx - bw // 2 - 1, by - 1, bw + 2, 5))
-        pygame.draw.rect(surf, (90, 25, 25), (cx - bw // 2, by, bw, 3))
-        pygame.draw.rect(surf, hp_c, (cx - bw // 2, by, int(bw * hp_r), 3))
+        surf.blit(R.hp_bar(bw, int(bw * hp_r), hp_c), (cx - bw // 2 - 1, by - 1))
 
     def _draw_name_and_morale(self, surf, u, cx, cy, ur):
         cs = self.cell_size
@@ -850,18 +894,16 @@ class BattleView:
         surf.blit(pips, (cx - pips.get_width() // 2, cy + ur + 13 - pip_r))
 
     def _draw_floating_texts(self, surf, u, cx, cy, ur):
+        """Textes flottants de l'unité (vieillis dans update, pas ici)."""
         ft_oy = -ur - 6
-        for ft in list(u.floating_texts):
-            ft.age += 1
-            if not ft.is_alive():
-                u.floating_texts.remove(ft)
-                continue
+        for ft in u.floating_texts:
             if not ft.is_visible():
                 continue  # l'action n'a pas encore eu lieu
             prog = ft.get_progress()
             ts = R.label(self.tiny_font, ft.text, ft.color)
-            ts.set_alpha(255 - int(255 * prog))
-            surf.blit(ts, (cx - ts.get_width() // 2, cy + ft_oy - int(prog * ft.duration / 4)))
+            R.blit_faded(surf, ts, (cx - ts.get_width() // 2,
+                                    cy + ft_oy - int(prog * ft.duration / 4)),
+                         255 - int(255 * prog))
             ft_oy -= 10
 
     def _draw_top_bar(self):

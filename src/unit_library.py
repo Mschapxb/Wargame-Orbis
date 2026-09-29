@@ -39,6 +39,7 @@ Champs d'une unité:
 
 from models import Arme, SpellFireball, SpellHeal, SpellMagicArmor, SpellMagicProjectile, SpellWall
 from unit import Unit
+import filecmp
 import os
 import re
 import unicodedata
@@ -736,12 +737,35 @@ def install_token(token_path, unit_name):
     dest = os.path.join(TOKENS_DIR, f"{unit_name}.png")
     if os.path.abspath(token_path) == os.path.abspath(dest):
         return True
+    # Déjà en place: ne rien réécrire. Ce chargement a lieu à CHAQUE import;
+    # recopier à chaque fois faisait se bloquer deux processus lancés
+    # ensemble (tests, bancs en parallèle) sur le même fichier sous Windows.
+    if _same_file(token_path, dest):
+        return True
+    # Copie dans un fichier temporaire puis remplacement atomique: un
+    # lecteur ne voit jamais d'image à moitié écrite.
+    tmp = f"{dest}.{os.getpid()}.tmp"
     try:
-        shutil.copy2(token_path, dest)
+        shutil.copy2(token_path, tmp)
+        os.replace(tmp, dest)
     except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        if _same_file(token_path, dest):
+            return True     # un autre processus l'a installé entre-temps
         print(f"  ATTENTION: token de '{unit_name}' non copié ({token_path}): {e}")
         return False
     return True
+
+
+def _same_file(src, dest):
+    """dest est-il déjà une copie de src (même contenu) ?"""
+    try:
+        return filecmp.cmp(src, dest, shallow=False)
+    except OSError:
+        return False
 
 
 CUSTOM_ARMY_NAME = "Unités custom"

@@ -131,6 +131,9 @@ class CommanderAI(spatial.Neighbourhood):
         self.maneuver = None            # "envelop", "concentrate", "collapse", None
         self._assignments = {}          # id(unit) -> (rôle, target_pos|unit)
         self._ids_cache = [None, None]  # (taille, ids) de self.army / self.enemy_army
+        # Distances au plus proche, par liste d'unités, le temps d'une
+        # distribution d'ordres (cf. _nearest_of). None hors de issue_orders.
+        self._nd_cache = None
         self._axis = (1.0, 0.0)         # Axe du front (vers l'ennemi)
         self._melee_front = None        # Projection de la ligne de mêlée
         self._melee_center = None
@@ -205,6 +208,41 @@ class CommanderAI(spatial.Neighbourhood):
                     cache = self._ids_cache[i] = (len(army), {id(u) for u in army})
                 return cache[1]
         return {id(u) for u in units}
+
+    def _memo(self, kind, key_obj, build):
+        """Valeur mémorisée le temps d'une distribution d'ordres, par
+        (nature, objet): personne ne bouge pendant issue_orders, et les
+        mêmes questions revenaient pour chaque unité — autant de balayages
+        d'armée. L'objet est gardé avec la valeur (son id ne peut donc pas
+        resservir à un autre). Hors de issue_orders, recalculée à chaque
+        appel."""
+        cache = self._nd_cache
+        if cache is None:
+            return build()
+        key = (kind, id(key_obj))
+        got = cache.get(key)
+        if got is None:
+            got = cache[key] = (key_obj, build())
+        return got[1]
+
+    def _nearest_of(self, units):
+        """Distance au plus proche de `units` (spatial.NearestDistance)."""
+        return self._memo('dist', units,
+                          lambda: spatial.NearestDistance(u.position for u in units))
+
+    def _nearest_unit_of(self, units):
+        """Plus proche unité de `units` (spatial.NearestUnit, mémorisée)."""
+        return self._memo('unit', units, lambda: spatial.NearestUnit(units))
+
+    def _ranked_near(self, prio, pos, radius):
+        """Les entrées (score, ennemi) de `prio` dont l'ennemi PEUT être à
+        `radius` cases ou moins de `pos`, dans l'ordre de `prio`. Surensemble
+        (index spatial): l'appelant garde son test exact, et parcourt alors
+        exactement ce qu'il aurait retenu en balayant tout `prio`."""
+        rank = self._memo('rank', prio,
+                          lambda: {id(e): i for i, (_s, e) in enumerate(prio)})
+        found = sorted(rank[id(u)] for u in self.battlefield.index.near(pos, radius, rank))
+        return [prio[i] for i in found]
 
     def assess(self):
         """Bilan de forces des deux camps, recalculé chaque round.
@@ -408,10 +446,10 @@ class CommanderAI(spatial.Neighbourhood):
         abattre — et légèrement bruité pour que deux batailles identiques ne
         produisent pas le même plan de feu."""
         mine = [u for u in self.army if u.is_alive and not u.fleeing]
-        # Positions sorties une fois pour toutes: la distance au plus proche
-        # des nôtres se calcule pour CHAQUE ennemi, et relire `u.position`
-        # des centaines de milliers de fois coûtait plus cher que le calcul.
-        mine_pos = [u.position for u in mine]
+        # La distance au plus proche des nôtres se calcule pour CHAQUE
+        # ennemi: sans structure, c'était un balayage de notre armée par
+        # ennemi (quadratique).
+        nearest_mine = spatial.NearestDistance(u.position for u in mine)
         enemy_ids = {id(e) for e in enemies}
         scored = []
         for e in enemies:
@@ -436,9 +474,7 @@ class CommanderAI(spatial.Neighbourhood):
             # Une cible entamée vaut de l'or: la tuer supprime tout son feu
             d += (1.0 - e.hp / max(1, e.max_hp)) * 4.0
             # Accessibilité: désigner un objectif hors d'atteinte ne sert à rien
-            dmin = min((abs(px - ex) + abs(py - ey) for px, py in mine_pos),
-                       default=99)
-            d -= dmin * 0.08
+            d -= nearest_mine.dist(ex, ey, 99) * 0.08
             if tactics.is_isolated(
                     e, self.units_near(enemies, e.position, 5, enemy_ids), 5, 1):
                 d += 2.5 * self.ruse
@@ -487,6 +523,15 @@ class CommanderAI(spatial.Neighbourhood):
     # ─── Émission des ordres ───
 
     def issue_orders(self, battle):
+        # Personne ne bouge pendant la distribution des ordres: ce qui ne
+        # dépend que des positions se mémorise le temps de l'appel.
+        self._nd_cache = {}
+        try:
+            self._issue_orders(battle)
+        finally:
+            self._nd_cache = None
+
+    def _issue_orders(self, battle):
         alive = [u for u in self.army if u.is_alive and not u.fleeing]
         enemies = [e for e in self.enemy_army if e.is_alive]
         if not alive or not enemies:
@@ -899,9 +944,8 @@ class CommanderAI(spatial.Neighbourhood):
         ux, uy = unit.position
 
         # Déjà engagé (ou sur le point de l'être): on ne se dérobe jamais
-        for e in enemies:
-            if abs(ux - e.position[0]) + abs(uy - e.position[1]) <= unit._max_range + 1:
-                return None
+        if self._nearest_of(enemies).dist(ux, uy, 999) <= unit._max_range + 1:
+            return None
 
         # L'attente a une limite: au bout de quelques rounds, l'assaut part
         # de toute façon (sinon deux armées prudentes se regardent).
@@ -1833,19 +1877,20 @@ class CommanderAI(spatial.Neighbourhood):
         ft = self.focus_target
         if ft and ft.is_alive and visible(ft):
             return TacticalOrder("attack", target_unit=ft, priority=4)
-        for _, e in prio:
+        # Seuls les ennemis à max_reach ou moins peuvent être visibles
+        for _, e in self._ranked_near(prio, (ux, uy), max_reach):
             if visible(e):
                 return TacticalOrder("attack", target_unit=e, priority=3)
         if self.posture in ("hold_line", "screen"):
             return TacticalOrder("hold", target_pos=unit.position, priority=3)
         if self.posture == "exploit":
             # Plus besoin d'écran: on se porte à portée des survivants
-            c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+            c = self._nearest_unit_of(enemies).nearest(ux, uy)
             return TacticalOrder("attack", target_unit=c, priority=3)
         adv = self._support_advance_pos(unit)
         if adv is not None:
             return TacticalOrder("support", target_pos=adv, priority=2)
-        c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+        c = self._nearest_unit_of(enemies).nearest(ux, uy)
         return TacticalOrder("attack", target_unit=c, priority=1)
 
     def aggressive(self):
@@ -1896,7 +1941,8 @@ class CommanderAI(spatial.Neighbourhood):
         bf = self.battlefield
         # Ce qu'on peut atteindre dans le round (au moins ENGAGE_RANGE)
         engage = max(ENGAGE_RANGE, unit.vitesse)
-        near = [e for e in enemies
+        ids = self._memo('ids', enemies, lambda: {id(e) for e in enemies})
+        near = [e for e in self.units_near(enemies, unit.position, engage, ids)
                 if bf.unit_distance(unit, e) <= engage
                 and self._melee_can_reach(unit, e)]
         if not near:
@@ -1925,9 +1971,9 @@ class CommanderAI(spatial.Neighbourhood):
         # basculer l'équilibre (baliste 41 % → 61 %, mêmes graines).
         aggressive = self.aggressive() and not bf.is_siege
         dist_cost = MELEE_DIST_COST if aggressive else MELEE_DIST_COST_DEFENSIVE
-        d_near = min(abs(ux - e.position[0]) + abs(uy - e.position[1]) for e in enemies)
+        d_near = self._nearest_of(enemies).dist(ux, uy)
         best, best_score = None, -1e9
-        for score, e in prio:
+        for score, e in self._ranked_near(prio, (ux, uy), reach * 2):
             d = abs(ux - e.position[0]) + abs(uy - e.position[1])
             if d > reach * 2:
                 continue
@@ -1952,20 +1998,35 @@ class CommanderAI(spatial.Neighbourhood):
         if best is not None:
             self._claims[id(best)] = self._claims.get(id(best), 0) + 1
             return TacticalOrder("attack", target_unit=best, priority=3)
-        c = min(enemies, key=lambda e: abs(ux - e.position[0]) + abs(uy - e.position[1]))
+        c = self._nearest_unit_of(enemies).nearest(ux, uy)
         return TacticalOrder("attack", target_unit=c, priority=1)
 
-    def _screen_order(self, unit, enemies, mc):
+    def _screen_threat(self, enemies):
+        """(centre de nos tireurs, sa case, menace prioritaire), ou None si
+        nous n'avons plus de tireurs. Ne dépend pas de l'unité: mémorisé le
+        temps d'une distribution d'ordres (cf. _memo) — c'étaient deux
+        balayages d'armée par unité en écran."""
+        return self._memo('screen', enemies, lambda: self._screen_threat_now(enemies))
+
+    def _screen_threat_now(self, enemies):
         bf = self.battlefield
         my_r = [u for u in self.army if u.is_alive and (u._max_range >= 4 or u.spells)]
         if not my_r:
-            c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
-            return TacticalOrder("attack", target_unit=c, priority=1)
+            return None
         rc = self._center(my_r)
-        rc_i = (tactics.mirror_round_x(rc[0], self.battlefield.width), int(rc[1]))
+        rc_i = (tactics.mirror_round_x(rc[0], bf.width), int(rc[1]))
         # Menace prioritaire: celle qui atteindra nos tireurs en premier
         ce = min(enemies, key=lambda e: (bf.manhattan_distance(rc_i, e.position)
                                          - e.vitesse * 1.5))
+        return rc, rc_i, ce
+
+    def _screen_order(self, unit, enemies, mc):
+        bf = self.battlefield
+        threat = self._screen_threat(enemies)
+        if threat is None:
+            c = self._nearest_unit_of(enemies).nearest(*unit.position)
+            return TacticalOrder("attack", target_unit=c, priority=1)
+        rc, rc_i, ce = threat
         if bf.manhattan_distance(ce.position, rc_i) <= 6:
             return TacticalOrder("attack", target_unit=ce, priority=4)
         # Se placer entre le danger et nos tireurs, sur son axe d'approche
@@ -1975,13 +2036,12 @@ class CommanderAI(spatial.Neighbourhood):
         return TacticalOrder("protect", target_pos=(sx, sy), priority=2)
 
     def _officer_order(self, unit, enemies, mc):
-        bf = self.battlefield
         fighters = [u for u in self.army if u.is_alive and u != unit
                     and u._max_range < 4 and not u.fleeing]
         if fighters:
             c = self._center(fighters)
             return TacticalOrder("hold", target_pos=(tactics.mirror_round_x(c[0], self.battlefield.width), int(c[1])), priority=2)
-        c = min(enemies, key=lambda e: bf.manhattan_distance(unit.position, e.position))
+        c = self._nearest_unit_of(enemies).nearest(*unit.position)
         return TacticalOrder("attack", target_unit=c, priority=1)
 
     # ─── Siège: SORTIE ───

@@ -13,6 +13,15 @@ TALL_OBSTACLES = frozenset((st.HOUSE, st.GROVE))
 # ne pas en reconstruire un à chaque appel dans les boucles chaudes.
 _DIM1, _DIM2, _DIM3 = (1, 1), (2, 2), (2, 4)
 
+# A* (cf. a_star_path): huit directions, dans l'ordre historique, et coût
+# d'un pas en diagonale.
+_DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
+_DIAG_COST = 1.414
+# Mémo statique de l'A* à indices plats (cf. Battlefield._static_cells): case
+# pas encore calculée, et case d'une carte sans grille de terrain.
+_UNSET = object()
+_FLAT = (1.0, False)
+
 
 class Battlefield:
     def __init__(self, width=40, height=30, obstacle_count=8, map_name="Prairie", grid=None, map_data=None):
@@ -88,6 +97,9 @@ class Battlefield:
         # Cache des cases occupées par camp, actif seulement pendant la
         # planification du mouvement (cf. occupancy_cache). None = inactif.
         self._occ_cache = None
+        # Même fenêtre: praticabilité et coût de terrain de chaque case, en
+        # indices plats (cf. _static_cells). None = inactif.
+        self._static_memo = None
 
         if grid is not None:
             self.grid = grid
@@ -624,24 +636,111 @@ class Battlefield:
         refaisait le même balayage du plateau: un tiers du coût du
         pathfinding sur une grande bataille. On le calcule donc une fois par
         camp pour toute la passe. Hors de cette fenêtre le cache reste
-        éteint: aucun risque qu'un mort ou un déplacement le périme."""
+        éteint: aucun risque qu'un mort ou un déplacement le périme.
+
+        La même fenêtre garde la couche STATIQUE des cases (obstacles, murs,
+        terrain) vue par l'A* à indices plats: ni la grille, ni le terrain,
+        ni les portes, ni les feux ne changent pendant la planification."""
         self._occ_cache = {} if on else None
+        self._static_memo = ([_UNSET] * ((self.width + 2) * (self.height + 2))
+                             if on else None)
+
+    def _cached_split(self, enemies):
+        """Découpage mis en cache (fenêtre de planification), `unit` comprise
+        parmi les siens."""
+        cache = self._occ_cache
+        split = cache.get(id(enemies))
+        if split is None:
+            split = cache[id(enemies)] = self._occupancy_scan(
+                {id(e) for e in enemies}, None)
+        return split
 
     def _occupancy_split(self, unit, battle):
         """(cases ennemies, cases alliées) occupées par des unités vivantes,
         toutes cases de l'empreinte comprises, `unit` exclue."""
         enemies = battle.get_enemies(unit)
-        cache = self._occ_cache
-        if cache is None:
+        if self._occ_cache is None:
             return self._occupancy_scan({id(e) for e in enemies}, unit)
-        split = cache.get(id(enemies))
-        if split is None:
-            split = cache[id(enemies)] = self._occupancy_scan(
-                {id(e) for e in enemies}, None)
-        enemy_cells, ally_cells = split
+        enemy_cells, ally_cells = self._cached_split(enemies)
         # Le balayage mis en cache compte `unit` parmi les siens: on la
         # retire ici — une différence d'ensembles, pas un balayage.
         return enemy_cells, ally_cells.difference(self.get_unit_cells(unit))
+
+    @staticmethod
+    def _flat(cells, stride):
+        """Cases (x, y) → indices plats (x + 1) * stride + (y + 1), cf.
+        _a_star_small. Les cases hors carte sont écartées: elles
+        retomberaient sinon sur une vraie case."""
+        h = stride - 2
+        return {(x + 1) * stride + y + 1 for (x, y) in cells if 0 <= y < h and x >= 0}
+
+    def _occupancy_flat(self, unit, battle, stride):
+        """_occupancy_split pour l'A* à indices plats: (cases ennemies en
+        tuples, ennemies à plat, alliées à plat), `unit` exclue."""
+        if self._occ_cache is None:
+            enemy_cells, ally_cells = self._occupancy_split(unit, battle)
+            return (enemy_cells, self._flat(enemy_cells, stride),
+                    self._flat(ally_cells, stride))
+        enemies = battle.get_enemies(unit)
+        key = ('flat', id(enemies))
+        got = self._occ_cache.get(key)
+        if got is None:
+            enemy_cells, ally_cells = self._cached_split(enemies)
+            got = self._occ_cache[key] = (enemy_cells, self._flat(enemy_cells, stride),
+                                          self._flat(ally_cells, stride))
+        enemy_cells, enemy_f, ally_f = got
+        return enemy_cells, enemy_f, ally_f.difference(
+            self._flat(self.get_unit_cells(unit), stride))
+
+    def _reserved_flat(self, reserved, stride):
+        """Cases réservées en indices plats.
+
+        Pendant la planification, l'ensemble des réservations est UN objet
+        qui ne fait que grossir (update, jamais de retrait): on ne convertit
+        que ses nouveaux éléments — reconvertir tout l'ensemble à chaque A*
+        coûtait sinon du quadratique sur une grande bataille. La référence
+        gardée sur l'ensemble empêche qu'un autre objet ne reprenne son id."""
+        cache = self._occ_cache
+        if cache is None:
+            return self._flat(reserved, stride)
+        got = cache.get('reserved')
+        if got is None or got[0] is not reserved or len(got[1]) > len(reserved):
+            got = cache['reserved'] = (reserved, set(), set())
+        _obj, seen, flat = got
+        if len(seen) != len(reserved):
+            new = reserved - seen
+            seen |= new
+            flat |= self._flat(new, stride)
+        return flat
+
+    def _static_cells(self):
+        """Mémo de la couche statique: pour chaque indice plat, None si la
+        case est infranchissable pour tous (hors carte, obstacle, mur,
+        rivière), sinon (coût de terrain, en hauteur) — _UNSET tant qu'elle
+        n'a pas été lue (cf. _fill_static). Les portes, qui dépendent de
+        l'unité, sont traitées à part. Hors planification: mémo jetable."""
+        memo = self._static_memo
+        if memo is None:
+            memo = [_UNSET] * ((self.width + 2) * (self.height + 2))
+        return memo
+
+    def _fill_static(self, memo, k):
+        """Calcule (et mémorise) la case d'indice plat k, cf. _static_cells."""
+        x, y = divmod(k, self.height + 2)
+        x -= 1
+        y -= 1
+        v = None
+        if 0 <= x < self.width and 0 <= y < self.height:
+            c = self.grid[x][y]
+            if c != 1 and c != 2:
+                if self.terrain is None:
+                    v = _FLAT
+                else:
+                    v = tr.MOVE_ELEV[self.terrain[x][y]]
+                    if v[0] is None:
+                        v = None            # rivière
+        memo[k] = v
+        return v
 
     def _occupancy_scan(self, foes, unit):
         """Balayage effectif du plateau: (cases de `foes`, cases des autres),
@@ -723,7 +822,11 @@ class Battlefield:
 
         if start == goal:
             return [goal]
+        if unit.size <= 1:
+            return self._a_star_small(start, goal, unit, battle, reserved_positions,
+                                      max_nodes, partial)
 
+        # ── Grosses unités (2×2, 2×4): toute l'empreinte à chaque pas ──
         enemy_cells, ally_positions = self._occupancy_split(unit, battle)
 
         # Pénalité réduite quand loin de la cible
@@ -731,25 +834,15 @@ class Battlefield:
         gx, gy = goal
         dist_to_goal = max(abs(gx - sx), abs(gy - sy))
         ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
-        
-        # Cache local pour éviter les lookups d'attributs répétés
-        grid = self.grid
-        width = self.width
-        height = self.height
-        gate_hp = self.gate_hp
-        open_cells = self.gate_cells_open_for(unit)   # garnison: portes à elle
+
         reserved = reserved_positions
         # Lu une seule fois ici, valable pour tout cet appel (le terrain ne
         # change jamais en cours de bataille). Pas de cache d'instance: si
         # bf.terrain est réassigné entre deux appels d'a_star_path, le
         # prochain appel relit la valeur à jour dès cette ligne.
         terr = self.terrain
-        _move_elev = tr.MOVE_ELEV
         _uphill = tr.UPHILL_FACTOR
-        # Cases en feu: franchissables mais évitées (cf. terrain.step_cost)
-        fires = getattr(self, 'fires', None)
-        _fire_factor = tr.FIRE_MOVE_FACTOR
-        
+
         open_set = []
         h0 = max(abs(gx - sx), abs(gy - sy))
         # Départage des égalités de coût: par x ORIENTÉ selon le sens de
@@ -762,24 +855,16 @@ class Battlefield:
         g_score = {start: 0.0}
         came_from = {}
         best_node, best_h = start, h0
-        
-        _DIRS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
-        _DIAG_COST = 1.414
+
         uw, uh = self.get_unit_dims(unit)
-        big = uw > 1 or uh > 1
         footprint_ok = self._footprint_checker(uw, uh, enemy_cells, ally_positions,
-                                              reserved, open_cells) if big else None
+                                              reserved, self.gate_cells_open_for(unit))
         # Objectif lui-même infranchissable (ennemi, case réservée, obstacle):
         # l'A* fouillait jusqu'au plafond de nœuds avant d'abandonner — la
         # moitié du temps de calcul des grandes cartes (178×64). On le sait
         # d'avance: sans repli partiel, c'est non; avec, on borne la fouille
         # au voisinage que le détour peut raisonnablement couvrir.
-        if big:
-            goal_blocked = footprint_ok(gx, gy) is None
-        else:
-            goal_blocked = (not self.is_valid(gx, gy) or goal in reserved
-                            or goal in enemy_cells)
-        if goal_blocked:
+        if footprint_ok(gx, gy) is None:
             if not partial:
                 return []
             max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
@@ -788,14 +873,15 @@ class Battlefield:
         _heappop = heapq.heappop
         _abs = abs
         _INF = 1e9
-        
+        cur_elevated = False
+
         while open_set:
             _, g, _xk, cy, cx = _heappop(open_set)
             nodes_explored += 1
-            
+
             if nodes_explored > max_nodes:
                 break
-            
+
             if cx == gx and cy == gy:
                 # Reconstruire le chemin
                 path = []
@@ -805,7 +891,7 @@ class Battlefield:
                     current = came_from[current]
                 path.reverse()
                 return path
-            
+
             current = (cx, cy)
             if g > g_score.get(current, _INF):
                 continue
@@ -817,66 +903,29 @@ class Battlefield:
                 if hc < best_h:
                     best_h, best_node = hc, current
 
-            # Élévation de la case courante: invariante pour les 8 voisins.
-            # Calculée une fois par nœud (pas huit fois, une par voisin),
-            # depuis `terr` local ci-dessus — donc toujours cohérente avec
-            # les valeurs lues pour chaque voisin dans la même boucle.
+            # Élévation de la case courante (toute l'empreinte, comme pour la
+            # case voisine): invariante pour les 8 voisins.
             if terr is not None:
-                if big:
-                    # Toute l'empreinte, comme pour la case voisine
-                    cur_info = footprint_ok(cx, cy)
-                    cur_elevated = bool(cur_info and cur_info[1])
-                else:
-                    cur_elevated = _move_elev[terr[cx][cy]][1]
+                cur_info = footprint_ok(cx, cy)
+                cur_elevated = bool(cur_info and cur_info[1])
 
             for dx, dy in _DIRS:
                 nx, ny = cx + dx, cy + dy
-
                 neighbor = (nx, ny)
-                if big:
-                    info = footprint_ok(nx, ny)
-                    if info is None:
-                        continue
-                    base_cost = (_DIAG_COST if (dx and dy) else 1.0) * info[0]
-                    if info[1] and not cur_elevated:
-                        base_cost *= _uphill
-                    ally_hit = info[2]
-                else:
-                    # is_valid inliné
-                    if nx < 0 or nx >= width or ny < 0 or ny >= height:
-                        continue
-                    cell = grid[nx][ny]
-                    if cell == 1 or cell == 2:
-                        continue
-                    if cell == 3 and (nx, ny) not in open_cells and gate_hp.get((nx, ny), 0) > 0:
-                        continue
-                    if neighbor in reserved or neighbor in enemy_cells:
-                        continue
-
-                    base_cost = _DIAG_COST if (dx and dy) else 1.0
-                    if terr is not None:
-                        mc, n_elevated = _move_elev[terr[nx][ny]]
-                        if mc is None:
-                            continue  # rivière
-                        if n_elevated and not cur_elevated:
-                            mc *= _uphill
-                        base_cost *= mc
-                    if fires and neighbor in fires:
-                        base_cost *= _fire_factor
-                    ally_hit = neighbor in ally_positions
-                # Pas de faufilage en diagonale entre deux ennemis qui se
-                # touchent par le coin: une ligne en quinconce reste une ligne.
-                # (Grosses unités: l'empreinte d'arrivée suffit — tester les
-                # voisines de l'ANCRE dépendrait du sens de marche.)
-                if dx and dy and not big and enemy_cells and (
-                        (cx + dx, cy) in enemy_cells and (cx, cy + dy) in enemy_cells):
+                info = footprint_ok(nx, ny)
+                if info is None:
                     continue
-
-                if ally_hit and neighbor != goal:
+                base_cost = (_DIAG_COST if (dx and dy) else 1.0) * info[0]
+                if info[1] and not cur_elevated:
+                    base_cost *= _uphill
+                # (Pas de test de faufilage en diagonale: l'empreinte
+                # d'arrivée suffit — tester les voisines de l'ANCRE
+                # dépendrait du sens de marche.)
+                if info[2] and neighbor != goal:
                     new_g = g + base_cost + ALLY_PENALTY
                 else:
                     new_g = g + base_cost
-                
+
                 if new_g < g_score.get(neighbor, _INF):
                     came_from[neighbor] = current
                     g_score[neighbor] = new_g
@@ -896,6 +945,141 @@ class Battlefield:
             path.reverse()
             return path
         return []
+
+    def _a_star_small(self, start, goal, unit, battle, reserved, max_nodes, partial):
+        """A* d'une unité d'une case (l'immense majorité des appels).
+
+        La MÊME recherche que celle des grosses unités, nœud pour nœud et
+        flottant pour flottant: mêmes coûts, calculés dans le même ordre,
+        même clé de file de priorité, même départage. Seule change la
+        représentation: une case est l'entier (x + 1) * S + (y + 1), avec
+        S = hauteur + 2, sur une grille bordée d'une rangée de cases
+        infranchissables. Plus de tuple à fabriquer et à hacher par voisin,
+        plus de test de bornes, et la couche statique (obstacles, murs,
+        terrain) est mémorisée pour toute la planification du round
+        (cf. occupancy_cache) au lieu d'être relue à chaque voisin — deux
+        tiers du temps de calcul d'une grande bataille passaient ici."""
+        W, H = self.width, self.height
+        S = H + 2
+        enemy_cells, enemy_f, ally_f = self._occupancy_flat(unit, battle, S)
+
+        # Pénalité réduite quand loin de la cible
+        sx, sy = start
+        gx, gy = goal
+        dist_to_goal = max(abs(gx - sx), abs(gy - sy))
+        ALLY_PENALTY = 1.5 if dist_to_goal > 8 else 2.5
+
+        # Cases interdites pour CET appel: ennemis, réservations, et portes
+        # intactes fermées à cette unité (la garnison a les siennes).
+        blocked = self._reserved_flat(reserved, S) | enemy_f
+        grid = self.grid
+        open_cells = self.gate_cells_open_for(unit)
+        for (x, y), hp in self.gate_hp.items():
+            if (hp > 0 and (x, y) not in open_cells and 0 <= x < W and 0 <= y < H
+                    and grid[x][y] == 3):
+                blocked.add((x + 1) * S + y + 1)
+        # Cases en feu: franchissables mais évitées (cf. terrain.step_cost)
+        fires = getattr(self, 'fires', None)
+        fires_f = self._flat(fires, S) if fires else None
+        _fire_factor = tr.FIRE_MOVE_FACTOR
+        terr = self.terrain
+        _move_elev = tr.MOVE_ELEV
+        _uphill = tr.UPHILL_FACTOR
+        memo = self._static_cells()
+        fill = self._fill_static
+
+        # Objectif infranchissable: cf. la version des grosses unités
+        if not self.is_valid(gx, gy) or goal in reserved or goal in enemy_cells:
+            if not partial:
+                return []
+            max_nodes = min(max_nodes, 40 + 6 * (dist_to_goal + 3) ** 2)
+        # Un objectif hors carte ne peut être le voisin de personne
+        gk = (gx + 1) * S + gy + 1 if 0 <= gx < W and 0 <= gy < H else -1
+        sk = (sx + 1) * S + sy + 1
+
+        # (décalage plat, coût du pas, dx, dy, décalage plat du côté x d'une
+        # diagonale — 0 pour un pas droit)
+        steps = [(dx * S + dy, _DIAG_COST if (dx and dy) else 1.0, dx, dy,
+                  dx * S if (dx and dy) else 0) for dx, dy in _DIRS]
+        # Départage par x orienté (miroir), cf. grosses unités; l'indice plat
+        # clôt la clé sans jamais départager (il découle de (x, y)).
+        xs = -1 if gx >= sx else 1
+        open_set = [(dist_to_goal, 0.0, xs * sx, sy, sx, sk)]
+        _INF = 1e9
+        g_score = [_INF] * ((W + 2) * S)
+        g_score[sk] = 0.0
+        came_from = {}
+        best_k, best_h = sk, dist_to_goal
+        nodes_explored = 0
+        _heappush = heapq.heappush
+        _heappop = heapq.heappop
+        cur_el = False
+
+        while open_set:
+            _, g, _xk, cy, cx, ck = _heappop(open_set)
+            nodes_explored += 1
+            if nodes_explored > max_nodes:
+                break
+            if cx == gx and cy == gy:
+                return self._flat_path(came_from, ck, S)
+            if g > g_score[ck]:
+                continue
+            if partial:
+                hc = gx - cx if gx > cx else cx - gx
+                hcy = gy - cy if gy > cy else cy - gy
+                if hcy > hc:
+                    hc = hcy
+                if hc < best_h:
+                    best_h, best_k = hc, ck
+            if terr is not None:
+                cur_el = _move_elev[terr[cx][cy]][1]
+
+            for off, step, dx, dy, offx in steps:
+                nk = ck + off
+                v = memo[nk]
+                if v is _UNSET:
+                    v = fill(memo, nk)
+                if v is None or nk in blocked:
+                    continue
+                mc, n_el = v
+                if n_el and not cur_el:
+                    mc *= _uphill
+                base_cost = step * mc
+                if fires_f and nk in fires_f:
+                    base_cost *= _fire_factor
+                # Pas de faufilage en diagonale entre deux ennemis qui se
+                # touchent par le coin: une ligne en quinconce reste une ligne.
+                if offx and (ck + offx) in enemy_f and (ck + dy) in enemy_f:
+                    continue
+                if nk in ally_f and nk != gk:
+                    new_g = g + base_cost + ALLY_PENALTY
+                else:
+                    new_g = g + base_cost
+                if new_g < g_score[nk]:
+                    came_from[nk] = ck
+                    g_score[nk] = new_g
+                    nx = cx + dx
+                    ny = cy + dy
+                    h = gx - nx if gx > nx else nx - gx
+                    hdy = gy - ny if gy > ny else ny - gy
+                    if hdy > h:
+                        h = hdy
+                    _heappush(open_set, (new_g + h, new_g, xs * nx, ny, nx, nk))
+
+        if partial and best_k != sk:
+            return self._flat_path(came_from, best_k, S)
+        return []
+
+    @staticmethod
+    def _flat_path(came_from, k, stride):
+        """Chemin (liste de cases, départ exclu) remonté depuis l'indice k."""
+        path = []
+        while k in came_from:
+            x, y = divmod(k, stride)
+            path.append((x - 1, y - 1))
+            k = came_from[k]
+        path.reverse()
+        return path
 
     def find_best_attack_position(self, unit, target, battle, reserved_positions=None):
         """Trouve la meilleure case libre à portée de la cible.

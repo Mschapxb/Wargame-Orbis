@@ -1428,8 +1428,13 @@ class Battle(spatial.Neighbourhood):
             if _key != 'target_indicators' and len(_lst) > _FX_MAX_QUEUE:
                 del _lst[:len(_lst) - _FX_MAX_QUEUE]
 
-        self.army1 = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
-        self.army2 = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
+        # Filtrées EN PLACE: les commandants (et leurs plans) gardent une
+        # référence à ces listes. En les remplaçant, on leur laissait les
+        # listes du premier round, où une tour de siège accostée restait une
+        # unité vivante: la garnison en faisait sa cible de tir prioritaire
+        # un round sur trois, alors qu'elle n'était plus sur la carte.
+        self.army1[:] = [u for u in self.army1 if u.is_alive or u.down_timer > 0]
+        self.army2[:] = [u for u in self.army2 if u.is_alive or u.down_timer > 0]
         self.round += 1
         self._alive_cache['dirty'] = True
         FX_CLOCK.at(0)

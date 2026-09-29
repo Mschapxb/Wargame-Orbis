@@ -626,6 +626,25 @@ Deux propriétés dont le moteur dépend, et que `test_fondations.py` vérifie:
 qui change: environ deux fois moins à 800 unités, et l'écart se creuse avec
 l'effectif.
 
+Trois autres pièces suivent la même règle — plus vite, jamais autrement —
+et `test_performance.py` confronte chacune à la version naïve qu'elle
+remplace:
+
+- **A* à indices plats** (`Battlefield._a_star_small`, unités d'une case):
+  une case est un entier sur une grille bordée de cases infranchissables, et
+  la couche statique (obstacles, murs, terrain) est mémorisée pour toute la
+  planification du round. Même file de priorité, mêmes coûts calculés dans
+  le même ordre: le même chemin, deux fois plus vite.
+- **Plus proche voisin exact** (`spatial.NearestDistance`,
+  `spatial.NearestUnit`): points rangés par colonne, recherche vers
+  l'extérieur arrêtée dès que l'écart en x dépasse le meilleur trouvé.
+  `NearestUnit` rend, à égalité, la première unité de la liste — exactement
+  ce que rendait `min()`.
+- **Mémo de la distribution d'ordres** (`CommanderAI._memo`): personne ne
+  bouge pendant `issue_orders`; ce qui ne dépend que des positions (plus
+  proche ennemi, menace sur nos tireurs, rang des cibles) est calculé une
+  fois par liste au lieu d'une fois par unité.
+
 Côté affichage (`battle_view.py`), trois règles suivent la même logique: on ne
 dessine que les unités **dans le cadre**, le corps d'une unité (ombre, jeton,
 anneau d'équipe) est assemblé une fois pour toutes puis posé d'un seul blit
